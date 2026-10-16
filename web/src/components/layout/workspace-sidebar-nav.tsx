@@ -53,6 +53,8 @@ function buildNav(features: FeatureAvailability): { groups: WorkspaceNavGroup[];
                 { ...toolItem("canvas", "/project"), title: "项目" },
                 { ...toolItem("assets", "/assets"), title: "资产" },
                 { id: "settings:channels", title: "模型配置", icon: Settings2, to: "/settings?section=channels" },
+                { id: "settings:comfyui", title: "ComfyUI", icon: Settings2, to: "/settings/comfyui" },
+                { id: "settings:mcp", title: "MCP 工具", icon: Plug, to: "/settings?section=mcp" },
                 ...(getDesktopAppBinding()?.StorageSettings ? [{ id: "settings:storage", title: "存储设置", icon: HardDrive, to: "/settings?section=storage" }] : []),
                 { id: "agents", title: "BeefTV MCP", icon: Plug, to: "/agents" },
             ],

@@ -14,8 +14,9 @@ import { getCanvasNodeCreationDisabledReason } from "@/lib/canvas/canvas-feature
 import { CanvasNodeType, type CanvasConnection, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type CanvasNodeMetadata, type CanvasNodeTypeId, type ContextMenuState, type Position } from "@/types/canvas";
 import { cloneCanvasDrawing } from "@/lib/canvas/canvas-drawing-storage";
 import type { CanvasDrawingEngine } from "@/lib/canvas/canvas-drawing-engine";
-import { useEffectiveConfig } from "@/stores/use-config-store";
+import { normalizeRunningHubCapability, useEffectiveConfig } from "@/stores/use-config-store";
 import { workflowProviderPluginEnabled } from "@/lib/plugins/builtin/workflows";
+import type { WorkflowProvider } from "@/lib/plugins/builtin/workflows";
 import { usePluginStore } from "@/stores/use-plugin-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import type { DirectorScene } from "@/types/director";
@@ -164,24 +165,42 @@ export function useCanvasNodeOperations({
         setSelectedConnectionId(null);
     }, [selectedNodeIdsRef, setSelectedConnectionId, setSelectedNodeIds]);
 
-    const createNode = useCallback((type: CanvasNodeTypeId, position?: Position, workflowProvider?: "runninghub") => {
+    const createNode = useCallback((type: CanvasNodeTypeId, position?: Position, workflowProvider?: WorkflowProvider) => {
         const disabledReason = getCanvasNodeCreationDisabledReason(type);
         if (disabledReason) {
             message.info(disabledReason);
             return;
         }
+        const configuredWorkflowProvider = effectiveConfig.taskWorkflowProvider === "runninghub" || effectiveConfig.taskWorkflowProvider === "comfyui" ? effectiveConfig.taskWorkflowProvider : undefined;
         const selectedWorkflowProvider = type === CanvasNodeType.Config
-            ? workflowProvider || (workflowProviderPluginEnabled(runtimeStatuses, "runninghub") ? "runninghub" : undefined)
+            ? workflowProvider || configuredWorkflowProvider || (workflowProviderPluginEnabled(runtimeStatuses, "runninghub") ? "runninghub" : undefined)
             : undefined;
         if (selectedWorkflowProvider && !workflowProviderPluginEnabled(runtimeStatuses, selectedWorkflowProvider)) {
-            message.error("RunningHub 工作流插件未启用");
+            message.error(`${selectedWorkflowProvider === "comfyui" ? "ComfyUI" : "RunningHub"} 工作流插件未启用`);
             return;
         }
-        const workflowTitle = type === CanvasNodeType.Config && selectedWorkflowProvider === "runninghub" ? "RunningHub 工作流" : undefined;
+        const workflowTitle = type === CanvasNodeType.Config && selectedWorkflowProvider ? `${selectedWorkflowProvider === "comfyui" ? "ComfyUI" : "RunningHub"} 工作流` : undefined;
+        const runningHubWorkflow = selectedWorkflowProvider === "runninghub"
+            ? effectiveConfig.runningHub.workflows.find((item) => item.workflowId.trim() === effectiveConfig.runningHub.workflowId.trim() && (item.kind === "app" ? "app" : "workflow") === effectiveConfig.runningHub.selectedKind)
+                || effectiveConfig.runningHub.workflows.find((item) => normalizeRunningHubCapability(item.capability, effectiveConfig.runningHub.capability) === effectiveConfig.runningHub.capability)
+            : undefined;
+        const comfyUIWorkflow = selectedWorkflowProvider === "comfyui"
+            ? effectiveConfig.comfyUI.workflows.find((item) => item.workflowId.trim() === effectiveConfig.comfyUI.selectedWorkflowId.trim()) || effectiveConfig.comfyUI.workflows[0]
+            : undefined;
+        const workflowCapability = selectedWorkflowProvider === "comfyui"
+            ? normalizeRunningHubCapability(comfyUIWorkflow?.capability)
+            : selectedWorkflowProvider === "runninghub"
+                ? normalizeRunningHubCapability(runningHubWorkflow?.capability, normalizeRunningHubCapability(effectiveConfig.runningHub.capability))
+                : "image";
         const metadata: CanvasNodeMetadata | undefined = type === CanvasNodeType.Drawing
             ? { drawingEngine: defaultDrawingEngine }
             : type === CanvasNodeType.Config
-                ? { generationMode: "image", workflowProvider: selectedWorkflowProvider || "model" }
+                ? {
+                    generationMode: workflowCapability,
+                    workflowProvider: selectedWorkflowProvider || "model",
+                    ...(runningHubWorkflow ? { runningHubWorkflowId: runningHubWorkflow.workflowId, runningHubWorkflowKind: runningHubWorkflow.kind === "app" ? "app" as const : "workflow" as const } : {}),
+                    ...(comfyUIWorkflow ? { comfyUIWorkflowId: comfyUIWorkflow.workflowId } : {}),
+                }
                 : type === CanvasNodeType.Image || type === CanvasNodeType.Video || type === CanvasNodeType.Audio
                     ? mediaGeneratorMetadata({ generationMode: type === CanvasNodeType.Image ? "image" : type === CanvasNodeType.Video ? "video" : "audio" })
                 : undefined;
@@ -205,7 +224,7 @@ export function useCanvasNodeOperations({
         selectNodes(new Set([node.id]));
         if (type === CanvasNodeType.Script) setDialogNodeId(null);
         if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.BatchTable && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing && type !== CanvasNodeType.MediaConversion) setDialogNodeId(node.id);
-    }, [commitNodes, defaultDrawingEngine, effectiveConfig.runningHub.enabled, effectiveConfig.runningHub.workflows.length, getCanvasCenter, message, nodesRef, runtimeStatuses, selectNodes, setDialogNodeId, viewportScale]);
+    }, [commitNodes, defaultDrawingEngine, effectiveConfig.comfyUI.selectedWorkflowId, effectiveConfig.comfyUI.workflows, effectiveConfig.runningHub.capability, effectiveConfig.runningHub.selectedKind, effectiveConfig.runningHub.workflowId, effectiveConfig.runningHub.workflows, effectiveConfig.taskWorkflowProvider, getCanvasCenter, message, nodesRef, runtimeStatuses, selectNodes, setDialogNodeId, viewportScale]);
 
     const createFolder = useCallback((position?: Position, linked?: { id: string; projectId: string; title: string; style: CanvasFolderStyle; theme: CanvasFolderTheme; createdAt: string }) => {
         const folder = createCanvasNode(CanvasNodeType.Frame, position || getCanvasCenter(), {

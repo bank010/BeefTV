@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strconv"
 	"strings"
 
 	"infinite-canvas/backend/internal/model"
@@ -33,6 +34,19 @@ type Config struct {
 	WorkflowJSON          map[string]interface{}
 	WorkflowFields        []Field
 	RunningHubUploadKey   string
+}
+
+func isMiniMaxH3Workflow(workflow map[string]interface{}) bool {
+	for _, raw := range workflow {
+		node, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(stringValue(node["class_type"])), "MiniMaxH3ReferenceToVideo") {
+			return true
+		}
+	}
+	return false
 }
 
 // Media is the workflow-needed slice of providerMedia.
@@ -82,9 +96,18 @@ func IsRunningHubInterface(value string) bool {
 	}
 }
 
+func IsComfyUIInterface(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(model.ChannelInterfaceComfyUIImage), string(model.ChannelInterfaceComfyUIVideo), string(model.ChannelInterfaceComfyUIAudio):
+		return true
+	default:
+		return false
+	}
+}
+
 // IsProviderInterface reports whether the interface is a workflow provider.
 func IsProviderInterface(value string) bool {
-	return IsRunningHubInterface(value)
+	return IsRunningHubInterface(value) || IsComfyUIInterface(value)
 }
 
 func isRunningHubInterface(value string) bool {
@@ -98,11 +121,11 @@ func isWorkflowProviderInterface(value string) bool {
 func workflowInterfaceSupportsMode(interfaceType string, mode string) bool {
 	switch mode {
 	case "image":
-		return interfaceType == string(model.ChannelInterfaceRunningHubImage)
+		return interfaceType == string(model.ChannelInterfaceRunningHubImage) || interfaceType == string(model.ChannelInterfaceComfyUIImage)
 	case "video":
-		return interfaceType == string(model.ChannelInterfaceRunningHubVideo)
+		return interfaceType == string(model.ChannelInterfaceRunningHubVideo) || interfaceType == string(model.ChannelInterfaceComfyUIVideo)
 	case "audio":
-		return interfaceType == string(model.ChannelInterfaceRunningHubAudio)
+		return interfaceType == string(model.ChannelInterfaceRunningHubAudio) || interfaceType == string(model.ChannelInterfaceComfyUIAudio)
 	default:
 		return false
 	}
@@ -126,6 +149,21 @@ func ValidateConfig(mode string, config Config) error {
 		}
 		if strings.TrimSpace(config.WorkflowID) == "" && strings.TrimSpace(config.WebappID) == "" && strings.TrimSpace(config.Model) == "" {
 			return errText("RunningHub 缺少 workflowId 或 webappId")
+		}
+		return nil
+	}
+	if IsComfyUIInterface(config.InterfaceType) {
+		if _, err := outbound.ValidateOutboundURL(strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")); err != nil {
+			return err
+		}
+		if len(config.WorkflowJSON) == 0 {
+			return errText("ComfyUI 缺少 API 工作流 JSON")
+		}
+		if isMiniMaxH3Workflow(config.WorkflowJSON) && mode == "video" {
+			seconds, err := strconv.ParseFloat(strings.TrimSpace(config.VideoSeconds), 64)
+			if err == nil && seconds > 15 {
+				return errText("MiniMax H3 单次生成时长不能超过 15 秒")
+			}
 		}
 		return nil
 	}

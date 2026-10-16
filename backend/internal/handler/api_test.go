@@ -21,11 +21,13 @@ func TestRegisterCanvasAPIExposesOpenAPIAndProjects(t *testing.T) {
 	RegisterCanvasAPI(router.Group("/api"), &app.Service{})
 
 	wanted := map[string]bool{
-		"GET /api/openapi.yaml":          false,
-		"GET /api/projects":              false,
-		"POST /api/tasks":                false,
-		"POST /api/timeline/render-plan": false,
-		"GET /api/resources":             false,
+		"GET /api/openapi.yaml":           false,
+		"GET /api/projects":               false,
+		"POST /api/tasks":                 false,
+		"POST /api/comfyui/userdata":      false,
+		"POST /api/comfyui/workflow-info": false,
+		"POST /api/timeline/render-plan":  false,
+		"GET /api/resources":              false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -69,6 +71,8 @@ func TestRegisterDesktopCanvasAPIExcludesHostedOnlyRoutes(t *testing.T) {
 		"GET /api/workspace/bootstrap":                     false,
 		"POST /api/resources":                              false,
 		"POST /api/tasks":                                  false,
+		"POST /api/comfyui/userdata":                       false,
+		"POST /api/comfyui/workflow-info":                  false,
 		"POST /api/ai/models":                              false,
 		"GET /api/beefapi/connection":                      false,
 		"POST /api/beefapi/connection/start":               false,

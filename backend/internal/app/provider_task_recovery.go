@@ -133,7 +133,11 @@ func (s *Service) queryFailedVideoTask(ctx context.Context, task *model.Task, cl
 	if beefVideo {
 		result, providerStatus, err = queryBeefAPIVideoResult(queryCtx, input, providerRequestID)
 	} else if workflowVideo {
-		result, providerStatus, err = s.workflowClient(nil).QueryVideo(queryCtx, workflowConfigFromProvider(config), workflow.RootURL(config.BaseURL), providerRequestID)
+		if workflow.IsComfyUIInterface(config.InterfaceType) {
+			result, providerStatus, err = s.workflowClient(nil).QueryComfyUI(queryCtx, workflowConfigFromProvider(config), providerRequestID, input.Mode)
+		} else {
+			result, providerStatus, err = s.workflowClient(nil).QueryVideo(queryCtx, workflowConfigFromProvider(config), workflow.RootURL(config.BaseURL), providerRequestID)
+		}
 	} else if !declarative && legacyVideo {
 		result, providerStatus, err = generation.QueryHandwrittenVideoTask(queryCtx, input, providerRequestID)
 	} else {

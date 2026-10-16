@@ -497,12 +497,13 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
 
 function workflowProviderConfig(config: AiConfig, requestConfig: ReturnType<typeof resolveModelRequestConfig>, workflow: GenerationWorkflowExecution) {
     const runningHubActive = workflow.provider === "runninghub";
+    const comfyUIActive = workflow.provider === "comfyui";
     return {
         channelId: "",
         apiFormat: requestConfig.apiFormat,
         interfaceType: workflow.interfaceType,
-        baseUrl: config.runningHub.baseUrl,
-        apiKey: runningHubActive ? config.runningHub.apiKey : "",
+        baseUrl: runningHubActive ? config.runningHub.baseUrl : config.comfyUI.baseUrl,
+        apiKey: runningHubActive ? config.runningHub.apiKey : comfyUIActive ? config.comfyUI.apiKey : "",
         // 工作流是独立 Provider，不能继承普通模型渠道的密钥和自定义头。
         secretKey: "",
         headers: [],

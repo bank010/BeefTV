@@ -16,7 +16,7 @@ import { isFrameNode, isNodeHiddenByCollapsedFrame } from "@/lib/canvas/canvas-f
 import { canOpenCanvasNodePromptPanel } from "@/lib/canvas/canvas-node-semantics";
 import { normalizeRunningHubCapability, type AiConfig } from "@/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata, type ConnectionHandle, type ContextMenuState, type Position, type ViewportTransform } from "@/types/canvas";
-import { workflowProviderPluginEnabled } from "@/lib/plugins/builtin/workflows";
+import { workflowProviderPluginEnabled, type WorkflowProvider } from "@/lib/plugins/builtin/workflows";
 import { usePluginStore } from "@/stores/use-plugin-store";
 
 type UseCanvasConnectionControllerOptions = {
@@ -271,7 +271,7 @@ export function useCanvasConnectionController({
         setContextMenu(null);
     }, [config, connectionsRef, message, nodesRef, setConnections, setContextMenu, setNodes]);
 
-    const createConnectedNode = useCallback(async (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Script | CanvasNodeType.BatchTable | CanvasNodeType.Video | CanvasNodeType.Audio | CanvasNodeType.Drawing | CanvasNodeType.Config | CanvasNodeType.MediaConversion, pending: PendingConnectionCreate, workflowProvider?: "runninghub") => {
+    const createConnectedNode = useCallback(async (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Script | CanvasNodeType.BatchTable | CanvasNodeType.Video | CanvasNodeType.Audio | CanvasNodeType.Drawing | CanvasNodeType.Config | CanvasNodeType.MediaConversion, pending: PendingConnectionCreate, workflowProvider?: WorkflowProvider) => {
         const nodeType = type;
         const batchSourceNodeIds = pending.batchSourceNodeIds?.length ? Array.from(new Set(pending.batchSourceNodeIds)) : [];
         const batchSourceNodes = batchSourceNodeIds
@@ -288,26 +288,33 @@ export function useCanvasConnectionController({
         const scriptPrompt = nodeType === CanvasNodeType.Script
             ? batchSourceNodeIds.length ? batchScriptPrompt : sourceNode?.type === CanvasNodeType.Text ? (sourceNode.metadata?.content || sourceNode.metadata?.prompt || "").trim() : ""
             : "";
+        const configuredWorkflowProvider = config.taskWorkflowProvider === "runninghub" || config.taskWorkflowProvider === "comfyui" ? config.taskWorkflowProvider : undefined;
         const selectedWorkflowProvider = nodeType === CanvasNodeType.Config
-            ? workflowProvider || (workflowProviderPluginEnabled(runtimeStatuses, "runninghub") ? "runninghub" : undefined)
+            ? workflowProvider || configuredWorkflowProvider || (workflowProviderPluginEnabled(runtimeStatuses, "runninghub") ? "runninghub" : undefined)
             : undefined;
         if (selectedWorkflowProvider && !workflowProviderPluginEnabled(runtimeStatuses, selectedWorkflowProvider)) {
-            message.error("RunningHub 工作流插件未启用");
+            message.error(`${selectedWorkflowProvider === "comfyui" ? "ComfyUI" : "RunningHub"} 工作流插件未启用`);
             closeConnectionCreateMenu();
             setConnecting(null);
             return;
         }
         const runningHubWorkflow = selectedWorkflowProvider === "runninghub" ? selectRunningHubWorkflow(config) : undefined;
-        const workflowCapability = normalizeRunningHubCapability(runningHubWorkflow?.capability, normalizeRunningHubCapability(config.runningHub.capability));
+        const comfyUIWorkflow = selectedWorkflowProvider === "comfyui"
+            ? config.comfyUI.workflows.find((item) => item.workflowId.trim() === config.comfyUI.selectedWorkflowId.trim())
+            : undefined;
+        const workflowCapability = selectedWorkflowProvider === "comfyui"
+            ? normalizeRunningHubCapability(comfyUIWorkflow?.capability)
+            : normalizeRunningHubCapability(runningHubWorkflow?.capability, normalizeRunningHubCapability(config.runningHub.capability));
         const metadata: CanvasNodeMetadata | undefined = nodeType === CanvasNodeType.Config
             ? {
                 generationMode: selectedWorkflowProvider ? workflowCapability === "video" ? "video" as const : workflowCapability === "audio" ? "audio" as const : "image" as const : "image" as const,
                 workflowProvider: selectedWorkflowProvider || "model",
                 status: NODE_STATUS_IDLE,
-                ...(selectedWorkflowProvider === "runninghub" ? {
-                    workflowTitle: "RunningHub 工作流",
-                    ...(runningHubWorkflow ? { runningHubWorkflowId: runningHubWorkflow.workflowId, runningHubWorkflowKind: runningHubWorkflow.kind === "app" ? "app" as const : "workflow" as const } : {}),
-                } : {})
+                ...(selectedWorkflowProvider ? {
+                    workflowTitle: `${selectedWorkflowProvider === "comfyui" ? "ComfyUI" : "RunningHub"} 工作流`,
+                    ...(selectedWorkflowProvider === "runninghub" && runningHubWorkflow ? { runningHubWorkflowId: runningHubWorkflow.workflowId, runningHubWorkflowKind: runningHubWorkflow.kind === "app" ? "app" as const : "workflow" as const } : {}),
+                    ...(selectedWorkflowProvider === "comfyui" && comfyUIWorkflow ? { comfyUIWorkflowId: comfyUIWorkflow.workflowId } : {}),
+                } : {}),
               }
             : nodeType === CanvasNodeType.Drawing
             ? { drawingEngine: defaultDrawingEngine }
@@ -333,7 +340,7 @@ export function useCanvasConnectionController({
               ? pending.position
               : connectedNodeCenterFromEdgeDrop(pending.position, spec, pending.connection.handleType);
         const newNode = createCanvasNode(nodeType, position, metadata);
-        if (nodeType === CanvasNodeType.Config && selectedWorkflowProvider) newNode.title = "RunningHub 工作流";
+        if (nodeType === CanvasNodeType.Config && selectedWorkflowProvider) newNode.title = `${selectedWorkflowProvider === "comfyui" ? "ComfyUI" : "RunningHub"} 工作流`;
         if (storyboardRow) newNode.title = `镜头 ${storyboardRow.shotNumber} · 视频`;
         if (batchSourceNodeIds.length && nodeType === CanvasNodeType.Drawing) {
             message.error("批量连接暂不支持创建绘图，请先连接到普通节点");
@@ -433,10 +440,10 @@ export function useCanvasConnectionController({
         setConnecting(null);
     }, [closeConnectionCreateMenu, config, connectionsRef, defaultDrawingEngine, message, nodesRef, onConnectedNodeCreated, projectId, runtimeStatuses, setConnecting, setConnections, setDialogNodeId, setDrawingNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
 
-    const getConnectionCreateDisabledReason = useCallback((type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Script | CanvasNodeType.BatchTable | CanvasNodeType.Video | CanvasNodeType.Audio | CanvasNodeType.Drawing | CanvasNodeType.Config | CanvasNodeType.MediaConversion, pending: PendingConnectionCreate, workflowProvider?: "runninghub") => {
+    const getConnectionCreateDisabledReason = useCallback((type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Script | CanvasNodeType.BatchTable | CanvasNodeType.Video | CanvasNodeType.Audio | CanvasNodeType.Drawing | CanvasNodeType.Config | CanvasNodeType.MediaConversion, pending: PendingConnectionCreate, workflowProvider?: WorkflowProvider) => {
         const nodeType = type;
         if (nodeType === CanvasNodeType.Config) {
-            if (workflowProvider && !workflowProviderPluginEnabled(runtimeStatuses, workflowProvider)) return "RunningHub 工作流插件未启用";
+            if (workflowProvider && !workflowProviderPluginEnabled(runtimeStatuses, workflowProvider)) return `${workflowProvider === "comfyui" ? "ComfyUI" : "RunningHub"} 工作流插件未启用`;
         }
         if (pending.batchSourceNodeIds?.length) {
             if (nodeType === CanvasNodeType.Drawing || nodeType === CanvasNodeType.Config) return "批量连接暂不支持此节点类型";

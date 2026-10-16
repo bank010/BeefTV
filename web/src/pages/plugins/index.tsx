@@ -11,11 +11,11 @@ import { listRegisteredPlugins } from "@/lib/plugins/plugin-registry";
 import "@/lib/plugins/builtin";
 import { EAGLE_PLUGIN_ID } from "@/lib/plugins/builtin/eagle";
 import { PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
-import { RUNNINGHUB_PLUGIN_ID } from "@/lib/plugins/builtin/workflows";
+import { COMFYUI_PLUGIN_ID, RUNNINGHUB_PLUGIN_ID } from "@/lib/plugins/builtin/workflows";
 import { isOfficialApplicationPluginId } from "@/lib/plugins/official-applications";
 import type { PluginManifest, PluginManifestV2, RegisteredPlugin } from "@/lib/plugins/plugin-types";
 import { getEagleLibrary, type EagleFolder } from "@/services/api/eagle";
-import { fetchPlugins, setUserPluginEnabled, type BackendPlugin, type PluginState } from "@/services/api/plugins";
+import { fetchPluginRuntimeState, fetchPlugins, setUserPluginEnabled, type BackendPlugin, type PluginState } from "@/services/api/plugins";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { usePluginStore } from "@/stores/use-plugin-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -105,7 +105,15 @@ export default function PluginsPage() {
     const reloadBackendPlugins = async () => {
         if (localRuntime) {
             setBackendPlugins([]);
-            setPluginStates({});
+            try {
+                const runtime = await fetchPluginRuntimeState();
+                setPluginStates(runtime.states);
+                setRuntimeStatuses(runtime.statuses);
+            } catch (error) {
+                message.error(error instanceof Error ? error.message : "读取插件状态失败");
+                setPluginStates({});
+                setRuntimeStatuses({});
+            }
             return;
         }
         setBackendPluginsLoading(true);
@@ -210,7 +218,8 @@ export default function PluginsPage() {
 
     const togglePlugin = async (plugin: RegisteredPlugin, enabled: boolean) => {
         try {
-            if (localRuntime) {
+            const backendManagedWorkflow = plugin.manifest.id === COMFYUI_PLUGIN_ID || plugin.manifest.id === RUNNINGHUB_PLUGIN_ID;
+            if (localRuntime && !backendManagedWorkflow) {
                 setEnabled(plugin.manifest.id, enabled);
                 message.success(`${plugin.manifest.name}${enabled ? "已启用" : "已停用"}`);
                 return;
@@ -218,7 +227,7 @@ export default function PluginsPage() {
             const next = await setUserPluginEnabled(plugin.manifest.id, enabled);
             setEnabled(plugin.manifest.id, enabled);
             setPluginStates({ ...usePluginStore.getState().pluginStates, [next.pluginId]: next });
-            if (next.pluginId === RUNNINGHUB_PLUGIN_ID) {
+            if (next.pluginId === COMFYUI_PLUGIN_ID || next.pluginId === RUNNINGHUB_PLUGIN_ID) {
                 setRuntimeStatuses({ ...usePluginStore.getState().runtimeStatuses, [next.pluginId]: next.effectiveEnabled ? "enabled" : "disabled" });
             }
             message.success(`${plugin.manifest.name}${enabled ? "已启用" : "已停用"}`);

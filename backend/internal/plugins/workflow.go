@@ -9,6 +9,7 @@ import (
 func BundledWorkflowManifests() []protocol.Manifest {
 	return []protocol.Manifest{
 		workflowPluginManifest(WorkflowRunningHub, "RunningHub 工作流", "在画布中拉取并执行 RunningHub Workflow 与 App。"),
+		workflowPluginManifest(WorkflowComfyUI, "ComfyUI 工作流", "通过本地后端执行用户配置的 ComfyUI API 工作流。"),
 	}
 }
 
@@ -47,6 +48,8 @@ func WorkflowIDForInterface(value string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "runninghub-workflow-image", "runninghub-workflow-video", "runninghub-workflow-audio":
 		return WorkflowRunningHub, true
+	case "comfyui-workflow-image", "comfyui-workflow-video", "comfyui-workflow-audio":
+		return WorkflowComfyUI, true
 	default:
 		return "", false
 	}

@@ -2,11 +2,12 @@ import { registerPlugin } from "../plugin-registry";
 import { PLUGIN_API_VERSION, type PluginManifest, type RegisteredPlugin } from "../plugin-types";
 
 export const RUNNINGHUB_PLUGIN_ID = "runninghub-workflow-provider";
+export const COMFYUI_PLUGIN_ID = "comfyui-workflow-provider";
 
-export type WorkflowProvider = "runninghub";
+export type WorkflowProvider = "runninghub" | "comfyui";
 
 export function workflowPluginId(provider: WorkflowProvider) {
-	return RUNNINGHUB_PLUGIN_ID;
+	return provider === "comfyui" ? COMFYUI_PLUGIN_ID : RUNNINGHUB_PLUGIN_ID;
 }
 
 export function workflowProviderPluginEnabled(statuses: Record<string, string>, provider: WorkflowProvider) {
@@ -42,3 +43,22 @@ const runningHubManifest: PluginManifest = {
 };
 
 registerPlugin({ manifest: runningHubManifest } satisfies RegisteredPlugin);
+
+const comfyUIManifest: PluginManifest = {
+    id: COMFYUI_PLUGIN_ID,
+    name: "ComfyUI 工作流",
+    version: "1.0.0",
+    publishedAt: "2026-10-16",
+    updatedAt: "2026-10-16",
+    apiVersion: PLUGIN_API_VERSION,
+    description: "通过本地后端执行用户配置的 ComfyUI API 工作流。",
+    documentation: "# ComfyUI 工作流\n\n配置 ComfyUI API JSON 工作流并映射画布输入，工作流按用途分别保存，可供图片、视频和音频生成使用。请求经 BeefTV 后端提交和轮询。",
+    author: "内置工作流",
+    surfaces: ["node", "settings"],
+    permissions: ["generation.run", "external.open"],
+    trusted: true,
+    runtime: { backend: "trusted-backend", web: "trusted-backend" },
+    contributes: { workflows: workflowContributions(COMFYUI_PLUGIN_ID, "ComfyUI") },
+};
+
+registerPlugin({ manifest: comfyUIManifest } satisfies RegisteredPlugin);

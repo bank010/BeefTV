@@ -27,7 +27,7 @@ func TestRunningHubWorkflowRejectsMediaUploadInLocalMode(t *testing.T) {
 		},
 		ReferenceImages: []providerMedia{{ID: "ref-1", DataURL: "data:image/png;base64,AAAA"}},
 	}
-	_, err := svc.runRunningHubWorkflow(context.Background(), input)
+	_, err := svc.runWorkflow(context.Background(), input)
 	if err == nil || !strings.Contains(err.Error(), "本地工作区") {
 		t.Fatalf("local RunningHub media upload error = %v, want local-workspace rejection", err)
 	}
@@ -86,7 +86,7 @@ func TestWorkflowPaidCreateRequiresAnalyticsTaskID(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	s, _ := newTimelineTaskTestService(t)
-	_, err := s.runRunningHubWorkflow(context.Background(), workflowCreateInput(server.URL))
+	_, err := s.runWorkflow(context.Background(), workflowCreateInput(server.URL))
 	if err == nil || !strings.Contains(err.Error(), "本地任务回执上下文") {
 		t.Fatalf("error = %v, want missing paid receipt context", err)
 	}
@@ -124,7 +124,7 @@ func TestWorkflowPaidCreateRejectsStaleAndForeignTaskIdentity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			before := creates
 			ctx := withProviderAnalytics(context.Background(), s, tc.task)
-			_, err := s.runRunningHubWorkflow(ctx, workflowCreateInput(server.URL))
+			_, err := s.runWorkflow(ctx, workflowCreateInput(server.URL))
 			if err == nil || !strings.Contains(err.Error(), "本地任务回执上下文") {
 				t.Fatalf("error = %v, want owned local receipt rejection", err)
 			}
@@ -317,7 +317,7 @@ func TestWorkflowCreateUncertainCannotResubmit(t *testing.T) {
 			t.Cleanup(server.Close)
 			s, task := workflowPaidTaskFixture(t)
 			ctx := withProviderAnalytics(context.Background(), s, task)
-			_, err := s.runRunningHubWorkflow(ctx, workflowCreateInput(server.URL))
+			_, err := s.runWorkflow(ctx, workflowCreateInput(server.URL))
 			var unknown providerSubmissionUnknownError
 			if !errors.As(err, &unknown) {
 				t.Fatalf("error = %v, want unknown", err)
@@ -343,7 +343,7 @@ func TestWorkflowProtocolErrorStaysOrdinary(t *testing.T) {
 	t.Cleanup(server.Close)
 	s, task := workflowPaidTaskFixture(t)
 	ctx := withProviderAnalytics(context.Background(), s, task)
-	_, err := s.runRunningHubWorkflow(ctx, workflowCreateInput(server.URL))
+	_, err := s.runWorkflow(ctx, workflowCreateInput(server.URL))
 	var unknown providerSubmissionUnknownError
 	if err == nil || errors.As(err, &unknown) || !strings.Contains(err.Error(), "重新选择该 App") {
 		t.Fatalf("error = %v, want ordinary protocol failure", err)

@@ -67,6 +67,9 @@ func (c *Client) Run(ctx context.Context, input Input) (map[string]interface{}, 
 	if isRunningHubInterface(input.Config.InterfaceType) {
 		return exec.runRunningHub(ctx, input)
 	}
+	if IsComfyUIInterface(input.Config.InterfaceType) {
+		return exec.runComfyUI(ctx, input)
+	}
 	if err := exec.requireActor(ctx, input.Config.InterfaceType); err != nil {
 		return nil, err
 	}
@@ -453,7 +456,13 @@ func (c *Client) downloadOutputs(ctx context.Context, outputs []runningHubOutput
 			}
 			continue
 		}
-		if !isPublicMediaURL(rawURL) {
+		comfySameOrigin := false
+		if config != nil && IsComfyUIInterface(config.InterfaceType) {
+			provider, providerErr := url.Parse(root)
+			media, mediaErr := url.Parse(rawURL)
+			comfySameOrigin = providerErr == nil && mediaErr == nil && strings.EqualFold(provider.Scheme, media.Scheme) && strings.EqualFold(provider.Host, media.Host)
+		}
+		if !isPublicMediaURL(rawURL) && !comfySameOrigin {
 			continue
 		}
 		var data []byte
@@ -546,7 +555,11 @@ func (c *Client) videoSource(config *Config, root, rawURL string) BinarySource {
 		provider, providerErr := url.Parse(root)
 		media, mediaErr := url.Parse(rawURL)
 		if config != nil && providerErr == nil && mediaErr == nil && strings.EqualFold(provider.Scheme, media.Scheme) && strings.EqualFold(provider.Host, media.Host) {
-			headers = config.Headers
+			if IsComfyUIInterface(config.InterfaceType) {
+				headers = comfyOutboundHeaders(*config)
+			} else {
+				headers = config.Headers
+			}
 		}
 		data, mimeType, err := c.execute(ctx, Request{Kind: "download", Method: http.MethodGet, URL: rawURL, Headers: headers})
 		if err != nil {
@@ -554,6 +567,9 @@ func (c *Client) videoSource(config *Config, root, rawURL string) BinarySource {
 		}
 		if detected := http.DetectContentType(data); strings.HasPrefix(detected, "image/") || strings.HasPrefix(detected, "video/") || strings.HasPrefix(detected, "audio/") {
 			mimeType = detected
+		}
+		if config != nil && IsComfyUIInterface(config.InterfaceType) {
+			mimeType = comfyOutputMimeType(rawURL, mimeType)
 		}
 		return data, runningHubOutputMimeType(rawURL, mimeType), nil
 	}}

@@ -5,7 +5,7 @@ import { usePluginStore } from "@/stores/use-plugin-store";
 export type GenerationWorkflowMode = "text" | "image" | "video" | "audio";
 
 export type GenerationWorkflowExecution = {
-	provider: "runninghub";
+	provider: "runninghub" | "comfyui";
     kind: RunningHubWorkflowKind;
     capability: RunningHubCapability;
     interfaceType: string;
@@ -52,6 +52,31 @@ export function resolveGenerationWorkflowExecution(config: AiConfig, mode: Gener
             workflowJson: workflow.workflowJson || {},
             workflowFields: workflow.fields || [],
 
+		};
+	}
+
+	if (workflowProvider === "comfyui") {
+		if (!workflowProviderPluginEnabled(usePluginStore.getState().runtimeStatuses, "comfyui")) throw new Error("ComfyUI 工作流插件未启用");
+		const comfyUI = config.comfyUI;
+		const workflowId = comfyUI.selectedWorkflowId.trim();
+		if (!comfyUI.enabled || !comfyUI.baseUrl.trim() || !workflowId) throw new Error("ComfyUI 工作流配置不完整，请填写 Base URL 并选择已保存工作流");
+		const workflow = comfyUI.workflows.find((item) => item.workflowId.trim() === workflowId);
+		if (!workflow) throw new Error("当前 ComfyUI 工作流不存在，请重新选择已保存工作流");
+		const capability = normalizeRunningHubCapability(workflow.capability);
+		assertWorkflowCapability("ComfyUI", capability, mode);
+		const name = workflow.title.trim() || workflowId;
+		return {
+			provider: "comfyui",
+			kind: "workflow",
+			capability,
+			interfaceType: `comfyui-workflow-${capability}`,
+			name,
+			taskModel: workflowTaskModel("ComfyUI · ", name),
+			providerModel: workflowId,
+			workflowId,
+			webappId: "",
+			workflowJson: workflow.workflowJson || {},
+			workflowFields: workflow.fields || [],
 		};
 	}
 

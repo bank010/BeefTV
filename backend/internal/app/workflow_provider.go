@@ -13,13 +13,23 @@ import (
 // RunningHubWorkflowFetchRequest 只用于独立工作流设置页，不进入 ModelChannel。
 type RunningHubWorkflowFetchRequest = workflow.FetchRequest
 
+// ComfyUIUserDataRequest 只用于独立 ComfyUI 设置页，不进入 ModelChannel。
+type ComfyUIUserDataRequest struct {
+	BaseURL    string `json:"baseUrl"`
+	APIKey     string `json:"apiKey"`
+	Directory  string `json:"directory,omitempty"`
+	File       string `json:"file,omitempty"`
+	Capability string `json:"capability,omitempty"`
+}
+
 func isRunningHubInterface(value string) bool {
 	pluginID, ok := workflowPluginIDForInterface(value)
 	return ok && pluginID == WorkflowPluginRunningHub
 }
 
 func isWorkflowProviderInterface(value string) bool {
-	return isRunningHubInterface(value)
+	_, ok := workflowPluginIDForInterface(value)
+	return ok
 }
 
 func validateWorkflowProviderConfig(mode string, config providerConfig) error {
@@ -27,8 +37,8 @@ func validateWorkflowProviderConfig(mode string, config providerConfig) error {
 }
 
 func (s *Service) runWorkflowProviderTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
-	if isRunningHubInterface(input.Config.InterfaceType) {
-		return s.runRunningHubWorkflow(ctx, input)
+	if isWorkflowProviderInterface(input.Config.InterfaceType) {
+		return s.runWorkflow(ctx, input)
 	}
 	return nil, errors.New("未知工作流协议")
 }
@@ -52,7 +62,7 @@ func (s *Service) recordWorkflowProviderRequest(ctx context.Context, requestID s
 	return s.repo.UpdateTaskProviderState(metadata.TaskID, requestID, stage, nextPollAt)
 }
 
-func (s *Service) runRunningHubWorkflow(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+func (s *Service) runWorkflow(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
 	converted := s.workflowInputFromCanvas(ctx, input)
 	result, err := s.workflowClient(nil).Run(ctx, converted)
 	if err != nil {

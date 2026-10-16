@@ -6,6 +6,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { ChannelSettingsPane, channelValidationError, focusInvalidChannelField, isChannelReady } from "./channel-settings-pane";
+import { McpSettingsPane } from "./mcp-settings-pane";
 import { ModelDefaultGrid } from "./model-default-grid";
 import DiagnosticsPanel from "./diagnostics-panel";
 import { StorageSettingsPane } from "./storage-settings-pane";
@@ -13,10 +14,10 @@ import { ReferenceStoragePane } from "./reference-storage-pane";
 import { getDesktopAppBinding } from "@/services/desktop-runtime";
 import { PageHeader } from "@/components/layout/workspace-page";
 
-type ConfigSectionKey = "channels" | "models" | "storage" | "diagnostics";
+type ConfigSectionKey = "channels" | "models" | "storage" | "diagnostics" | "mcp";
 
 export function isConfigSection(value: string | null): value is ConfigSectionKey {
-    return value === "channels" || value === "storage" || value === "diagnostics";
+    return value === "channels" || value === "storage" || value === "diagnostics" || value === "mcp";
 }
 
 export default function SettingsPage() {
@@ -89,6 +90,7 @@ export default function SettingsPage() {
                 </div>
             </SettingsPane>
         ),
+        mcp: <SettingsPane><McpSettingsPane /></SettingsPane>,
         models: (
             <SettingsPane>
                 <div className="settings-pane-header">

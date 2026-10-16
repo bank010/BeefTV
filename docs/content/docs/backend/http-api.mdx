@@ -42,11 +42,18 @@ Wails 和浏览器开发模式共用同一套 `127.0.0.1` HTTP 合同。路由�
 | `/depth-captures` | 本机深度动作捕捉任务 |
 | `/tasks/*` | 生成任务创建、查询、取消、恢复与事件流 |
 | `/ai/*` | 外部模型目录和自定义协议转发 |
+| `/comfyui/*` | 通过后端只读远端用户工作流目录与 JSON；使用前需启用 ComfyUI 工作流插件 |
 | `/plugins/*`, `/skills/*` | 本地扩展包与技能 |
 | `/creation-conversations/*` | `/create` 页面对话的提交事实：按对话 CAS 读写、导入与墓碑删除 |
 | `/ops`, `/ops/:op` | 统一操作层：CLI、MCP 与内置 pi 会话共用同一组操作与校验 |
 | `/ops/clients*`, `/assistant/*` | 外部客户端登记、内置创作助手（同源代理）与宿主生命周期 |
 | `/health/*`, `/system/version` | 启动、就绪与版本诊断 |
+
+### ComfyUI 工作流管理
+
+`POST /comfyui/userdata` 接收 `baseUrl`、可选 `apiKey` 与 `directory`（缺省为 `workflows`），由后端读取 ComfyUI 用户数据目录。`POST /comfyui/workflow-info` 接收 `baseUrl`、可选 `apiKey`、`file` 与用途 `capability`，读取 `workflows/` 下的 JSON 文件，将 ComfyUI 前端保存格式转换为 API prompt 图，并提取动态字段。两条接口都要求当前 owner 启用 ComfyUI 工作流插件；只允许读取 `workflows/` 路径，不提供远端写入或队列提交。上游地址继续使用后端默认出站地址校验。
+
+ComfyUI 地址、凭据、工作流与字段映射独立保存在 ComfyUI 配置中，不与模型渠道或 RunningHub 共用。画布 Config 节点可以按图片、视频或音频选择已保存工作流；提交与轮询均经本地后端执行。
 
 `POST /timeline/render-plan` 接收时间线快照、不透明源标识和输出选项，返回版本化语义计划。源标识是 nodeId 或 resource id，不是本地路径。请求不得携带 ffmpeg 参数。该接口不做生成、不写资源、不创建任务。
 
@@ -109,6 +116,7 @@ Wails 和浏览器开发模式共用同一套 `127.0.0.1` HTTP 合同。路由�
 | `POST /assistant/ui-session` | 签发短期限 UI 会话凭据；需本机同源，并且能出示 owner 凭据（或显式本地引导开关） |
 | `POST /assistant/chat` | NDJSON 流式对话：先用 `session` 行返回实际 `sessionId`，再发 `text_delta` 增量与 `turn_end` 结算；断流或 `observer_error` 不表示结算。旧 JSONL 会话交接后重复请求复用其 Durable 接续会话，界面应立即保存 `sessionId` 用于恢复。可带 `references: [{kind,id}]` 追加已校验的素材/画布引用；宿主凭据与模型密钥由后端注入，页面不接触 |
 | `POST /assistant/cancel` | 取消指定画布正在进行的回合 |
+| `POST /assistant/mcp/probe` | 检测用户添加的 MCP 服务器可用的工具；请求体只有 `serverId`，命令、地址和密钥由后端从本机配置读取，页面不能自带 |
 | `GET/PUT /assistant/host/config`、`POST /assistant/host/start|stop` | 宿主生命周期：需 owner 凭据 + 本机同源；启动命令只取本机配置，绝不接受请求体传入的可执行命令 |
 
 按轮撤销不依赖浏览器流或宿主的最后一条消息：轮前文档由后端在转发前落盘，变更摘要由该轮自己的写入回执重建，
@@ -116,6 +124,10 @@ Wails 和浏览器开发模式共用同一套 `127.0.0.1` HTTP 合同。路由�
 宿主对模型请求与工具步骤各自有单轮上限（`BEEFTV_AGENT_MAX_REQUESTS_PER_TURN`、
 `BEEFTV_AGENT_MAX_TOOL_STEPS_PER_TURN`），按轮独立计数、下一轮从零开始；总预算
 `BEEFTV_AGENT_TOTAL_REQUEST_BUDGET` 默认关闭，只有显式配置才启用。
+
+宿主还通过一条仅宿主可见的运行时接口读取用户添加的 MCP 服务器：`GET /assistant/runtime/mcp-servers`
+要求本机同源并出示宿主凭据，默认只返回启用的服务器，`?includeDisabled=1` 时包含停用的；密钥原样交给宿主进程，
+不经过浏览器。无效条目（stdio 缺少命令、http 地址不是 `http://`/`https://`）会被跳过。
 
 ### 外部客户端连接
 

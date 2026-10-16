@@ -19,6 +19,7 @@ const PluginsPage = lazy(() => import("@/pages/plugins"));
 const EagleLibraryPage = lazy(() => import("@/pages/plugins/eagle"));
 const ProjectDetailPage = lazy(loadProjectDetailPage);
 const SettingsPage = lazy(() => import("@/pages/settings"));
+const ComfyUISettingsPage = lazy(() => import("@/pages/settings/comfyui-settings"));
 const TestVoiceRecording = lazy(() => import("@/pages/test-voice-recording"));
 const UserLayout = lazy(() => import("@/layouts/user-layout"));
 const RequireFeature = lazy(() => import("@/components/workspace/require-feature").then((module) => ({ default: module.RequireFeature })));
@@ -95,6 +96,7 @@ export const router = createWorkspaceRouter([
                 element: <RequireFeature feature="pluginCenterEnabled">{deferred(<EagleLibraryPage />)}</RequireFeature>,
             },
             { path: "/settings", element: deferred(<SettingsPage />) },
+            { path: "/settings/comfyui", element: deferred(<ComfyUISettingsPage />) },
             { path: "/agents", element: deferred(<AgentsPage />) },
             { path: "/test-voice-recording", element: deferred(<TestVoiceRecording />) },
             {

@@ -22,6 +22,7 @@ func TestTaskInputUsesWorkflowProvider(t *testing.T) {
 		want  bool
 	}{
 		{name: "runninghub workflow", input: map[string]any{"config": map[string]any{"interfaceType": "runninghub-workflow-video"}}, want: true},
+		{name: "comfyui workflow", input: map[string]any{"config": map[string]any{"interfaceType": "comfyui-workflow-video"}}, want: true},
 		{name: "case insensitive", input: map[string]any{"config": map[string]any{"interfaceType": "RunningHub-Workflow-Audio"}}, want: true},
 		{name: "ordinary model", input: map[string]any{"config": map[string]any{"interfaceType": "openai-image", "channelId": "system-1", "model": "image-model"}}, want: false},
 		{name: "missing config", input: map[string]any{}, want: false},

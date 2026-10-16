@@ -51,7 +51,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     }, []);
 
     useEffect(() => {
-        if (!userId || localMode || !pluginStoreHydrated) return;
+        if (!userId || !pluginStoreHydrated) return;
         let cancelled = false;
         void appQueryClient.fetchQuery({ queryKey: ["plugin-runtime", userId], queryFn: fetchPluginRuntimeState, staleTime: 30_000 })
             .then(async (runtime) => {

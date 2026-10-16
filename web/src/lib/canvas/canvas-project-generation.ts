@@ -499,18 +499,19 @@ export function getGenerationCount(count: string) {
     return Math.max(1, Math.min(15, Math.floor(Math.abs(Number(count)) || 1)));
 }
 
-export function generationWorkflowMetadata(config: AiConfig): Pick<CanvasNodeMetadata, "workflowProvider" | "runningHubWorkflowId" | "runningHubWorkflowKind"> {
+export function generationWorkflowMetadata(config: AiConfig): Pick<CanvasNodeMetadata, "workflowProvider" | "runningHubWorkflowId" | "runningHubWorkflowKind" | "comfyUIWorkflowId"> {
     const provider = config.taskWorkflowProvider || "model";
     return {
         workflowProvider: provider,
         runningHubWorkflowId: provider === "runninghub" ? config.runningHub.workflowId : undefined,
         runningHubWorkflowKind: provider === "runninghub" ? config.runningHub.selectedKind : undefined,
+        comfyUIWorkflowId: provider === "comfyui" ? config.comfyUI.selectedWorkflowId : undefined,
     };
 }
 
 export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode, requirements?: ModelRequirements): AiConfig {
     // 只有独立 Config 节点读取工作流元数据；普通图片/视频/音频节点始终按基础模型生成。
-    const workflowProvider = mode !== "text" && node?.type === CanvasNodeType.Config && resolveCanvasWorkflowProvider(node.metadata) === "runninghub" ? "runninghub" : "model";
+    const workflowProvider = mode !== "text" && node?.type === CanvasNodeType.Config ? resolveCanvasWorkflowProvider(node.metadata) : "model";
     const defaultModel = mode === "image" ? config.imageModel : mode === "video" ? config.videoModel : mode === "audio" ? config.audioModel : config.textModel;
     const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
     const storedModel = resolveCanvasGenerationModel(config, node?.metadata?.model, mode);
@@ -522,7 +523,13 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         workflowProvider === "runninghub"
             ? config.runningHub.workflows.find((item) => item.workflowId.trim() === runningHubWorkflowId && (!node?.metadata?.runningHubWorkflowKind || (item.kind === "app" ? "app" : "workflow") === node.metadata.runningHubWorkflowKind))
             : undefined;
-    const selectedWorkflowFields = workflowProvider === "runninghub" ? (selectedRunningHubWorkflow?.fields?.length ? selectedRunningHubWorkflow.fields : workflowVideoFieldsFromJson(selectedRunningHubWorkflow?.workflowJson)) : [];
+    const comfyUIWorkflowId = node?.metadata?.comfyUIWorkflowId?.trim() || config.comfyUI.selectedWorkflowId.trim();
+    const selectedComfyUIWorkflow = workflowProvider === "comfyui" ? config.comfyUI.workflows.find((item) => item.workflowId.trim() === comfyUIWorkflowId) : undefined;
+    const selectedWorkflowFields = workflowProvider === "runninghub"
+        ? (selectedRunningHubWorkflow?.fields?.length ? selectedRunningHubWorkflow.fields : workflowVideoFieldsFromJson(selectedRunningHubWorkflow?.workflowJson))
+        : workflowProvider === "comfyui"
+          ? selectedComfyUIWorkflow?.fields || []
+          : [];
     const workflowOutputSize = workflowProvider === "model" ? "" : workflowOutputSizeValue(selectedWorkflowFields, workflowParameters);
     const workflowParameterValue = (source: string) => {
         const value = workflowParameters[`source:${source}`];
@@ -595,6 +602,16 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
             : {};
     const modeCapability = mode === "video" || mode === "audio" ? mode : "image";
     const runningHubCapability = normalizeRunningHubCapability(selectedRunningHubWorkflow?.capability, normalizeRunningHubCapability(config.runningHub.capability));
+    const comfyUI = {
+        ...config.comfyUI,
+        enabled: workflowProvider === "comfyui" && config.comfyUI.enabled,
+        selectedWorkflowId: comfyUIWorkflowId,
+        workflows: workflowProvider === "comfyui"
+            ? config.comfyUI.workflows.map((item) => item.workflowId.trim() === comfyUIWorkflowId
+                ? { ...item, fields: applyWorkflowParameterValues(item.fields, workflowParameters) || item.fields }
+                : item)
+            : config.comfyUI.workflows,
+    };
     const runningHub = {
         ...config.runningHub,
         enabled: workflowProvider === "runninghub" && config.runningHub.enabled,
@@ -614,6 +631,7 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         ...requestedConfig,
         taskWorkflowProvider: workflowProvider,
         runningHub,
+        comfyUI,
         model,
         quality: generationDefaults.quality || requestedConfig.quality,
         size: generationDefaults.size ?? requestedConfig.size,
