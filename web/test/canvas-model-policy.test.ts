@@ -4,7 +4,7 @@ import { canvasConnectionError } from "../src/lib/canvas/canvas-connection-polic
 import { assertCanvasImageReferenceLimit, buildGenerationConfig, canvasImageReferenceLimitError, resolveCanvasGenerationModel } from "../src/lib/canvas/canvas-project-generation";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
 import { groupModelsByDisplayName, inferVideoOperation, modelCompatibilityError, modelGroupReferenceLimits, modelPromptLengthError, resolveCompatibleModel, resolveModelGenerationDefaults, resolveModelVideoBooleanOptions } from "../src/lib/model-selection";
-import { defaultConfig, normalizeModelOptionValue, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
+import { comfyUIWorkflowModel, defaultConfig, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
 
 function policyConfig(): AiConfig {
@@ -53,6 +53,62 @@ function node(id: string, type: CanvasNodeType, generationMode?: "image" | "vide
 }
 
 describe("逻辑模型选择", () => {
+    for (const [mode, type] of [["image", CanvasNodeType.Image], ["video", CanvasNodeType.Video], ["audio", CanvasNodeType.Audio]] as const) {
+        test(`普通 ${mode} 节点使用默认或显式 ComfyUI 模型时通过生成配置校验`, () => {
+            const workflowId = `workflows/${mode}/工作流.json`;
+            const model = comfyUIWorkflowModel(workflowId);
+            const config: AiConfig = {
+                ...defaultConfig,
+                channels: [],
+                [`${mode}Model`]: model,
+                comfyUI: {
+                    ...defaultConfig.comfyUI,
+                    enabled: true,
+                    baseUrl: "https://comfy.example",
+                    workflows: [{ workflowId, title: "工作流", capability: mode, fields: [], workflowJson: {} }],
+                },
+            };
+            const source = node("media", type);
+            for (const explicit of [false, true]) {
+                const generationConfig = buildGenerationConfig(config, {
+                    ...source,
+                    metadata: { model: explicit ? model : undefined, workflowProvider: "model" },
+                }, mode);
+                expect(useConfigStore.getState().isAiConfigReady(generationConfig, generationConfig.model)).toBe(true);
+                expect(generationConfig.taskWorkflowProvider).toBe("comfyui");
+                expect(generationConfig.model).toBe(model);
+                expect(generationConfig.comfyUI.selectedWorkflowId).toBe(workflowId);
+                const disabled = { ...config, comfyUI: { ...config.comfyUI, enabled: false } };
+                const unavailable = buildGenerationConfig(disabled, source, mode);
+                expect(useConfigStore.getState().isAiConfigReady(unavailable, unavailable.model)).toBe(false);
+            }
+        });
+    }
+
+    test("画布选择 ComfyUI 工作流模型后按工作流执行", () => {
+        const model = comfyUIWorkflowModel("video-workflow");
+        const config: AiConfig = {
+            ...defaultConfig,
+            channels: [],
+            comfyUI: {
+                ...defaultConfig.comfyUI,
+                enabled: true,
+                baseUrl: "http://127.0.0.1:8188",
+                workflows: [{ workflowId: "video-workflow", title: "Video workflow", capability: "video", fields: [], workflowJson: {} }],
+            },
+        };
+        const configNode: CanvasNodeData = {
+            ...node("config", CanvasNodeType.Config, "video"),
+            metadata: { generationMode: "video", workflowProvider: "model", model },
+        };
+
+        expect(selectableModelsByCapability(config, "video")).toContain(model);
+        const generationConfig = buildGenerationConfig(config, configNode, "video");
+        expect(generationConfig.taskWorkflowProvider).toBe("comfyui");
+        expect(generationConfig.model).toBe(model);
+        expect(generationConfig.comfyUI.selectedWorkflowId).toBe("video-workflow");
+    });
+
     test("技能上下文展开后按最终视频模型字符上限拒绝提交", () => {
         const config = policyConfig();
         const model = config.videoModels[0]!;

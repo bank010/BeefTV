@@ -5,10 +5,10 @@ import { useEffect, useRef } from "react";
 import { assistantModelOptions, normalizeAssistantModel } from "@/lib/assistant-model";
 import { groupModelsByDisplayName } from "@/lib/model-selection";
 import {
-    filterModelsByCapability,
     isBuiltinBeefAPIChannel,
     modelDisplayName,
     resolveModelChannel,
+    selectableModelsByCapability,
     type AiConfig,
     type ModelCapability,
 } from "@/stores/use-config-store";
@@ -54,7 +54,7 @@ export function ModelDefaultGrid({ config, onChange, onOpenChannels }: { config:
         <div ref={rootRef} className="model-default-settings">
             {rows.map((row) => {
                 const isAssistant = row.kind === "assistant";
-                const models = isAssistant ? assistantOptions : filterModelsByCapability(config.models, row.capability, config.channels);
+                const models = isAssistant ? assistantOptions : selectableModelsByCapability(config, row.capability);
                 const selected = isAssistant ? assistantModel : config[row.modelKey];
                 const groups = !isAssistant && row.capability === "video"
                     ? groupModelsByDisplayName(config, models)

@@ -24,6 +24,8 @@ export class CanvasGenerationMaterializationError extends Error {
 }
 
 export class CanvasGenerationTargetSaveError extends Error {
+    readonly code = "canvas_save_failed";
+
     constructor(cause?: unknown, message = "画布尚未保存，未开始生成。请先处理画布保存提示后重试。") {
         super(message, { cause });
         this.name = "CanvasGenerationTargetSaveError";

@@ -12,6 +12,8 @@ import (
 	"net/textproto"
 	"net/url"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -80,6 +82,9 @@ func (c *Client) runComfyUI(ctx context.Context, input Input) (map[string]interf
 			return nil, err
 		}
 	}
+	if err := validateWorkflowMediaInputs(fields, input); err != nil {
+		return nil, err
+	}
 	files := make(map[string]string)
 	for _, media := range append(append(append([]Media{}, input.ReferenceImages...), input.ReferenceVideos...), input.ReferenceAudios...) {
 		name, uploadErr := c.uploadComfyMedia(ctx, root, input.Config, media)
@@ -119,8 +124,8 @@ func (c *Client) runComfyUI(ctx context.Context, input Input) (map[string]interf
 	}
 	promptID := strings.TrimSpace(stringValue(submitted["prompt_id"]))
 	if promptID == "" {
-		if nodeErrors, ok := submitted["node_errors"]; ok && len(fmt.Sprint(nodeErrors)) > 2 {
-			return nil, fmt.Errorf("ComfyUI 拒绝工作流：%s", fmt.Sprint(nodeErrors))
+		if detail := comfyNodeValidationSummary(submitted["node_errors"]); detail != "" {
+			return nil, fmt.Errorf("ComfyUI 工作流节点校验失败：%s", detail)
 		}
 		return nil, CreateUncertain{Err: errors.New("ComfyUI 未返回 prompt_id")}
 	}
@@ -128,7 +133,68 @@ func (c *Client) runComfyUI(ctx context.Context, input Input) (map[string]interf
 		c.Progress.Log(ctx, "error", "ComfyUI 请求状态保存失败", promptID+"："+err.Error())
 		return nil, AcceptedNotRecorded{RequestID: promptID, Stage: "submitted", Err: err}
 	}
+	// HTTP 200 and prompt_id can accept only the valid output branches. Keep the
+	// receipt before reporting validation errors so retries cannot lose that job.
+	if detail := comfyNodeValidationSummary(submitted["node_errors"]); detail != "" {
+		return nil, fmt.Errorf("ComfyUI 部分输出节点校验失败，已保留上游任务 ID；请修正工作流后再生成：%s", detail)
+	}
 	return c.pollComfyUI(ctx, input.Config, root, promptID, input.Mode)
+}
+
+var comfyDiagnosticIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,80}$`)
+
+func comfyNodeValidationSummary(value any) string {
+	nodes, ok := value.(map[string]any)
+	if !ok || len(nodes) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(nodes))
+	for id := range nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var details []string
+	for _, id := range ids {
+		if len(details) == 6 {
+			break
+		}
+		node, _ := nodes[id].(map[string]any)
+		label := "节点"
+		if comfyDiagnosticIdentifier.MatchString(id) {
+			label += " " + id
+		}
+		if class := workflowScalarString(node["class_type"]); comfyDiagnosticIdentifier.MatchString(class) {
+			label += " (" + class + ")"
+		}
+		var reasons []string
+		items, _ := node["errors"].([]any)
+		for _, item := range items {
+			if len(reasons) == 3 {
+				break
+			}
+			entry, _ := item.(map[string]any)
+			reason := "输入校验失败"
+			switch workflowScalarString(entry["type"]) {
+			case "value_not_in_list":
+				reason = "参数不在允许选项中"
+			case "required_input_missing":
+				reason = "缺少必需输入"
+			case "invalid_input_type", "return_type_mismatch":
+				reason = "输入类型不匹配"
+			}
+			extra, _ := entry["extra_info"].(map[string]any)
+			if field := workflowScalarString(extra["input_name"]); comfyDiagnosticIdentifier.MatchString(field) {
+				reason = field + "：" + reason
+			}
+			// Raw message/details/extra_info may echo prompts, credentials or paths.
+			reasons = append(reasons, reason)
+		}
+		if len(reasons) > 0 {
+			label += " " + strings.Join(reasons, "，")
+		}
+		details = append(details, label)
+	}
+	return strings.Join(details, "；")
 }
 
 func comfyOutboundHeaders(config Config) []outbound.OutboundHeader {
@@ -396,7 +462,7 @@ func (c *Client) queryComfyHistory(ctx context.Context, config Config, root, pro
 		if status["completed"] == true || statusText == "success" || statusText == "succeeded" {
 			outputs := comfyHistoryFiles(entry["outputs"])
 			if len(outputs) == 0 {
-				return nil, "", errors.New("ComfyUI 任务完成但没有返回产物")
+				return nil, "failed", errors.New("ComfyUI 已执行完成，但没有返回图片、视频或音频文件；请检查媒体输出节点是否通过校验并连接到生成链路")
 			}
 			return outputs, "succeeded", nil
 		}

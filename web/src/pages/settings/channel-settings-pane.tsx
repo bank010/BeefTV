@@ -1,6 +1,7 @@
 import { Alert, App, Button, Form, Input, Popconfirm, Segmented, Select } from "antd";
 import { Bug, Pencil, Plus, RefreshCw, Trash2, Workflow } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useNavigate } from "react-router";
 
 import { ModelEditorModal } from "@/components/model-editor-modal";
 import { ChannelHeadersEditor, validateChannelHeaders } from "@/components/channel-headers-editor";
@@ -8,9 +9,10 @@ import { WorkspaceState } from "@/components/layout/workspace-state";
 import { PageHeader } from "@/components/layout/workspace-page";
 import { mergeFetchedChannelModelProfiles } from "@/lib/channel-model-catalog";
 import { seedancePortraitModel } from "@/lib/seedance-portrait";
+import { comfyUIModelWorkflows } from "@/lib/comfyui-image-routing";
 import { ensureModelProfilesWithUiDefaults } from "@/lib/model-protocols";
 import { fetchChannelModels, type ChannelModelFetchResult } from "@/services/api/image";
-import { channelHasGenerationCredential, channelHasManagedBeefAPICredential, createModelChannel, defaultBaseUrlForApiFormat, filterModelsByCapability, isBuiltinBeefAPIChannel, modelOptionsFromChannels, normalizeConfigSnapshot, useConfigStore, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { channelHasGenerationCredential, channelHasManagedBeefAPICredential, comfyUIWorkflowModel, createModelChannel, defaultBaseUrlForApiFormat, filterModelsByCapability, isBuiltinBeefAPIChannel, modelOptionsFromChannels, normalizeConfigSnapshot, useConfigStore, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { ChannelModelSettings } from "./channel-model-settings";
 import { ModelServiceEditor } from "./model-service-editor";
 import { currentModelConnectionReceipt, useModelConnectionTests } from "@/stores/use-model-connection-tests";
@@ -35,6 +37,7 @@ type ChannelSettingsPaneProps = {
 
 export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels, onOpenRunningHub }: ChannelSettingsPaneProps) {
     const { message } = App.useApp();
+    const navigate = useNavigate();
     const config = useConfigStore((state) => state.config);
     const replaceConfig = useConfigStore((state) => state.replaceConfig);
     const localMode = workspaceCapabilities().local;
@@ -138,6 +141,7 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels, onOpenRun
     };
     const userChannels = config.channels.filter((channel) => channel.scope !== "system");
     const runningHubReady = Boolean(config.runningHub.enabled && config.runningHub.baseUrl.trim() && config.runningHub.apiKey.trim() && config.runningHub.workflowId.trim());
+    const comfyReady = Boolean(config.comfyUI.enabled && config.comfyUI.baseUrl.trim() && config.comfyUI.workflows.length);
 
     const updateChannels = (channels: ModelChannel[], baseConfig = config) => {
         replaceConfig(withChannels(baseConfig, channels));
@@ -340,26 +344,32 @@ export function ChannelSettingsPane({ onOpenDiagnostics, onOpenModels, onOpenRun
                     </div>
                 )}
             />
-            {onOpenRunningHub ? (
-                <section className="settings-section mb-3">
-                    <div className="mb-3">
-                        <h3 className="text-sm font-semibold">个人工作流渠道</h3>
-                        <p className="mt-1 text-xs text-foreground/55">RunningHub 使用独立的云端工作流参数与执行通道。</p>
-                    </div>
-                    <div className="grid gap-2 lg:grid-cols-2">
-                        {onOpenRunningHub ? (
-                            <WorkflowChannelEntry
-                                icon={<Workflow className="size-4" />}
-                                title="RunningHub"
-                                description="云端工作流和 RunningHub App"
-                                status={runningHubReady ? `${config.runningHub.workflows.length} 个工作流已配置` : config.runningHub.enabled ? "待完成连接和工作流配置" : "未启用"}
-                                ready={runningHubReady}
-                                onOpen={onOpenRunningHub}
-                            />
-                        ) : null}
-                    </div>
-                </section>
-            ) : null}
+            <section className="settings-section mb-3">
+                <div className="mb-3">
+                    <h3 className="text-sm font-semibold">个人工作流渠道</h3>
+                    <p className="mt-1 text-xs text-foreground/55">工作流渠道使用独立的参数与执行通道，不走上面的模型渠道拉取。</p>
+                </div>
+                <div className="grid gap-2 lg:grid-cols-2">
+                    <WorkflowChannelEntry
+                        icon={<Workflow className="size-4" />}
+                        title="ComfyUI"
+                        description="本地/自建 ComfyUI 工作流，按模型选择执行"
+                        status={comfyReady ? `${config.comfyUI.workflows.length} 个工作流已配置` : config.comfyUI.enabled ? "待完成连接和工作流配置" : "未启用"}
+                        ready={comfyReady}
+                        onOpen={() => navigate("/settings/comfyui")}
+                    />
+                    {onOpenRunningHub ? (
+                        <WorkflowChannelEntry
+                            icon={<Workflow className="size-4" />}
+                            title="RunningHub"
+                            description="云端工作流和 RunningHub App"
+                            status={runningHubReady ? `${config.runningHub.workflows.length} 个工作流已配置` : config.runningHub.enabled ? "待完成连接和工作流配置" : "未启用"}
+                            ready={runningHubReady}
+                            onOpen={onOpenRunningHub}
+                        />
+                    ) : null}
+                </div>
+            </section>
             {userChannels.length ? (
                 <div className="settings-channel-list space-y-2">
                     {userChannels.map((channel) => {
@@ -780,10 +790,12 @@ export function modelConfigChannelPresentation(channel: ModelChannel) {
 
 export function withChannels(config: AiConfig, channels: ModelChannel[]): AiConfig {
     const models = modelOptionsFromChannels(channels);
-    const imageModels = filterModelsByCapability(models, "image", channels);
-    const videoModels = filterModelsByCapability(models, "video", channels);
+    const comfyWorkflows = config.comfyUI.enabled ? comfyUIModelWorkflows(config.comfyUI.workflows) : [];
+    const comfyModels = (capability: string) => comfyWorkflows.filter((workflow) => workflow.capability === capability).map((workflow) => comfyUIWorkflowModel(workflow.workflowId));
+    const imageModels = [...filterModelsByCapability(models, "image", channels), ...comfyModels("image")];
+    const videoModels = [...filterModelsByCapability(models, "video", channels), ...comfyModels("video")];
     const textModels = filterModelsByCapability(models, "text", channels);
-    const audioModels = filterModelsByCapability(models, "audio", channels);
+    const audioModels = [...filterModelsByCapability(models, "audio", channels), ...comfyModels("audio")];
     return {
         ...config,
         channels,

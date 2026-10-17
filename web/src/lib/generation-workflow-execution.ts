@@ -1,4 +1,6 @@
-import { normalizeRunningHubCapability, type AiConfig, type RunningHubCapability, type RunningHubWorkflowKind, type WorkflowFieldMapping } from "@/stores/use-config-store";
+import { comfyUIWorkflowForModel, normalizeRunningHubCapability, type AiConfig, type RunningHubCapability, type RunningHubWorkflowKind, type WorkflowFieldMapping } from "@/stores/use-config-store";
+import { comfyUIImageRoutingError, comfyUIWorkflowForInput } from "@/lib/comfyui-image-routing";
+import { workflowMediaInputLimit } from "@/lib/model-capabilities";
 import { workflowProviderPluginEnabled } from "@/lib/plugins/builtin/workflows";
 import { usePluginStore } from "@/stores/use-plugin-store";
 
@@ -19,8 +21,9 @@ export type GenerationWorkflowExecution = {
 };
 
 // 画布样式计划、任务记录和后端协议必须共用同一个工作流选择结果，避免再次回退到普通模型。
-export function resolveGenerationWorkflowExecution(config: AiConfig, mode: GenerationWorkflowMode): GenerationWorkflowExecution | null {
-    const workflowProvider = mode === "text" ? "model" : config.taskWorkflowProvider || "model";
+export function resolveGenerationWorkflowExecution(config: AiConfig, mode: GenerationWorkflowMode, imageCount = 0): GenerationWorkflowExecution | null {
+    const modelWorkflow = comfyUIWorkflowForModel(config, config.model);
+    const workflowProvider = mode === "text" ? "model" : modelWorkflow ? "comfyui" : config.taskWorkflowProvider || "model";
     if (workflowProvider === "model") return null;
 
     if (workflowProvider === "runninghub") {
@@ -58,12 +61,22 @@ export function resolveGenerationWorkflowExecution(config: AiConfig, mode: Gener
 	if (workflowProvider === "comfyui") {
 		if (!workflowProviderPluginEnabled(usePluginStore.getState().runtimeStatuses, "comfyui")) throw new Error("ComfyUI 工作流插件未启用");
 		const comfyUI = config.comfyUI;
-		const workflowId = comfyUI.selectedWorkflowId.trim();
-		if (!comfyUI.enabled || !comfyUI.baseUrl.trim() || !workflowId) throw new Error("ComfyUI 工作流配置不完整，请填写 Base URL 并选择已保存工作流");
-		const workflow = comfyUI.workflows.find((item) => item.workflowId.trim() === workflowId);
+		const selectedId = modelWorkflow?.workflowId || comfyUI.selectedWorkflowId.trim();
+		if (!comfyUI.enabled || !comfyUI.baseUrl.trim() || !selectedId) throw new Error("ComfyUI 工作流配置不完整，请填写 Base URL 并选择已保存工作流");
+        if (mode === "image") {
+            const routingError = comfyUIImageRoutingError(comfyUI.workflows);
+            if (routingError) throw new Error(routingError);
+        }
+		const workflow = comfyUIWorkflowForInput(comfyUI.workflows, selectedId, mode === "image" ? imageCount : 0);
 		if (!workflow) throw new Error("当前 ComfyUI 工作流不存在，请重新选择已保存工作流");
+		const workflowId = workflow.workflowId;
 		const capability = normalizeRunningHubCapability(workflow.capability);
 		assertWorkflowCapability("ComfyUI", capability, mode);
+        if (mode === "image" && imageCount > 0) {
+            const maxImages = workflowMediaInputLimit(workflow.fields, ["referenceimage", "image", "referenceimages"]);
+            if (!maxImages) throw new Error("当前图片工作流没有参考图输入，请在 ComfyUI 设置中关联有图工作流");
+            if (imageCount > maxImages) throw new Error(`当前图片工作流最多支持 ${maxImages} 张参考图，实际传入 ${imageCount} 张`);
+        }
 		const name = workflow.title.trim() || workflowId;
 		return {
 			provider: "comfyui",

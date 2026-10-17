@@ -17,7 +17,7 @@ description: 画布、任务中心和批量生成如何把上游失败变成可�
 | `web/src/lib/generation-error.ts` | 前端唯一归类器。覆盖同步渠道错误、轮询、下载，以及已经落库的任务文案。 |
 | 画布 / 任务中心 / 批量生成 | 只展示归类后的原因、下一步，以及可复制的排查信息。 |
 
-两端类目表必须保持同名。`fixtures/generation-error-codes.json` 列出已覆盖的 BeefAPI 错误码及预期分类，Go 和前端测试共同验证。新增错误码应同步更新这个覆盖合同；无法确认原因的内部错误明确归入 `unknown`。
+两端共享的上游错误类目必须保持同名。`fixtures/generation-error-codes.json` 列出已覆盖的 BeefAPI 错误码及预期分类，Go 和前端测试共同验证。新增上游错误码应同步更新这个覆盖合同；无法确认原因的内部错误明确归入 `unknown`。仅发生在浏览器生成前保存阶段的错误由前端单独归类。
 
 审核错误对照 [Ark 官方错误码表](https://docs.volcengine.com/docs/ark/error-codes?lang=zh) 区分输入与输出、文字与图片/视频/音频。`SensitiveContentDetected` 本身不代表真人；该错误族的 `PolicyViolation` 表示版权限制，只有输入图片/视频的 `PrivacyInformation` 才提示真人形象，`DeepFake` 提示伪造内容审核。`fixtures/moderation-errors.json` 由前后端共享，并验证原始错误、通用包装码、纯消息和任务落库回读。文案指出上游审核结果，不把它当成已证实的侵权事实。
 
@@ -46,6 +46,7 @@ description: 画布、任务中心和批量生成如何把上游失败变成可�
 | `moderation_output` | 输出审核 | 调整输入后新建 | 原任务否 |
 | `invalid_params` | 400/422、invalid_request、尺寸/格式 | 检查模型与参数 | 否 |
 | `local_storage` | 500 + `reason=local_storage_failed`，本地入队前读写失败 | 尚未提交生成；重启应用，仍失败则更新并联系支持 | 否 |
+| `canvas_save_failed` | 生成前保存目标画布失败（前端） | 查看保存失败详情，处理保存提示后重新生成 | 否 |
 | `context_too_long` | context_length、长度超出 | 缩短输入 | 否 |
 | `input_inaccessible` | url error、素材无法读取 | 检查素材 | 否 |
 | `input_too_large` | 413、too large | 压缩或更换素材 | 否 |
@@ -78,6 +79,10 @@ VOD 错误按创建、查询和任务结果区分。同名 `FailedOperation` 在
 仓库里已经出现过的码会映射到上表；未收录的码落到 `unknown`，不会把原文 JSON/HTML/密钥/签名 URL/提示词回显给使用者。
 
 ## 排查信息
+
+ComfyUI 的 `/prompt` 即使返回 HTTP 200 和 `prompt_id`，也可能只接受部分输出分支。非空 `node_errors` 会报告节点与输入校验原因；先保存已接单的任务 ID，再报告失败，不自动重交。诊断不包含上游回显的参数值、提示词或路径。历史任务只有文字预览输出时，不视为图片、视频或音频生成成功，应检查媒体输出链路。修复后的提示不能补回旧任务已经丢失的提交校验详情。
+
+生成前保存失败与生成完成后的画布回写失败分开记录。`canvas_save_failed` 保留底层保存错误的脱敏摘要、可用的 HTTP 状态和请求 ID，来源标记为“生成前保存画布”。此时尚未提交生成任务，不显示“生成结果已保留”或“继续取回”；修复保存问题后可由用户重新生成。历史记录若只保留了泛化提示，无法补回已经丢失的底层原因。
 
 `request_not_sent` 必须有实际连接跟踪证据；单凭旧日志中的 TLS 超时文本不能把 `submission_unknown` 改成可重试。连接曾经成功、但响应丢失或后续重定向失败时，仍保留原任务保护。
 

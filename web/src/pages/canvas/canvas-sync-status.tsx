@@ -24,7 +24,7 @@ export function CanvasSyncStatus({ projectId, onLoadLatest, onOpenVersions }: { 
     const conflict = phase === "conflict";
     const failed = phase === "error" || conflict || !phase;
     const saving = phase === "pending" || phase === "saving" || phase === "uploading";
-    const label = localOnly ? "已保存在本地" : conflict ? "版本冲突 · 未同步" : !phase ? "尚未同步" : failed ? "云端未保存" : saving ? "正在保存" : "已保存";
+    const label = conflict ? "版本冲突 · 未保存" : !phase ? "尚未确认保存" : failed ? (localOnly ? "本机服务未保存" : "云端未保存") : saving ? "正在保存" : localOnly ? "已保存在本地" : "已保存";
     const run = async (operation: () => Promise<unknown>) => {
         setBusy(true);
         try {
@@ -65,9 +65,9 @@ export function CanvasSyncStatus({ projectId, onLoadLatest, onOpenVersions }: { 
                 content={
                     <div className="max-w-80 space-y-3" data-canvas-no-zoom>
                         <p role="status" className="text-sm">
-                            {localOnly ? "画布已保存在本机。" : progress?.message || (phase === "done" ? "画布已同步到云端" : "尚未确认云端保存，请保留本地内容")}
+                            {progress?.message || (phase === "done" ? (localOnly ? "画布已保存在本机。" : "画布已同步到云端") : "尚未确认保存，请保留当前内容")}
                         </p>
-                        {!localOnly && conflict ? <p className="text-xs text-muted-foreground">此画布的自动提交已暂停。加载最新版前会保留本地草稿，可下载后从画布列表导入为副本。</p> : null}
+                        {conflict ? <p className="text-xs text-muted-foreground">此画布的自动提交已暂停。请先下载当前内容保留副本，再处理版本冲突；下载的内容可从画布列表导入为新画布。</p> : null}
                         <div className="flex flex-wrap gap-2">
                             {!localOnly ? <Button size="small" loading={busy} onClick={() => void run(onLoadLatest)}>加载云端最新版本</Button> : null}
                             <Button
@@ -103,9 +103,9 @@ export function CanvasSyncStatus({ projectId, onLoadLatest, onOpenVersions }: { 
                 <Button
                     type="text"
                     size="small"
-                    danger={!localOnly && failed}
+                    danger={failed}
                     aria-label={`画布保存状态：${label}`}
-                    icon={localOnly ? <CheckCircle2 className="size-3.5 text-emerald-500" /> : saving ? <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" /> : failed ? <CloudOff className="size-3.5" /> : <CloudCheck className="size-3.5" />}
+                    icon={saving ? <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" /> : failed ? <CloudOff className="size-3.5" /> : localOnly ? <CheckCircle2 className="size-3.5 text-emerald-500" /> : <CloudCheck className="size-3.5" />}
                 >
                     <span className="canvas-sync-status-label text-xs">{label}</span>
                 </Button>

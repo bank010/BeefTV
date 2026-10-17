@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 import { resolveHeavyMediaEnabled } from "./media-build-mode";
+import { devOwnerProxy } from "./dev-owner-proxy";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const appVersion = process.env.CANVAS_BUILD_VERSION?.trim() || readFileSync(resolve(webDir, "../VERSION"), "utf8").trim();
@@ -33,7 +34,7 @@ function pruneOptionalMediaPlugin() {
 }
 
 export default defineConfig({
-    plugins: [react(), pruneOptionalMediaPlugin()],
+    plugins: [react(), devOwnerProxy(apiProxyTarget, process.env.BEEFTV_DEV_OWNER_TOKEN_FILE), pruneOptionalMediaPlugin()],
     define: {
         __APP_VERSION__: JSON.stringify(appVersion),
         __BEEFTV_HEAVY_MEDIA_ENABLED__: JSON.stringify(heavyMediaEnabled),

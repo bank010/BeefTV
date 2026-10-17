@@ -189,10 +189,13 @@ func (s *ProviderConfig) saveLocalModelConfig(body []byte, existingDocument Prov
 	if err != nil {
 		return err
 	}
-	if existingDocument.Config != nil {
-		if err := preserveSecrets(incoming, existingDocument.Config); err != nil {
-			return err
-		}
+	channels, _ := incoming["channels"].([]any)
+	identity := inspectArrayIdentity(channels)
+	if identity.invalid || identity.duplicate {
+		return ErrInvalidProviderIdentity
+	}
+	if err := preserveSecrets(incoming, existingDocument.Config); err != nil {
+		return err
 	}
 	document := newProviderState(incoming, existingDocument.Revision+1)
 	document.AssistantDefaultAuthorization = existingDocument.AssistantDefaultAuthorization
@@ -564,6 +567,11 @@ func preserveSecrets(incoming, existing any) error {
 }
 
 func preserveSecretList(next, previous []any) error {
+	// Workflow graphs also contain IDs, often numeric. Array identity is only
+	// needed here when restoring credentials; channels are validated at entry.
+	if !hasRedactedSecrets(next) {
+		return nil
+	}
 	incoming := inspectArrayIdentity(next)
 	if incoming.invalid || incoming.duplicate {
 		return ErrInvalidProviderIdentity
@@ -596,6 +604,33 @@ func preserveSecretList(next, previous []any) error {
 		}
 	}
 	return nil
+}
+
+func hasRedactedSecrets(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if key == "headers" || key == "env" {
+				entries, _ := child.([]any)
+				for _, entry := range entries {
+					if field, ok := entry.(map[string]any); ok && isRedactedMarker(field["value"]) {
+						return true
+					}
+				}
+				continue
+			}
+			if isSecretKey(key) && isRedactedMarker(child) || hasRedactedSecrets(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasRedactedSecrets(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type arrayIdentity struct {

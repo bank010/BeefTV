@@ -4,12 +4,50 @@ import { canvasGenerationFailureMetadata, canvasGenerationRetryBlocked, canvasTa
 import { taskAttentionReason, taskRetryBlocked } from "../src/pages/tasks/task-shared";
 import { resolveMetadataReferences, generationTaskMetadata, resetGenerationTaskMetadata } from "../src/lib/canvas/canvas-project-generation";
 import { ApiError } from "../src/services/api/request";
+import { CanvasGenerationTargetSaveError } from "../src/services/canvas-generation-errors";
+import { CanvasBackendSubmitPausedError } from "../src/services/canvas-revision-conflict";
 import { explainGenerationError, formatGenerationDiagnostics } from "../src/lib/generation-error";
 import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
 import type { GenerationTask } from "../src/services/api/task-center";
 import moderationFixtures from "../../fixtures/moderation-errors.json";
 
 const rejection = { code: "content_policy_violation", message: "opaque" };
+
+test("pre-generation save diagnostics retain the cause and never offer result recovery", () => {
+    for (const cause of [
+        new ApiError("画布版本冲突，请处理外部改动", { status: 409, reason: "stale_revision", requestId: "req-save-123" }),
+        new ApiError("缺少可信身份", { status: 403, reason: "forbidden", requestId: "req-save-123" }),
+        new CanvasBackendSubmitPausedError(),
+    ]) {
+        const failure = canvasGenerationFailureMetadata(new CanvasGenerationTargetSaveError(cause), { mode: "image", prompt: "draw" });
+        expect(failure.generationErrorCode).toBe("canvas_save_failed");
+        expect(failure.generationErrorSummary).toBe(cause.message);
+        expect(failure.resourceReloadAvailable).toBe(false);
+        expect(failure.errorDetails).toContain("未开始生成");
+        expect(failure.errorDetails).not.toContain("继续取回");
+        expect(canvasGenerationRetryBlocked(failure, { mode: "image", prompt: "draw" })).toBe(false);
+        expect(canvasGenerationRetryBlocked(failure)).toBe(true);
+        const restored = JSON.parse(JSON.stringify(failure));
+        const copied = formatGenerationDiagnostics(explainGenerationError({ code: restored.generationErrorCode, message: restored.errorDetails }), { failureDiagnostics: restored.taskFailureDiagnostics });
+        expect(copied).toContain("错误来源：生成前保存画布");
+        expect(copied).toContain(cause.message);
+        expect(copied).not.toContain("生成结果已保留");
+        if (cause instanceof ApiError) {
+            expect(copied).toContain(`HTTP 状态：${cause.status}`);
+            expect(copied).toContain("请求 ID：req-save-123");
+        }
+    }
+});
+
+test("save failure metadata sanitizes the underlying error before persisting it", () => {
+    const cause = new ApiError("保存失败 /Users/PRIVATE/workspace/file: https://example.test/?token=PRIVATE authorization: Bearer PRIVATE", { status: 403, requestId: "secret-PRIVATE" });
+    const failure = canvasGenerationFailureMetadata(new CanvasGenerationTargetSaveError(cause), { prompt: "draw" });
+    expect(failure.generationErrorSummary).toContain("保存失败");
+    expect(JSON.stringify(failure)).not.toContain("PRIVATE");
+    expect(JSON.stringify(failure)).not.toContain("example.test");
+    const deleted = canvasGenerationFailureMetadata(new CanvasGenerationTargetSaveError(undefined, "生成节点已不存在，未开始生成"), { prompt: "draw" });
+    expect(deleted.generationErrorSummary).toContain("生成节点已不存在");
+});
 
 test("confirmed unsent submission remains retryable after restoring the task", () => {
     const task = { id: "unsent-task", type: "canvas_video", status: "failed", stage: "任务失败", errorCode: "request_not_sent", error: "未能连接服务，本次请求尚未提交。请检查网络或代理后重试。" } as GenerationTask;

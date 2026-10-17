@@ -45,6 +45,7 @@ const aspectOptions: AspectOption[] = [
 
 type ImageSettingsPanelProps = {
     config: AiConfig;
+    imageCount?: number;
     onConfigChange: (key: "quality" | "size" | "transparentBackground" | "count", value: string) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
@@ -57,8 +58,8 @@ type ImageSettingsPanelProps = {
     quickCount?: number;
 };
 
-export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, showQuality = true, showTransparent = true, showSize = true, showCount = true, className = "w-[304px] space-y-3 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 3 }: ImageSettingsPanelProps) {
-    const profile = mergedImageCapabilityConfig(config, config.model || config.imageModel);
+export function ImageSettingsPanel({ config, imageCount, onConfigChange, theme, showTitle = true, showQuality = true, showTransparent = true, showSize = true, showCount = true, className = "w-[304px] space-y-3 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 3 }: ImageSettingsPanelProps) {
+    const profile = mergedImageCapabilityConfig(config, config.model || config.imageModel, imageCount);
     const normalized = normalizeImageValue(profile, config);
     const quality = normalized.quality;
     const transparentBackground = normalized.transparentBackground === "true";

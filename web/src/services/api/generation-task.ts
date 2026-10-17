@@ -6,11 +6,13 @@ import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from
 import { createGenerationTask, findGenerationTaskByOperation, waitForGenerationTask, type GenerationTask, type CreateTaskInput } from "@/services/api/task-center";
 import { submitGenerationCommand } from "./generation-submission";
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
+import { comfyUIOutputDimensions } from "@/lib/comfyui-output-size";
+import { parseImageDimensions, resolveRequestSize } from "./image-validation";
 import { grokImagePromptLimitError } from "@/lib/grok-image-prompt-limit";
 import { resolveGenerationWorkflowExecution, type GenerationWorkflowExecution } from "@/lib/generation-workflow-execution";
 import { isArkPlanBaseUrl } from "@/lib/seedance-video";
 import { portraitGenerationError, resolveVideoOperation } from "@/lib/model-selection";
-import { logicalModelIDForConfig, modelOptionName, resolveModelChannel, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
+import { comfyUIWorkflowModel, logicalModelIDForConfig, modelOptionName, resolveModelChannel, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { buildBackendToolRequests, type ResponseFunctionTool, type ResponseInputMessage, type ToolChoice, type ToolResponseResult } from "@/services/api/image";
@@ -349,15 +351,19 @@ function assertPreparedVideoCapability(mode: BackendGenerationMode, config: AiCo
     if (mode !== "video") return;
     const profile = modelCapabilityConfigFor(config, config.model).video;
     if (!profile) return;
+    const workflow = resolveGenerationWorkflowExecution(config, mode);
+    // No duration choices in a ComfyUI profile means the graph controls duration,
+    // not that every duration is forbidden. Explicit workflow limits still apply.
+    const validateDuration = workflow?.provider !== "comfyui" || profile.duration.selection !== "enum" || Boolean(profile.duration.values?.length);
     // Owned workflow resources can carry only a key; the backend reads their
     // authoritative metadata and validates it before contacting the provider.
-    assertVideoCapability(profile, prepared.referenceImages, prepared.referenceVideos, prepared.referenceAudios, config.videoSeconds, { deferResourceMetadataToBackend: true });
+    assertVideoCapability(profile, prepared.referenceImages, prepared.referenceVideos, prepared.referenceAudios, config.videoSeconds, { deferResourceMetadataToBackend: true, validateDuration });
 }
 
 function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences): CreateTaskInput {
     const { projectId, mode, prompt, config, metadata } = options;
     const videoOperation = generationOperation(options);
-    const workflow = resolveGenerationWorkflowExecution(config, mode);
+    const workflow = resolveGenerationWorkflowExecution(config, mode, prepared.referenceImages.length);
     const logicalModelId = workflow ? "" : logicalModelIDForConfig(config);
     return {
         ...(projectId ? { projectId } : {}),
@@ -371,7 +377,7 @@ function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepa
             mode,
             prompt,
             ...(workflow ? { execution: workflowPublicExecution(workflow) } : {}),
-            config: backendProviderConfig(config, mode),
+            config: workflow ? workflowProviderConfig(config, resolveModelRequestConfig(config, config.model), workflow, prepared.referenceImages.length) : backendProviderConfig(config, mode),
             capabilityOptions: logicalModelId ? logicalCapabilityOptions(config, mode) : undefined,
             textHistory: options.textHistory,
             ...(mode === "text" ? { textOptions: { stream: options.streamText !== false, thinking: options.enableThinking === true } } : {}),
@@ -463,10 +469,10 @@ function backendMediaReference<T extends ReferenceVideo | ReferenceAudio>(media:
     } as T;
 }
 
-export function backendProviderConfig(config: AiConfig, mode: BackendGenerationMode = "image") {
+export function backendProviderConfig(config: AiConfig, mode: BackendGenerationMode = "image", imageCount = 0) {
     const requestConfig = resolveModelRequestConfig(config, config.model);
-    const workflow = resolveGenerationWorkflowExecution(config, mode);
-    if (workflow) return workflowProviderConfig(config, requestConfig, workflow);
+    const workflow = resolveGenerationWorkflowExecution(config, mode, imageCount);
+    if (workflow) return workflowProviderConfig(config, requestConfig, workflow, imageCount);
     const generationOptions = {
         size: config.size,
         quality: omittedImageQuality(config.quality, requestConfig),
@@ -504,9 +510,22 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
     };
 }
 
-function workflowProviderConfig(config: AiConfig, requestConfig: ReturnType<typeof resolveModelRequestConfig>, workflow: GenerationWorkflowExecution) {
+function workflowProviderConfig(config: AiConfig, requestConfig: ReturnType<typeof resolveModelRequestConfig>, workflow: GenerationWorkflowExecution, imageCount: number) {
     const runningHubActive = workflow.provider === "runninghub";
     const comfyUIActive = workflow.provider === "comfyui";
+    const outputDimensions = comfyUIActive && workflow.capability === "image" ? comfyUIOutputDimensions(workflow.workflowJson, workflow.workflowFields) : undefined;
+    let size = config.size;
+    let fields = workflow.workflowFields;
+    if (outputDimensions) {
+        size = !size || size === "auto" || size === "0" ? outputDimensions.size : size;
+        if (size !== outputDimensions.size) size = resolveRequestSize(undefined, size)!;
+        const dimensions = parseImageDimensions(size)!;
+        // The picker owns only this proven latent input pair, never an encoder's resolution or a reference resize.
+        fields = [...fields.filter((field) => field.nodeId !== outputDimensions.nodeId || !["width", "height"].includes(field.fieldName))];
+        for (const name of ["width", "height"] as const) {
+            fields.push({ nodeId: outputDimensions.nodeId, classType: outputDimensions.classType, fieldName: name, fieldType: "NUMBER", fieldValue: dimensions[name], enabled: true, source: "", sourceAutomatic: false, safeToOverride: true });
+        }
+    }
     return {
         channelId: "",
         apiFormat: requestConfig.apiFormat,
@@ -517,7 +536,7 @@ function workflowProviderConfig(config: AiConfig, requestConfig: ReturnType<type
         secretKey: "",
         headers: [],
         model: workflow.providerModel,
-        size: config.size,
+        size,
         quality: config.quality,
         transparentBackground: config.transparentBackground,
         count: config.count,
@@ -535,11 +554,11 @@ function workflowProviderConfig(config: AiConfig, requestConfig: ReturnType<type
         workflowId: workflow.workflowId,
         webappId: workflow.webappId,
         workflowJson: workflow.workflowJson,
-        workflowFields: workflow.workflowFields,
+        workflowFields: fields,
         runningHubUseWallet: false,
         runningHubWalletApiKey: "",
         runningHubUploadApiKey: runningHubActive ? config.runningHub.uploadApiKey || "" : "",
-        capabilityConfig: modelCapabilityConfigFor(config, requestConfig.model),
+        capabilityConfig: modelCapabilityConfigFor(config, comfyUIActive ? comfyUIWorkflowModel(workflow.workflowId) : requestConfig.model, imageCount),
         videoCapabilitiesVersion: resolveModelChannel(config, config.model).modelProfiles?.find((item) => item.model === requestConfig.model)?.videoCapabilitiesVersion,
         systemPrompt: config.systemPrompt,
     };

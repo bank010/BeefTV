@@ -161,7 +161,13 @@ export default function CreatePage() {
 				: {},
 	}), [attachments, config.transparentBackground, config.videoGenerateAudio, config.videoWatermark, count, hasPrompt, mode, quality, ratio, seconds, videoQuality]);
     const selectedModel = resolveCompatibleModel(config, preferredModel, modelRequirements) || preferredModel;
-    const imageProfile = useMemo(() => modelCapabilityConfigFor(config, selectedModel).image!, [config, selectedModel]);
+    const imageInputCount = modelRequirements.input?.imageCount || 0;
+    const imageProfile = useMemo(() => {
+        const profile = modelCapabilityConfigFor(config, selectedModel, imageInputCount).image!;
+        // Keep the paired model's upload capacity available before its first reference is added.
+        const references = modelCapabilityConfigFor(config, selectedModel).image!.references;
+        return { ...profile, references };
+    }, [config, selectedModel, imageInputCount]);
     const videoProfile = useMemo(() => modelCapabilityConfigFor(config, selectedModel).video!, [config, selectedModel]);
     const maxReferences = mode === "video" ? videoProfile.operations.includes("image_to_video") ? videoProfile.references.maxImages : 0 : mode === "image" ? imageProfile.references.maxImages : 6;
     const referenceImageSize = useMemo(() => {

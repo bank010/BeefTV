@@ -2,7 +2,7 @@ import { defaultImageCapabilityConfig, modelCapabilityConfigFor, normalizeImageV
 import { normalizeVideoBoolean, normalizeVideoResolutionValue, videoResolutionComparisonKey } from "@/lib/video-generation-options";
 import { imageSizePresets } from "@/lib/image-size-presets";
 import { sanitizeVideoPriceQuote, seedancePortraitLabel, seedancePortraitModel } from "@/lib/seedance-portrait";
-import { channelModelProfile, modelOptionName, normalizeModelOptionValue, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { channelModelProfile, comfyUIWorkflowForModel, comfyUIWorkflowModel, modelOptionName, normalizeModelOptionValue, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 export type ModelInputSummary = {
     textCount: number;
@@ -91,7 +91,7 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
     }
 
     if (capability === "image") {
-        const image = modelCapabilityConfigFor(config, model).image!;
+        const image = modelCapabilityConfigFor(config, model, input ? visualInputCount : undefined).image!;
         // 尺寸兼容不依赖输入摘要：无输入时（如画布重试/工具链）也要按尺寸过滤组内模型。
         if (requirements.imageSize && !image.size.allowCustom && !image.size.values.includes(requirements.imageSize)) return "不支持当前尺寸";
         if (!input) return "";
@@ -103,7 +103,9 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
 
     if (capability === "video") {
         const profile = modelCapabilityConfigFor(config, model).video!;
-        if (requirements.videoSeconds && !videoDurationAllowed(profile, Number(requirements.videoSeconds))) return "不支持当前视频时长";
+        const comfyWorkflow = comfyUIWorkflowForModel(config, model);
+        const workflowDeclaresDuration = Boolean(profile.duration.values?.length || profile.duration.min !== undefined || profile.duration.max !== undefined);
+        if (requirements.videoSeconds && (!comfyWorkflow || workflowDeclaresDuration) && !videoDurationAllowed(profile, Number(requirements.videoSeconds))) return "不支持当前视频时长";
         if (!input) return "";
         if (visualInputCount > profile.references.maxImages) return `最多支持 ${profile.references.maxImages} 张参考图`;
         if (input.videoCount > profile.references.maxVideos) return `最多支持 ${profile.references.maxVideos} 个参考视频`;
@@ -226,6 +228,8 @@ export function compatibleModelInGroup(config: AiConfig, models: string[], requi
 }
 
 export function resolveCompatibleModel(config: AiConfig, selected: string, requirements?: ModelRequirements) {
+    const workflow = comfyUIWorkflowForModel(config, selected);
+    if (workflow) selected = comfyUIWorkflowModel(workflow.workflowId);
     if (!requirements?.capability) return selected;
     // Automatic resolution keeps the saved identity. Explicit menu selection
     // may choose the usable canonical entry and refresh its parameters/quote.
@@ -240,12 +244,12 @@ export function resolveCompatibleModel(config: AiConfig, selected: string, requi
 // 同显示名分组的模型族：尺寸/比例/分辨率选项取组内全部模型配置的并集，
 // 让用户能看到并选择任意成员支持的能力，选中后由兼容路由落到具体模型。
 // 质量、透明背景等其余能力取当前选中（路由后）模型的配置，与创作页面一致。
-export function mergedImageCapabilityConfig(config: AiConfig, selected: string): ImageCapabilityConfig {
+export function mergedImageCapabilityConfig(config: AiConfig, selected: string, imageCount?: number): ImageCapabilityConfig {
     const options = selectableModelsByCapability(config, "image");
     const group = options.length ? groupModelsByDisplayName(config, options).find((item) => item.models.includes(selected)) : undefined;
     const models = group?.models.length ? group.models : [selected];
-    const selectedProfile = modelCapabilityConfigFor(config, selected).image;
-    const profiles = models.map((model) => modelCapabilityConfigFor(config, model).image).filter((profile): profile is ImageCapabilityConfig => Boolean(profile));
+    const selectedProfile = modelCapabilityConfigFor(config, selected, imageCount).image;
+    const profiles = models.map((model) => modelCapabilityConfigFor(config, model, imageCount).image).filter((profile): profile is ImageCapabilityConfig => Boolean(profile));
     if (profiles.length <= 1) return selectedProfile || defaultImageCapabilityConfig();
     const concreteValues = Array.from(new Set(profiles.flatMap((profile) => profile.size.values).filter((value) => value !== "*")));
     const allowCustom = profiles.some((profile) => profile.size.allowCustom || profile.size.values.includes("*"));
@@ -256,8 +260,8 @@ export function mergedImageCapabilityConfig(config: AiConfig, selected: string):
 }
 
 // 切换模型后初始化图片参数为该模型能力默认值，避免旧参数在目标模型族不兼容导致无法切换。
-export function defaultImageParamsForModel(config: AiConfig, model: string): Pick<AiConfig, "size" | "quality" | "transparentBackground"> {
-    const image = modelCapabilityConfigFor(config, model).image;
+export function defaultImageParamsForModel(config: AiConfig, model: string, imageCount?: number): Pick<AiConfig, "size" | "quality" | "transparentBackground"> {
+    const image = modelCapabilityConfigFor(config, model, imageCount).image;
     if (!image) return { size: "1:1", quality: "auto", transparentBackground: "false" };
     const sizeValues = image.size.values.filter((value) => value !== "*");
     const sizeDefault = image.size.default !== "*" && image.size.default ? image.size.default : sizeValues[0] || "1:1";

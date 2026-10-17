@@ -23,7 +23,7 @@ import { skillRuntime } from "@/services/skill-runtime";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 import { findGenerationTaskByOperation, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { assertUserScope, captureUserScope } from "@/lib/user-scope-guard";
-import { useConfigStore, useEffectiveConfig, resolveModelRequestConfig } from "@/stores/use-config-store";
+import { comfyUIWorkflowForModel, useConfigStore, useEffectiveConfig, resolveModelRequestConfig } from "@/stores/use-config-store";
 import { seedanceReferenceRatioWarning } from "@/lib/seedance-channel-warning";
 import type { Asset } from "@/stores/use-asset-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
@@ -228,6 +228,8 @@ export function useCanvasGenerationExecutor({
                         // AutoDL/其他声明式视频协议需要结构化参考素材；只有普通
                         // 模型视频接口才把提示词视为纯文本输入。
                         const usesWorkflowProvider = Boolean(mode !== "text" && generationConfig.taskWorkflowProvider && generationConfig.taskWorkflowProvider !== "model");
+                        const usesComfyUIModel = Boolean(generationConfig.taskWorkflowProvider === "comfyui" && comfyUIWorkflowForModel(generationConfig, generationConfig.model));
+                        const usesModelCapability = !usesWorkflowProvider || usesComfyUIModel;
                         // 普通视频协议只保留输入框文本（显式 @文本 引用仍会展开为真实内容）；声明式工作流还要保留连接媒体。
                         const promptOnly = mode === "video" && !usesWorkflowProvider;
                         try {
@@ -246,9 +248,9 @@ export function useCanvasGenerationExecutor({
                             }
                             generationConfig = buildConfirmedGenerationConfig(inputConfig, sourceNode, mode, requirements, options?.confirmedModelKey);
                             selectedModel = generationConfig.model;
-                            const compatibilityError = usesWorkflowProvider ? "" : modelCompatibilityError(generationConfig, generationConfig.model, requirements);
+                            const compatibilityError = usesModelCapability ? modelCompatibilityError(generationConfig, generationConfig.model, requirements) : "";
                             if (compatibilityError) throw new Error(`当前模型无法支持这组输入和参数：${compatibilityError}`);
-                            const referenceLimits = usesWorkflowProvider ? undefined : modelGroupReferenceLimits(inputConfig, generationConfig.model, mode, requirements);
+                            const referenceLimits = usesModelCapability ? modelGroupReferenceLimits(inputConfig, generationConfig.model, mode, requirements) : undefined;
                             rawGenerationContext = await waitForCanvasPreparation(() => hydrateNodeGenerationContext(baseContext, projectId, domainProjectId, mode, mode === "video" && Boolean(referenceLimits?.maxAudios), !promptOnly, referenceLimits), controller.signal);
                             const hydratedRequirements = generationModelRequirements(mode, rawGenerationContext, sourceNode, generationConfig);
                             if (hydratedRequirements?.input) {
@@ -257,7 +259,7 @@ export function useCanvasGenerationExecutor({
                             }
                             generationConfig = buildConfirmedGenerationConfig(inputConfig, sourceNode, mode, hydratedRequirements, options?.confirmedModelKey);
                             selectedModel = generationConfig.model;
-                            const hydratedCompatibilityError = usesWorkflowProvider ? "" : modelCompatibilityError(generationConfig, generationConfig.model, hydratedRequirements);
+                            const hydratedCompatibilityError = usesModelCapability ? modelCompatibilityError(generationConfig, generationConfig.model, hydratedRequirements) : "";
                             if (hydratedCompatibilityError) throw new Error(`当前模型无法支持这组输入和参数：${hydratedCompatibilityError}`);
                         } catch (error) {
                             reportError(error);

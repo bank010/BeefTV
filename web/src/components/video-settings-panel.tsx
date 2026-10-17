@@ -45,6 +45,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const configuredResolutions = sortVideoResolutionOptions(profile.resolutions).map((value) => ({ value, label: formatVideoResolutionLabel(value) }));
     const generateAudio = boolConfig(config.videoGenerateAudio, profile.generateAudio.default);
     const watermark = boolConfig(config.videoWatermark, profile.watermark.default);
+    const workflowDuration = config.model.startsWith("comfyui-workflow::") && profile.duration.selection === "enum" && !profile.duration.values?.length;
 
     return (
         <ImageSettingsTheme theme={theme}>
@@ -96,7 +97,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </SettingGroup>
                 ) : null}
                 <SettingGroup title="秒数" color={theme.node.muted}>
-                    <VideoDurationControl profile={profile} value={Number(seconds)} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
+                    {workflowDuration ? <p className="text-sm">由工作流决定</p> : <VideoDurationControl profile={profile} value={Number(seconds)} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />}
                 </SettingGroup>
                 {profile.generateAudio.supported || profile.watermark.supported ? (
                     <SettingGroup title="输出" color={theme.node.muted}>

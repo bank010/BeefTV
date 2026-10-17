@@ -53,6 +53,45 @@ func completedComfyHistory() []byte {
 	return []byte(`{"p-1":{"status":{"status_str":"success","completed":true},"outputs":{"3":{"images":[{"filename":"out_0001_.png","subfolder":"","type":"output"}]}}}}`)
 }
 
+func TestComfyUIPartialAcceptanceReportsValidationBeforePolling(t *testing.T) {
+	root := allowLocalComfyUI(t)
+	exec := &scriptedExecutor{handler: func(req Request) ([]byte, string, error) {
+		switch {
+		case strings.HasSuffix(req.URL, "/upload/image"):
+			return []byte(`{"name":"ref.png"}`), "application/json", nil
+		case strings.HasSuffix(req.URL, "/prompt"):
+			return []byte(`{"prompt_id":"partial-1","node_errors":{"512":{"class_type":"KSampler","errors":[{"type":"value_not_in_list","message":"SECRET prompt","details":"/private/path","extra_info":{"input_name":"sampler_name","received_value":"SECRET"}}]}}}`), "application/json", nil
+		default:
+			t.Fatalf("must report partial acceptance before polling: %s", req.URL)
+			return nil, "", nil
+		}
+	}}
+	receipt := &memoryReceipt{}
+	_, err := comfyTestClient(exec, receipt).Run(context.Background(), comfyImageInput(root))
+	if err == nil || !strings.Contains(err.Error(), "部分输出节点校验失败") || !strings.Contains(err.Error(), "512 (KSampler) sampler_name") {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), "/private") {
+		t.Fatalf("upstream values leaked: %v", err)
+	}
+	if ids := receipt.acceptedIDs(); len(ids) != 1 || ids[0] != "partial-1" {
+		t.Fatalf("lost accepted job: %v", ids)
+	}
+}
+
+func TestComfyUITextOnlyHistoryIsNotAMediaResult(t *testing.T) {
+	exec := &scriptedExecutor{handler: func(req Request) ([]byte, string, error) {
+		if req.Method != http.MethodGet || !strings.HasSuffix(req.URL, "/history/text-only") {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+		}
+		return []byte(`{"text-only":{"status":{"status_str":"success","completed":true},"outputs":{"529":{"text":["not an image"]}}}}`), "application/json", nil
+	}}
+	_, stage, err := comfyTestClient(exec, &memoryReceipt{}).QueryComfyUI(context.Background(), Config{BaseURL: "https://comfy.example"}, "text-only", "image")
+	if stage != "failed" || err == nil || !strings.Contains(err.Error(), "媒体输出节点") {
+		t.Fatalf("stage=%s err=%v", stage, err)
+	}
+}
+
 func comfyTestClient(exec RequestExecutor, receipt Receipt) *Client {
 	return &Client{Requests: exec, Media: stubMedia{}, Receipt: receipt, Plugins: allowPlugin{}, Time: wakeImmediately{}}
 }
@@ -136,6 +175,26 @@ func TestComfyUIRunUploadsSubmitsPollsAndDownloads(t *testing.T) {
 	paths := exec.paths()
 	if len(paths) != 5 || !strings.HasSuffix(paths[0], "/upload/image") || !strings.HasSuffix(paths[1], "/prompt") {
 		t.Fatalf("request order = %#v", paths)
+	}
+}
+
+func TestComfyUIRunRejectsUnusableReferenceMappingBeforeUpload(t *testing.T) {
+	for name, field := range map[string]Field{
+		"disabled": {NodeID: "2", FieldName: "image", Source: "reference_image", Enabled: ptr(false)},
+		"unsafe":   {NodeID: "2", FieldName: "image", Source: "reference_image", SafeToOverride: ptr(false)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := comfyImageInput(allowLocalComfyUI(t))
+			input.Config.WorkflowFields[1] = field
+			exec := &scriptedExecutor{handler: func(req Request) ([]byte, string, error) {
+				t.Fatalf("unusable reference mapping must fail before outbound request: %s", req.URL)
+				return nil, "", nil
+			}}
+			_, err := comfyTestClient(exec, &memoryReceipt{}).Run(context.Background(), input)
+			if err == nil || !strings.Contains(err.Error(), "0 个参考图片槽位") {
+				t.Fatalf("err = %v", err)
+			}
+		})
 	}
 }
 

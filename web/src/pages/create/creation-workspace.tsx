@@ -698,7 +698,7 @@ function GenerationSettingsMenu(props: ComposerProps) {
     const activeQualityOptions = props.imageProfile.quality.values.map((value) => qualityOptions.find((item) => item.value === value) || { value, label: value.toUpperCase(), description: "模型支持的质量/分辨率" });
     const qualityLabel = activeQualityOptions.find((item) => item.value === props.quality)?.label || qualityOptions.find((item) => item.value === props.quality)?.label || props.quality || "自动";
     // 尺寸/比例/分辨率选项取同显示名分组内全部模型的并集，路由模型只决定发送参数。
-    const mergedProfile = mergedImageCapabilityConfig(props.config, props.model || props.config.imageModel);
+    const mergedProfile = mergedImageCapabilityConfig(props.config, props.model || props.config.imageModel, props.modelRequirements.input?.imageCount || 0);
     const usesImageResolutionPicker = props.mode === "image" && supportsImageResolutionPresets(mergedProfile.size);
     const imageResolutionOptions = usesImageResolutionPicker ? buildImageResolutionOptions(mergedProfile.size.values) : [];
     const ratios = props.videoProfile.ratios;

@@ -41,6 +41,7 @@ mkdir -p .local/project-workbench-debug .local/cache/go-build .local/cache/go-mo
 cd backend
 CANVAS_BACKEND_ADDR=127.0.0.1:8080 \
 CANVAS_BACKEND_DATA_DIR=../.local/project-workbench-debug \
+BEEFTV_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000 \
 GOCACHE=../.local/cache/go-build \
 GOMODCACHE=../.local/cache/go-mod \
 go run ./cmd/server
@@ -51,12 +52,16 @@ go run ./cmd/server
 ```bash
 cd web
 bun install --frozen-lockfile
-bun run dev
+BEEFTV_DEV_OWNER_TOKEN_FILE=../.local/project-workbench-debug/agent_owner_token bun run dev -- --host 127.0.0.1
 ```
 
 `web/` 只使用 `bun.lock`。不要用 pnpm 或 npm 往同一套 `node_modules` 里再装一遍。
 
-前端默认监听 `0.0.0.0:3000`，Vite 将 `/api` 和 OAuth 回调代理到 `127.0.0.1:8080`。如需修改代理目标，可设置 `VITE_API_PROXY_TARGET`。
+前端脚本默认监听 `0.0.0.0:3000`，以上命令将其限定在回环地址。Vite 将 `/api` 代理到 `127.0.0.1:8080`。如需修改代理目标，可设置 `VITE_API_PROXY_TARGET`。
+
+浏览器连接 `cmd/server` 开发实例时，需要显式设置 `BEEFTV_DEV_OWNER_TOKEN_FILE`，指向该后端数据目录下启动时生成的 `agent_owner_token`。开发代理仅为本机同源的操作提交和助手会话签发请求附加 owner 凭据；已有客户端或其他身份凭据的请求不提升权限。凭据只在 Vite 服务端读取，不使用 `VITE_` 前缀传递，不写入浏览器存储。后端仍执行原有身份、归属和版本检查。未配置时，正常画布保存可能返回 403“缺少可信身份”；`BEEFTV_UI_BOOTSTRAP=1` 只负责助手会话签发，不能授权画布保存。
+
+前后端端口不同时，后端启动环境还需设置精确的浏览器来源，例如 `BEEFTV_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000`。更换端口时同步调整该值及前端代理目标。Wails 桌面界面使用自己的引导凭据，不需要此开发代理配置。
 
 `cmd/server` 在未设置 `CANVAS_BACKEND_ADDR` 时只监听 `127.0.0.1:8080`。服务端 profile 没有桌面启动令牌，默认不把工作区 API 暴露到局域网。需要同一台机器上的其他网卡、局域网客户端，或容器网络访问时，显式设置 `CANVAS_BACKEND_ADDR=:8080` 或 `0.0.0.0:8080`。只给本机用时保持 `127.0.0.1:8080`。镜像默认也是容器内回环；Compose 文件里的 `:8080` 是给同网络的 web 容器用的，不要把后端 `8080` 发布到宿主机的所有网卡。
 

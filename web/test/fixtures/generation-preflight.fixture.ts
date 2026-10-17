@@ -21,7 +21,7 @@ mock.module("antd", () => ({ App: { useApp: () => ({ modal: { confirm: (input: a
     loading: ({ key }: any) => loading.add(key), destroy: (key: string) => loading.delete(key),
 } }) } }));
 mock.module("@/services/diagnostics/client-diagnostics", () => ({ recordDiagnosticEvent: (event: any) => diagnostics.push(event) }));
-mock.module("@/stores/use-config-store", () => ({ useEffectiveConfig: () => ({}), useConfigStore: (select: any) => select({ isAiConfigReady: () => true }), resolveModelRequestConfig: () => ({}) }));
+mock.module("@/stores/use-config-store", () => ({ useEffectiveConfig: () => ({}), useConfigStore: (select: any) => select({ isAiConfigReady: () => true }), resolveModelRequestConfig: () => ({}), comfyUIWorkflowForModel: () => undefined }));
 mock.module("@/components/canvas/canvas-node-generation", () => ({ buildNodeGenerationContext: (_id: any, _nodes: any, _edges: any, prompt: string) => ({ prompt, referenceImages: [], referenceVideos: [], referenceAudios: [], characterReferences: [], resolvedCharacterVersions: [], resolvedCharacterVoices: [] }), hydrateNodeGenerationContext: (context: any) => hydrate(context) }));
 mock.module("@/pages/canvas/canvas-assistant-proposal-execution", () => ({ buildConfirmedGenerationConfig: () => ({ model: "fixture", taskWorkflowProvider: "model", size: "1:1" }) }));
 mock.module("@/lib/canvas/canvas-project-generation", () => ({ isGenerationCanceled: (error: any) => error?.name === "AbortError" }));
@@ -113,4 +113,3 @@ assert(failedDiag.message.includes("参数不兼容"), "expected failure reason 
 assert(diagnostics.some((e) => e.code === "generation_preflight_timeout"));
 assert(diagnostics.some((e) => e.code === "generation_confirmation_cancelled"));
 console.log("PASS: preflight lifecycle, duplicate lock, abort fencing, validation, closed dialog retry, private diagnostics");
-

@@ -73,6 +73,104 @@ func TestWorkspaceModelConfigRejectsStaleRevisionWithoutLeakingSecrets(t *testin
 	}
 }
 
+func TestWorkspaceModelConfigReturnsBadRequestForInvalidProviderIdentitiesAndSecrets(t *testing.T) {
+	tests := []struct {
+		name   string
+		config map[string]any
+	}{
+		{
+			name: "duplicate channel IDs",
+			config: map[string]any{"channels": []any{
+				map[string]any{"id": "duplicate"},
+				map[string]any{"id": "duplicate"},
+			}},
+		},
+		{
+			name: "unmatched redacted secret",
+			config: map[string]any{"channels": []any{
+				map[string]any{"id": "custom", "apiKey": workspace.RedactedSecret},
+			}},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			router, _ := newModelConfigTestRouter(t)
+			body, err := json.Marshal(map[string]any{"expectedRevision": 0, "config": test.config})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPut, "/api/workspace/model-config", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("put status = %d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestWorkspaceModelConfigSavesComfyUIWithNumericNodeIDs(t *testing.T) {
+	router, store := newModelConfigTestRouter(t)
+	if err := store.SaveLocalModelConfig([]byte(`{"channels":[{"id":"custom","apiKey":"kept-secret"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(`{
+		"channels":[{"id":"custom"}],
+		"comfyUI":{"enabled":true,"workflows":[{
+			"workflowId":"workflows/example.json","title":"Example","capability":"image",
+			"workflowJson":{"12":{"class_type":"CLIPTextEncode","inputs":{"text":"example"}}},
+			"sourceWorkflowJson":{"nodes":[{"id":12,"type":"CLIPTextEncode"},{"id":23,"type":"SaveImage"}]}
+		}]}
+	}`), &config); err != nil {
+		t.Fatal(err)
+	}
+	config["channels"].([]any)[0].(map[string]any)["apiKey"] = workspace.RedactedSecret
+	wantWorkflow, err := json.Marshal(config["comfyUI"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []int64{1, 2} {
+		body, err := json.Marshal(map[string]any{"expectedRevision": revision, "config": config})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPut, "/api/workspace/model-config", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("workflow save status = %d", response.Code)
+		}
+		data := modelConfigResponseData(t, response)
+		if data["saved"] != true || data["revision"] != float64(revision+1) {
+			t.Fatal("workflow save was not confirmed with an advanced revision")
+		}
+		loaded := httptest.NewRecorder()
+		router.ServeHTTP(loaded, httptest.NewRequest(http.MethodGet, "/api/workspace/model-config", nil))
+		if loaded.Code != http.StatusOK {
+			t.Fatalf("workflow reload status = %d", loaded.Code)
+		}
+		config = modelConfigResponseData(t, loaded)["config"].(map[string]any)
+		gotWorkflow, err := json.Marshal(config["comfyUI"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(gotWorkflow, wantWorkflow) {
+			t.Fatal("workflow changed after HTTP save and reload")
+		}
+	}
+	raw, err := store.ReadLocalModelConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte("kept-secret")) {
+		t.Fatal("workflow save lost the existing channel credential")
+	}
+}
+
 func newModelConfigTestRouter(t *testing.T) (*gin.Engine, *workspace.ProviderConfig) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

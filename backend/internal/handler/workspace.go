@@ -122,6 +122,9 @@ func RegisterWorkspaceRoutes(r *gin.RouterGroup, svc *app.Service) {
 				return
 			}
 			if err != nil {
+				if failProviderConfigValidation(c, err) {
+					return
+				}
 				failService(c, err)
 				return
 			}
@@ -129,11 +132,22 @@ func RegisterWorkspaceRoutes(r *gin.RouterGroup, svc *app.Service) {
 			return
 		}
 		if err := providerConfig.SaveLocalModelConfig(envelope.Config); err != nil {
+			if failProviderConfigValidation(c, err) {
+				return
+			}
 			failService(c, err)
 			return
 		}
 		ok(c, gin.H{"saved": true})
 	})
+}
+
+func failProviderConfigValidation(c *gin.Context, err error) bool {
+	if !errors.Is(err, workspace.ErrInvalidProviderIdentity) && !errors.Is(err, workspace.ErrUnmatchedRedactedSecret) {
+		return false
+	}
+	fail(c, http.StatusBadRequest, err)
+	return true
 }
 
 func redactModelConfig(c *gin.Context, svc *app.Service, config map[string]any) map[string]any {

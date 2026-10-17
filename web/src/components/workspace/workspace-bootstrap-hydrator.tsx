@@ -52,7 +52,7 @@ export function WorkspaceBootstrapHydrator({ children }: { children: ReactNode }
     useEffect(() => {
         let ready = false;
         const unsubscribe = useConfigStore.subscribe((state) => {
-            if (!shouldSaveLocalModelConfig({ subscriptionReady: ready, modelConfigReady: modelConfigReady.current, channelCount: state.config.channels.length })) return;
+            if (!shouldSaveLocalModelConfig({ subscriptionReady: ready, modelConfigReady: modelConfigReady.current, channelCount: state.config.channels.length, comfyWorkflowCount: state.config.comfyUI.workflows.length, runningHubWorkflowCount: state.config.runningHub.workflows.length })) return;
             void commitModelConfig(state.config);
         });
         const flush = () => { void flushModelConfig(); };
@@ -98,8 +98,8 @@ export async function initializeWorkspaceState<T>({
     }
 }
 
-export function shouldSaveLocalModelConfig({ subscriptionReady, modelConfigReady, channelCount }: { subscriptionReady: boolean; modelConfigReady: boolean; channelCount: number }) {
-    return subscriptionReady && modelConfigReady && channelCount > 0;
+export function shouldSaveLocalModelConfig({ subscriptionReady, modelConfigReady, channelCount, comfyWorkflowCount = 0, runningHubWorkflowCount = 0 }: { subscriptionReady: boolean; modelConfigReady: boolean; channelCount: number; comfyWorkflowCount?: number; runningHubWorkflowCount?: number }) {
+    return subscriptionReady && modelConfigReady && (channelCount > 0 || comfyWorkflowCount > 0 || runningHubWorkflowCount > 0);
 }
 
 async function hydrateLocalModelConfig() {

@@ -1,6 +1,9 @@
 import { isVolcengineArkVideoProtocol, type ModelProtocol, type ModelProtocolWorkflow } from "@/lib/model-protocols";
 import { beefAPIImageContract } from "@/lib/beefapi-image-contracts";
-import type { ImageResolutionOption, ImageResolutionTier } from "@/lib/image-resolution-tiers";
+import { buildImageResolutionOptions, type ImageResolutionOption, type ImageResolutionTier } from "@/lib/image-resolution-tiers";
+import { comfyUIOutputDimensions } from "@/lib/comfyui-output-size";
+import { comfyUIModelWorkflow, comfyUIWorkflowForInput } from "@/lib/comfyui-image-routing";
+import { IMAGE_RATIOS, IMAGE_RESOLUTIONS, imagePresetForRatio } from "@/lib/image-size-presets";
 
 export type ModelCapabilityConfig = {
     version: number;
@@ -667,12 +670,49 @@ export function pluginWorkflowCapabilityConfig(protocol: ModelProtocol, workflow
 }
 
 export function modelCapabilityConfigFor(
-    config: { channels: Array<{ id: string; models: string[]; baseUrl?: string; interfaceType?: ModelProtocol; modelProfiles?: Array<{ model: string; capabilityConfig?: ModelCapabilityConfig; protocol?: ModelProtocol }> }> },
+    config: {
+        channels: Array<{ id: string; models: string[]; baseUrl?: string; interfaceType?: ModelProtocol; modelProfiles?: Array<{ model: string; capabilityConfig?: ModelCapabilityConfig; protocol?: ModelProtocol }> }>;
+        taskWorkflowProvider?: string;
+        comfyUI?: { selectedWorkflowId?: string; workflows?: Array<{ workflowId: string; capability: string; imageEditWorkflowId?: string; fields?: WorkflowVideoFieldLike[]; workflowJson?: Record<string, unknown> }> };
+    },
     model: string,
+    imageCount?: number,
 ) {
     const separator = model.indexOf("::");
     const channelId = separator >= 0 ? model.slice(0, separator) : "";
     const modelName = separator >= 0 ? model.slice(separator + 2) : model;
+    if (channelId === "comfyui-workflow") {
+        const workflows = config.comfyUI?.workflows || [];
+        const family = comfyUIModelWorkflow(workflows, modelName);
+        const activeImageCount = imageCount ?? (config.taskWorkflowProvider === "comfyui" && family?.imageEditWorkflowId === config.comfyUI?.selectedWorkflowId ? 1 : undefined);
+        const workflow = comfyUIWorkflowForInput(workflows, modelName, activeImageCount);
+        if (workflow) {
+            const fallback = defaultModelCapabilityConfig(undefined, modelName);
+            const fields = workflow.fields?.length ? workflow.fields : workflowVideoFieldsFromJson(workflow.workflowJson);
+            if (workflow.capability === "video") {
+                const video = workflowVideoCapabilityConfig(fields, fallback.video!);
+                video.references.maxImages = workflowMediaInputLimit(fields, ["referenceimage", "image", "referenceimages"]);
+                video.references.maxVideos = workflowMediaInputLimit(fields, ["referencevideo", "video", "referencevideos"]);
+                video.references.maxAudios = workflowMediaInputLimit(fields, ["referenceaudio", "audio", "referenceaudios"]);
+                if (video.references.maxImages === 0) video.operations = video.operations.filter((operation) => operation !== "image_to_video");
+                if (video.references.maxImages + video.references.maxVideos + video.references.maxAudios === 0) {
+                    video.operations = video.operations.filter((operation) => operation !== "reference_to_video");
+                }
+                if (video.references.maxAudios === 0) video.operations = video.operations.filter((operation) => operation !== "audio_to_video");
+                return { ...fallback, video };
+            }
+            if (workflow.capability === "image") {
+                const image = workflowImageCapabilityConfig(fields, fallback.image!, workflow.workflowJson);
+                image.references.maxImages = workflowMediaInputLimit(workflow.fields || [], ["referenceimage", "image", "referenceimages"]);
+                if (activeImageCount === undefined && family?.imageEditWorkflowId) {
+                    const edit = comfyUIWorkflowForInput(workflows, modelName, 1);
+                    image.references.maxImages = edit ? workflowMediaInputLimit(edit.fields || [], ["referenceimage", "image", "referenceimages"]) : 0;
+                }
+                return { ...fallback, image };
+            }
+            return fallback;
+        }
+    }
     const channel = config.channels.find((item) => item.id === channelId) || config.channels.find((item) => item.models.includes(modelName));
     // Older desktop config migrations can leave two entries for the same model:
     // a legacy operation-only array followed by the real capability object. The
@@ -721,6 +761,19 @@ export function modelCapabilityConfigFor(
           })()
         : fallback.image;
     return { ...fallback, ...capabilityConfig, text, image, video };
+}
+
+export function workflowMediaInputLimit(fields: readonly WorkflowVideoFieldLike[], sources: readonly string[]) {
+    let max = 0;
+    for (const field of fields) {
+        const source = workflowFieldSource(field) || String(field.fieldName || "").trim().replace(/[\s_-]/g, "").toLowerCase();
+        if (field.enabled === false || field.safeToOverride === false || !sources.includes(source)) continue;
+        const imageOrder = Number(field.imageOrder);
+        const sourceIndex = Number(field.sourceIndex);
+        const index = Number.isFinite(imageOrder) && imageOrder > 0 ? imageOrder - 1 : Number.isFinite(sourceIndex) && sourceIndex >= 0 ? sourceIndex : 0;
+        max = Math.max(max, index + 1);
+    }
+    return max;
 }
 
 function isSeedance2Family(protocol: ModelProtocol | undefined, modelName: string) {
@@ -775,6 +828,8 @@ export type WorkflowVideoFieldLike = {
     optionsSource?: string;
     enabled?: boolean;
     source?: string;
+    sourceIndex?: number;
+    imageOrder?: number;
     sourceFromUpstream?: boolean;
     randomEnabled?: boolean;
     fieldType?: string;
@@ -991,9 +1046,13 @@ export function workflowFieldValueError(field: WorkflowVideoFieldLike, value: un
     return "";
 }
 
-export function workflowImageCapabilityConfig(fields: readonly WorkflowVideoFieldLike[], fallback = defaultModelCapabilityConfig().image!): ImageCapabilityConfig {
+export function workflowImageCapabilityConfig(fields: readonly WorkflowVideoFieldLike[], fallback = defaultModelCapabilityConfig().image!, comfyUIGraph?: Record<string, unknown>): ImageCapabilityConfig {
+    const dimensions = comfyUIOutputDimensions(comfyUIGraph, fields);
+    const defaultPreset = dimensions ? buildImageResolutionOptions([dimensions.size])[0] : undefined;
+    const sizePresets = dimensions ? IMAGE_RESOLUTIONS.flatMap((tier) => IMAGE_RATIOS.map((ratio) =>
+        defaultPreset?.tier === tier && defaultPreset.ratio === ratio ? defaultPreset : imagePresetForRatio(tier, ratio))) : [];
     const ratioField = fields.find((field) => workflowVideoFieldMatches(field, "aspectratio"));
-    const sizeField = fields.find((field) => workflowVideoFieldMatches(field, "size"));
+    const sizeField = fields.find((field) => workflowVideoFieldMatches(field, "size") && workflowFieldDefaultValue(field) !== "0");
     const qualityField = fields.find((field) => workflowVideoFieldMatches(field, "quality"));
     const ratioOptions = workflowFieldChoiceValues(ratioField).map(workflowFieldOptionValue).filter(Boolean);
     const ratioDefault = workflowFieldDefaultValue(ratioField);
@@ -1002,7 +1061,9 @@ export function workflowImageCapabilityConfig(fields: readonly WorkflowVideoFiel
     const qualityOptions = workflowFieldChoiceValues(qualityField).map(workflowFieldOptionValue).filter(Boolean);
     return {
         ...fallback,
-        size: ratioField
+        size: dimensions
+            ? { parameter: "size", values: [...new Set([dimensions.size, ...sizePresets.map((preset) => preset.size)])], default: dimensions.size, allowCustom: true }
+            : ratioField
             ? { parameter: "aspect_ratio", values: ratioOptions.length ? ratioOptions : ratioDefault ? [ratioDefault] : [], default: ratioDefault || ratioOptions[0] || "auto", allowCustom: false }
             : sizeField
               ? { parameter: "size", values: sizeOptions.length ? sizeOptions : sizeDefault ? [sizeDefault] : [], default: sizeDefault || sizeOptions[0] || "auto", allowCustom: false }
@@ -1087,7 +1148,7 @@ export function workflowVideoCapabilityConfig(fields: readonly WorkflowVideoFiel
 export function workflowOutputSizeValue(fields: readonly WorkflowVideoFieldLike[], values: Readonly<Record<string, unknown>>) {
     const field =
         fields.find((item) => workflowVideoFieldMatches(item, "aspectratio")) ||
-        fields.find((item) => workflowVideoFieldMatches(item, "size")) ||
+        fields.find((item) => workflowVideoFieldMatches(item, "size") && workflowFieldDefaultValue(item) !== "0") ||
         fields.find((item) => {
             const options = workflowFieldChoiceValues(item).map(workflowFieldOptionValue).filter(Boolean);
             return options.length > 1 && options.every(workflowOutputSizeLike);

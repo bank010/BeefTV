@@ -91,7 +91,7 @@ export async function runBackendCanvasGenerationTask(
 export function canvasImageReferenceLimitError(config: AiConfig, referenceImages: ReferenceImage[]) {
     // 工作流的参考素材上限由字段映射槽位决定，不能再套用当前普通图片模型的能力表。
     if ((config.taskWorkflowProvider || "model") !== "model") return "";
-    const maxImages = modelCapabilityConfigFor(config, config.model).image?.references.maxImages;
+    const maxImages = modelCapabilityConfigFor(config, config.model, referenceImages.length).image?.references.maxImages;
     if (maxImages === undefined || referenceImages.length <= maxImages) return "";
     return `当前图片模型最多支持 ${maxImages} 张参考图，当前已连接 ${referenceImages.length} 张。请移除多余连线后重试`;
 }

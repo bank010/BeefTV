@@ -15,6 +15,8 @@ Wails 和浏览器开发模式共用同一套 `127.0.0.1` HTTP 合同。路由�
 
 自定义模型服务的配置仍由受保护的工作区配置接口提供给当前界面；运行时内存和生成请求可能包含凭据。浏览器持久配置缓存不保存 API Key、Secret Key 或自定义 Header，启动后从后端加载。内置 BeefAPI 继续使用后端凭据引用。配置导出会遮盖密钥和 Header 值；回填脱敏标记时必须匹配原渠道与 Header 名称，不能借用其他渠道的密钥。
 
+模型配置保存会校验渠道 ID；其他数组仅在需要恢复脱敏密钥时进行身份匹配，不将 ComfyUI 工作流原始 JSON 中的数字节点 ID 视为渠道 ID。无效或重复的渠道 ID、无法匹配的脱敏密钥返回 HTTP 400，修订冲突返回 HTTP 409；保存失败不覆盖已有配置。
+
 模型目录通过本地后端读取。模型测试使用正常任务入口，等待最终文本或媒体结果才显示通过；测试会产生供应商费用，须先确认。测试结果不证明画布回填、媒体解码或最终账务结算。
 
 `POST /ai/models` 支持 OpenAI 的 `data` 数组和 Gemini 的 `models` 数组；空数组表示有效的空目录，缺少数组或结构不匹配会返回 `catalog_response_invalid`。目录出站请求最长 25 秒，前端请求最长 30 秒，可主动取消。失败响应的 `reason` 区分 `catalog_address_invalid`、`catalog_auth_failed`、`catalog_unsupported`、`catalog_timeout`、`catalog_network_failed`、`catalog_rate_limited`、`catalog_upstream_rejected` 和 `catalog_upstream_failed`。目录不支持不代表生成接口不可用，用户仍可手动添加模型 ID。
@@ -54,6 +56,12 @@ Wails 和浏览器开发模式共用同一套 `127.0.0.1` HTTP 合同。路由�
 `POST /comfyui/userdata` 接收 `baseUrl`、可选 `apiKey` 与 `directory`（缺省为 `workflows`），由后端读取 ComfyUI 用户数据目录。`POST /comfyui/workflow-info` 接收 `baseUrl`、可选 `apiKey`、`file` 与用途 `capability`，读取 `workflows/` 下的 JSON 文件，将 ComfyUI 前端保存格式转换为 API prompt 图，并提取动态字段。两条接口都要求当前 owner 启用 ComfyUI 工作流插件；只允许读取 `workflows/` 路径，不提供远端写入或队列提交。上游地址继续使用后端默认出站地址校验。
 
 ComfyUI 地址、凭据、工作流与字段映射独立保存在 ComfyUI 配置中，不与模型渠道或 RunningHub 共用。画布 Config 节点可以按图片、视频或音频选择已保存工作流；提交与轮询均经本地后端执行。
+
+图片工作流可以通过可选 `imageEditWorkflowId` 关联同一配置中的另一图片工作流。当前条目作为统一模型入口和无图执行分支，关联条目作为有图执行分支。前端根据已准备好的 `referenceImages` 选择分支，将同一选择写入任务 `model`、`input.execution` 和 `input.config` 的工作流 ID、图与字段；后端接收的仍是一个确定的工作流，不自行按名称猜测。关联配置与模型配置一起按 revision 保存；不允许自关联、多级关联或多个模型占用同一有图分支。
+
+后端在向 ComfyUI 上传参考素材前校验字段映射容量；停用或标记为不可安全覆盖的字段不计入可用槽位。参考图、视频、音频超出对应槽位，或传入蒙版却没有蒙版映射时，直接返回错误，避免上传后仍使用工作流内保存的默认素材。
+
+前端保存格式转换时会跳过种子旁的 `control_after_generate` 控件，避免采样器参数错位；停用节点不进入执行图，旁路节点沿唯一同类型输入连接到上游。无法确定的旁路或循环会要求改用 ComfyUI 导出的 API 格式，不猜测连接。修复转换规则后，已经保存的工作流配置需要重新读取源文件，才会更新执行图与字段默认值。
 
 `POST /timeline/render-plan` 接收时间线快照、不透明源标识和输出选项，返回版本化语义计划。源标识是 nodeId 或 resource id，不是本地路径。请求不得携带 ffmpeg 参数。该接口不做生成、不写资源、不创建任务。
 

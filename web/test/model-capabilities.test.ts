@@ -27,6 +27,41 @@ test("Dreamina native defaults expose editing and valid duration choices without
     assert.equal(defaultModelCapabilityConfig("newapi", model).video!.duration.min, 1);
 });
 
+test("ComfyUI video workflow models expose reference-image limits from mapped workflow slots", () => {
+    const config = {
+        channels: [],
+        comfyUI: {
+            workflows: [{
+                workflowId: "clip-workflow",
+                capability: "video",
+                fields: [{ nodeId: "10", fieldName: "image", source: "referenceImage", imageOrder: 1, sourceIndex: 0, enabled: true }],
+            }],
+        },
+    } as AiConfig;
+    const model = "comfyui-workflow::clip-workflow";
+    const profile = modelCapabilityConfigFor(config, model).video!;
+
+    assert.equal(profile.references.maxImages, 1);
+    assert.equal(modelCompatibilityError(config, model, {
+        capability: "video",
+        videoSeconds: "6",
+        input: { textCount: 1, imageCount: 1, characterCount: 0, videoCount: 0, audioCount: 0 },
+    }), "");
+    assert.equal(modelCompatibilityError(config, model, {
+        capability: "video",
+        input: { textCount: 1, imageCount: 2, characterCount: 0, videoCount: 0, audioCount: 0 },
+    }), "最多支持 1 张参考图");
+});
+
+test("ComfyUI video workflow without image slots rejects image-to-video operations", () => {
+    const config = { channels: [], comfyUI: { workflows: [{ workflowId: "text-only", capability: "video", fields: [] }] } } as AiConfig;
+    const profile = modelCapabilityConfigFor(config, "comfyui-workflow::text-only").video!;
+
+    assert.equal(profile.references.maxImages, 0);
+    assert.ok(!profile.operations.includes("image_to_video"));
+    assert.ok(!profile.operations.includes("reference_to_video"));
+});
+
 test("Dreamina 2.5 enables audio-only and keeps edit and extension task constraints", () => {
     const model = "dreamina-seedance-2-5-260628";
     const video = defaultModelCapabilityConfig("volcengine-ark-video", model).video!;

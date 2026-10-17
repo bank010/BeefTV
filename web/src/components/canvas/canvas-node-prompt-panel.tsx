@@ -356,7 +356,7 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                             fullWidth
                             config={config}
                             value={config.model}
-                            onChange={(model) => onConfigChange(node.id, mode === "image" ? { model, ...defaultImageParamsForModel(config, model) } : { model })}
+                            onChange={(model) => onConfigChange(node.id, mode === "image" ? { model, ...defaultImageParamsForModel(config, model, (requirements.input?.imageCount || 0) + (requirements.input?.characterCount || 0)) } : { model })}
                             capability={mode}
                             requirements={resolvedRequirements}
                             onMissingConfig={() => navigateToSettings({ section: "channels", continueCreation: true })}

@@ -34,7 +34,24 @@ export function isKeptGenerationResultCode(code: string | undefined) {
 
 export function canvasGenerationFailureMetadata(error: unknown, input: CanvasGenerationFailureInput) {
     const failure = generationFailureMetadata(error, input.prompt, submittedReferences(input));
-    if (error instanceof CanvasGenerationTargetSaveError) return { ...failure, errorDetails: error.message, generationErrorSummary: error.message };
+    if (error instanceof CanvasGenerationTargetSaveError) {
+        // A save conflict happens before submission: it must not offer recovery of a nonexistent result.
+        const cause = explainGenerationError(error.cause ?? error);
+        const summary = cause.summary || error.message;
+        return {
+            ...failure,
+            generationErrorSummary: summary,
+            resourceReloadAvailable: false,
+            taskFailureDiagnostics: {
+                source: "client_result" as const,
+                stage: "生成前保存画布",
+                summary,
+                httpStatus: cause.httpStatus,
+                requestId: cause.requestId,
+                capturedAt: new Date().toISOString(),
+            },
+        };
+    }
     return { ...failure, ...(isKeptGenerationResultCode(failure.generationErrorCode) ? { resourceReloadAvailable: true } : {}) };
 }
 

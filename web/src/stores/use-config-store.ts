@@ -4,11 +4,12 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 import { scopedLocalStorage } from "@/lib/user-scope";
+import { comfyUIModelWorkflows, comfyUIWorkflowForInput } from "@/lib/comfyui-image-routing";
 import { beefAPIVideoContract, isBeefAPIEndpoint } from "@/lib/beefapi-video-contracts";
 import { beefAPIImageContract } from "@/lib/beefapi-image-contracts";
 import { defaultProtocolForCapability, defaultProtocolForModel, inferProtocolCapabilityFromModel, modelProtocolCapability, normalizeModelProtocol, usesOpenAICompatibleProtocolDefault, type ModelProtocol } from "@/lib/model-protocols";
 import { normalizeVideoBoolean, normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
-import { defaultModelCapabilityConfig, upgradeGPTImageCapability, workflowFieldRole, workflowFieldSafeToOverride, workflowVideoFieldsFromJson, type ModelCapabilityConfig } from "@/lib/model-capabilities";
+import { defaultModelCapabilityConfig, upgradeGPTImageCapability, workflowFieldRole, workflowFieldSafeToOverride, workflowVideoCapabilityConfig, workflowVideoFieldsFromJson, type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { useUserStore } from "@/stores/use-user-store";
 import type { CapabilitySpec } from "@/services/api/logical-models";
 import { seedancePortraitLabel, seedancePortraitModel, type VideoPriceQuote } from "@/lib/seedance-portrait";
@@ -358,6 +359,7 @@ export type ComfyUIWorkflow = {
     workflowId: string;
     title: string;
     capability: RunningHubCapability;
+    imageEditWorkflowId?: string;
     workflowJson: Record<string, unknown>;
     fields: WorkflowFieldMapping[];
 };
@@ -465,6 +467,7 @@ export type AiConfig = {
 export const CONFIG_STORE_KEY = "open_ai_canvas:ai_config_store";
 export type ModelCapability = "image" | "video" | "text" | "audio";
 const CHANNEL_MODEL_SEPARATOR = "::";
+const COMFYUI_MODEL_CHANNEL_ID = "comfyui-workflow";
 const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 const LEGACY_DEFAULT_MODEL_NAMES = new Set(["gpt-image-2", "grok-imagine-video", "gpt-5.5", "gpt-4o-mini-tts"]);
@@ -666,14 +669,30 @@ export function selectableModelsByCapability(config: AiConfig, capability?: Mode
     // 选项目录只从当前有效渠道重建，不能信任旧快照里残留的 config.models。
     // 这样旧版本内置模型、未绑定渠道的裸模型不会再次进入创作端。
     const models = modelOptionsFromChannels(config.channels);
-    if (!capability) return models;
-    return filterModelsByCapability(models, capability, config.channels);
+    const channelModels = capability ? filterModelsByCapability(models, capability, config.channels) : models;
+    const comfyUIModels = config.comfyUI.enabled
+        ? comfyUIModelWorkflows(config.comfyUI.workflows)
+              .filter((workflow) => !capability || workflow.capability === capability)
+              .map((workflow) => comfyUIWorkflowModel(workflow.workflowId))
+        : [];
+    return [...channelModels, ...comfyUIModels];
 }
 
 export function configuredModelMatchesCapability(config: AiConfig, model: string, capability?: ModelCapability) {
+    if (comfyUIWorkflowForModel(config, model)) return !capability || comfyUIWorkflowForModel(config, model)?.capability === capability;
     const normalized = normalizeModelOptionValue(model, config.channels);
     if (!normalized) return false;
     return selectableModelsByCapability(config, capability).includes(normalized);
+}
+
+export function comfyUIWorkflowModel(workflowId: string) {
+    return encodeChannelModel(COMFYUI_MODEL_CHANNEL_ID, workflowId);
+}
+
+export function comfyUIWorkflowForModel(config: Pick<AiConfig, "comfyUI"> | { comfyUI?: ComfyUIConfig }, model: string, imageCount = 0) {
+    const decoded = decodeChannelModel(model);
+    if (decoded?.channelId !== COMFYUI_MODEL_CHANNEL_ID) return undefined;
+    return comfyUIWorkflowForInput(config.comfyUI?.workflows || [], decoded.model, imageCount);
 }
 
 export const MANAGED_BEEFAPI_CREDENTIAL_REF = "beefapi-enterprise";
@@ -693,6 +712,8 @@ export function channelHasGenerationCredential(channel: Pick<ModelChannel, "id" 
 }
 
 function isAiConfigReady(config: AiConfig, model: string) {
+    const comfyUIWorkflow = comfyUIWorkflowForModel(config, model);
+    if (comfyUIWorkflow) return Boolean(config.comfyUI.enabled && config.comfyUI.baseUrl.trim());
     if (config.taskWorkflowProvider === "runninghub") {
         const key = config.runningHub.apiKey;
         return Boolean(config.runningHub.enabled && config.runningHub.baseUrl.trim() && key.trim() && config.runningHub.workflowId.trim());
@@ -876,7 +897,7 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
                       const workflow = item as ComfyUIWorkflow;
                       const capability = normalizeRunningHubCapability(workflow.capability);
                       const workflowJson = workflow.workflowJson && typeof workflow.workflowJson === "object" && !Array.isArray(workflow.workflowJson) ? workflow.workflowJson : {};
-                      return [{ ...workflow, workflowId: String(workflow.workflowId).trim(), title: String(workflow.title || workflow.workflowId).trim(), capability, workflowJson, fields: normalizeWorkflowFieldMappings(workflow.fields, capability) }];
+                       return [{ ...workflow, workflowId: String(workflow.workflowId).trim(), title: String(workflow.title || workflow.workflowId).trim(), capability, imageEditWorkflowId: typeof workflow.imageEditWorkflowId === "string" ? workflow.imageEditWorkflowId.trim() || undefined : undefined, workflowJson, fields: normalizeWorkflowFieldMappings(workflow.fields, capability) }];
                   })
                 : [],
         },
@@ -885,11 +906,17 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
     if (!hasPersistedChannels) config.channels = [];
     const channels = normalizeChannels(config, !hasPersistedChannels).map(enrichBeefApiMediaChannel).map(reconcileChannelModelProfiles);
     const models = modelOptionsFromChannels(channels);
-    const imageModels = filterModelsByCapability(models, "image", channels);
-    const videoModels = filterModelsByCapability(models, "video", channels);
+    const comfyWorkflows = config.comfyUI.enabled ? comfyUIModelWorkflows(config.comfyUI.workflows) : [];
+    const comfyModels = comfyWorkflows.map((workflow) => comfyUIWorkflowModel(workflow.workflowId));
+    const imageModels = [...filterModelsByCapability(models, "image", channels), ...comfyWorkflows.filter((workflow) => workflow.capability === "image").map((workflow) => comfyUIWorkflowModel(workflow.workflowId))];
+    const videoModels = [...filterModelsByCapability(models, "video", channels), ...config.comfyUI.workflows.filter((workflow) => config.comfyUI.enabled && workflow.capability === "video").map((workflow) => comfyUIWorkflowModel(workflow.workflowId))];
     const textModels = filterModelsByCapability(models, "text", channels);
-    const audioModels = filterModelsByCapability(models, "audio", channels);
-    const model = normalizeSelectedModel(config.model || config.imageModel || config.textModel, channels, models);
+    const audioModels = [...filterModelsByCapability(models, "audio", channels), ...config.comfyUI.workflows.filter((workflow) => config.comfyUI.enabled && workflow.capability === "audio").map((workflow) => comfyUIWorkflowModel(workflow.workflowId))];
+    const modelIdentity = (value: string) => {
+        const workflow = comfyUIWorkflowForModel(config, value);
+        return workflow ? comfyUIWorkflowModel(workflow.workflowId) : value;
+    };
+    const model = normalizeSelectedModel(modelIdentity(config.model || config.imageModel || config.textModel), channels, [...models, ...comfyModels]);
     return {
         config: {
             ...config,
@@ -899,7 +926,7 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
             mcpServers: normalizeMcpServers(persistedConfig.mcpServers),
             models,
             model,
-            imageModel: normalizeSelectedModel(config.imageModel || model, channels, imageModels),
+            imageModel: normalizeSelectedModel(modelIdentity(config.imageModel || model), channels, imageModels),
             videoModel: normalizeSelectedModel(config.videoModel, channels, videoModels),
             textModel: normalizeSelectedModel(config.textModel || model, channels, textModels),
             audioModel: normalizeSelectedModel(config.audioModel || defaultConfig.audioModel, channels, audioModels),
@@ -1183,6 +1210,7 @@ export function normalizeModelOptionValue(value: unknown, channels: ModelChannel
     const model = typeof value === "string" ? value.trim() : "";
     if (!normalizeRawModelName(model)) return "";
     const decoded = decodeChannelModel(model);
+    if (decoded?.channelId === COMFYUI_MODEL_CHANNEL_ID) return model;
     if (decoded) {
         const channel = channels.find((item) => item.id === decoded.channelId);
         const resolved = channel?.modelAliases?.[decoded.model] || decoded.model;
@@ -1195,6 +1223,21 @@ export function normalizeModelOptionValue(value: unknown, channels: ModelChannel
 
 export function resolveModelChannel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
+    if (decoded?.channelId === COMFYUI_MODEL_CHANNEL_ID) {
+        const workflow = comfyUIWorkflowForModel(config, value);
+        if (workflow) {
+            return createModelChannel({
+                id: COMFYUI_MODEL_CHANNEL_ID,
+                name: "ComfyUI",
+                baseUrl: config.comfyUI.baseUrl,
+                apiKey: config.comfyUI.apiKey,
+                apiFormat: "openai",
+                scope: "system",
+                models: [decoded.model],
+                modelProfiles: [{ model: decoded.model, displayName: workflow.title || workflow.workflowId, capability: workflow.capability }],
+            });
+        }
+    }
     const model = decoded?.model || value;
     const lookup = channelLookup(config.channels);
     const matched = decoded ? lookup.byId.get(decoded.channelId) : lookup.byModel.get(model);

@@ -12,6 +12,37 @@ afterEach(() => {
 });
 
 describe("ComfyUI generation task", () => {
+    test("a video graph without a duration control remains submittable while declared limits are enforced", async () => {
+        usePluginStore.getState().setRuntimeStatuses({ ...originalRuntimeStatuses, [COMFYUI_PLUGIN_ID]: "enabled" });
+        const workflowId = "video-without-duration";
+        const graph = { "1": { class_type: "VideoGenerator", inputs: { prompt: "default" } } };
+        const config: AiConfig = {
+            ...defaultConfig,
+            model: `comfyui-workflow::${workflowId}`,
+            taskWorkflowProvider: "comfyui",
+            videoSeconds: "6",
+            comfyUI: {
+                enabled: true,
+                baseUrl: "http://comfyui.test:8188",
+                apiKey: "",
+                selectedWorkflowId: workflowId,
+                workflows: [{ workflowId, title: "Video", capability: "video", workflowJson: graph, fields: [{ nodeId: "1", fieldName: "prompt", fieldValue: "default", source: "prompt", enabled: true }] }],
+            },
+        };
+        const input = { mode: "video" as const, prompt: "moving scene", config };
+        const task = await prepareBackendGenerationTask(input);
+        expect(task.type).toBe("canvas_video");
+        expect(task.provider).toBe("comfyui");
+        expect(task.input?.config.workflowJson).toEqual(graph);
+        expect(task.input?.config.workflowFields).toHaveLength(1);
+        await expect(prepareBackendGenerationTask({ ...input, referenceVideos: [{ id: "ref", name: "video.mp4", type: "video/mp4", url: "https://example.test/video.mp4", durationMs: 2000 }] })).rejects.toThrow("最多支持 0 个参考视频");
+
+        config.comfyUI.workflows[0].fields.push({ nodeId: "1", fieldName: "duration", fieldValue: 5, source: "", enabled: true, fieldType: "NUMBER", options: [5, 10] });
+        await expect(prepareBackendGenerationTask(input)).rejects.toThrow("视频时长不在当前模型支持范围内");
+        config.videoSeconds = "5";
+        expect((await prepareBackendGenerationTask(input)).provider).toBe("comfyui");
+    });
+
     test("submits the selected workflow and isolated provider configuration", async () => {
         usePluginStore.getState().setRuntimeStatuses({ ...originalRuntimeStatuses, [COMFYUI_PLUGIN_ID]: "enabled" });
         const config: AiConfig = {

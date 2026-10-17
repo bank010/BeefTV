@@ -491,6 +491,50 @@ func TestProviderConfigReorderedIDsPreserveOwnSecrets(t *testing.T) {
 	}
 }
 
+func TestProviderConfigComfyUINumericNodeIDsAreNotChannelIDs(t *testing.T) {
+	store, err := NewProviderConfig(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveLocalModelConfig([]byte(`{"channels":[{"id":"direct","apiKey":"kept-secret"}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	workflow := map[string]any{
+		"workflowId": "workflows/video/example.json", "title": "Example", "capability": "video",
+		"workflowJson": map[string]any{"12": map[string]any{"class_type": "CLIPTextEncode", "inputs": map[string]any{"text": "example"}}},
+		"sourceWorkflowJson": map[string]any{"nodes": []any{
+			map[string]any{"id": 12, "type": "CLIPTextEncode", "widgets_values": []any{"example", RedactedSecret}},
+			map[string]any{"id": 23, "type": "SaveVideo"},
+		}},
+	}
+	body, err := json.Marshal(map[string]any{
+		"channels": []any{map[string]any{"id": "direct", "apiKey": RedactedSecret}},
+		"comfyUI": map[string]any{"enabled": true, "workflows": []any{workflow}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []int64{1, 2} {
+		if _, err := store.SaveLocalModelConfigRevision(body, revision); err != nil {
+			t.Fatalf("saving ComfyUI workflow at revision %d: %v", revision, err)
+		}
+	}
+	effective, _, err := store.LoadEffectiveModelConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requireEffectiveChannel(t, effective, "direct")["apiKey"] != "kept-secret" {
+		t.Fatal("saving workflow lost the channel credential")
+	}
+	comfy := effective.Config["comfyUI"].(map[string]any)
+	saved := comfy["workflows"].([]any)[0].(map[string]any)
+	want, _ := json.Marshal(workflow)
+	got, _ := json.Marshal(saved)
+	if !bytes.Equal(got, want) {
+		t.Fatal("workflow JSON changed during credential preservation")
+	}
+}
+
 func TestProviderConfigDuplicateAndInvalidIDsDoNotAlias(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewProviderConfig(dir)
@@ -511,6 +555,10 @@ func TestProviderConfigDuplicateAndInvalidIDsDoNotAlias(t *testing.T) {
 	requireFileUnchanged(t, path, before)
 
 	for _, body := range [][]byte{
+		[]byte(`{"channels":[{"id":"channel-a"},{"id":"channel-a"}]}`),
+		[]byte(`{"channels":[{"id":1}]}`),
+		[]byte(`{"channels":[{"id":""}]}`),
+		[]byte(`{"channels":[{"id":null}]}`),
 		[]byte(`{"channels":[{"id":1,"apiKey":"` + RedactedSecret + `"}]}`),
 		[]byte(`{"channels":[{"id":"","apiKey":"` + RedactedSecret + `"}]}`),
 		[]byte(`{"channels":[{"id":null,"apiKey":"` + RedactedSecret + `"}]}`),

@@ -1,4 +1,6 @@
-import { configuredModelMatchesCapability, defaultConfig, normalizeModelOptionValue, normalizeRunningHubCapability, type AiConfig, type WorkflowFieldMapping } from "@/stores/use-config-store";
+import { comfyUIWorkflowForModel, comfyUIWorkflowModel, configuredModelMatchesCapability, defaultConfig, normalizeModelOptionValue, normalizeRunningHubCapability, type AiConfig, type WorkflowFieldMapping } from "@/stores/use-config-store";
+import { comfyUIOutputDimensions } from "@/lib/comfyui-output-size";
+import { comfyUIWorkflowForInput } from "@/lib/comfyui-image-routing";
 import { resolveAudioSpeechSettings } from "@/lib/audio-generation";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import { isH3Model, h3VideoOperation } from "@/lib/h3-video";
@@ -41,12 +43,16 @@ export function resolvedCanvasGenerationRequirements(config: AiConfig, node: Can
 }
 
 export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasGenerationMode, requirements?: ModelRequirements): AiConfig {
-    // 只有独立 Config 节点读取工作流元数据；普通图片/视频/音频节点始终按基础模型生成。
-    const workflowProvider = mode !== "text" && node?.type === CanvasNodeType.Config ? resolveCanvasWorkflowProvider(node.metadata) : "model";
+    // 模型选择决定 ComfyUI 执行路径；仅独立 Config 节点额外读取工作流来源元数据。
     const defaultModel = mode === "image" ? config.imageModel : mode === "video" ? config.videoModel : mode === "audio" ? config.audioModel : config.textModel;
     const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
     const storedModel = resolveCanvasGenerationModel(config, node?.metadata?.model, mode);
     const preferredModel = storedModel || resolveCanvasGenerationModel(config, defaultModel, mode) || fallbackModel;
+    const selectedComfyUIModel = comfyUIWorkflowForModel(config, preferredModel);
+    const workflowProvider = mode === "text" ? "model"
+        : selectedComfyUIModel ? "comfyui"
+        : node?.type === CanvasNodeType.Config ? resolveCanvasWorkflowProvider(node.metadata)
+        : "model";
     // 先合并节点上的实时选择，再做兼容性匹配。否则路由只看到全局默认值，节点改过的时长、分辨率或布尔能力无法参与分流。
     const workflowParameters = node?.metadata?.workflowParameters || {};
     const runningHubWorkflowId = node?.metadata?.runningHubWorkflowId?.trim() || config.runningHub.workflowId.trim();
@@ -54,14 +60,18 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         workflowProvider === "runninghub"
             ? config.runningHub.workflows.find((item) => item.workflowId.trim() === runningHubWorkflowId && (!node?.metadata?.runningHubWorkflowKind || (item.kind === "app" ? "app" : "workflow") === node.metadata.runningHubWorkflowKind))
             : undefined;
-    const comfyUIWorkflowId = node?.metadata?.comfyUIWorkflowId?.trim() || config.comfyUI.selectedWorkflowId.trim();
-    const selectedComfyUIWorkflow = workflowProvider === "comfyui" ? config.comfyUI.workflows.find((item) => item.workflowId.trim() === comfyUIWorkflowId) : undefined;
+    const selectedComfyUIId = selectedComfyUIModel?.workflowId || node?.metadata?.comfyUIWorkflowId?.trim() || config.comfyUI.selectedWorkflowId.trim();
+    const selectedComfyUIWorkflow = workflowProvider === "comfyui" ? comfyUIWorkflowForInput(config.comfyUI.workflows, selectedComfyUIId, mode === "image" ? (requirements?.input?.imageCount || 0) + (requirements?.input?.characterCount || 0) : 0) : undefined;
+    const comfyUIWorkflowId = selectedComfyUIWorkflow?.workflowId || selectedComfyUIId;
     const selectedWorkflowFields = workflowProvider === "runninghub"
         ? (selectedRunningHubWorkflow?.fields?.length ? selectedRunningHubWorkflow.fields : workflowVideoFieldsFromJson(selectedRunningHubWorkflow?.workflowJson))
         : workflowProvider === "comfyui"
           ? selectedComfyUIWorkflow?.fields || []
           : [];
     const workflowOutputSize = workflowProvider === "model" ? "" : workflowOutputSizeValue(selectedWorkflowFields, workflowParameters);
+    const outputDimensions = mode === "image" && selectedComfyUIWorkflow
+        ? comfyUIOutputDimensions(selectedComfyUIWorkflow.workflowJson, applyWorkflowParameterValues(selectedComfyUIWorkflow.fields, workflowParameters))
+        : undefined;
     const workflowParameterValue = (source: string) => {
         const value = workflowParameters[`source:${source}`];
         return value === undefined || value === null ? undefined : String(value);
@@ -69,7 +79,9 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     const requestedConfig: AiConfig = {
         ...config,
         quality: node?.metadata?.quality ?? workflowParameterValue("quality") ?? config.quality ?? defaultConfig.quality,
-        size: workflowProvider === "model" ? (node?.metadata?.size ?? config.size ?? defaultConfig.size) : workflowOutputSize || node?.metadata?.size || config.size || defaultConfig.size,
+        size: outputDimensions
+            ? (node?.metadata?.size && node.metadata.size !== "0" ? node.metadata.size : outputDimensions.size)
+            : workflowProvider === "model" ? (node?.metadata?.size ?? config.size ?? defaultConfig.size) : workflowOutputSize || node?.metadata?.size || config.size || defaultConfig.size,
         transparentBackground: node?.metadata?.transparentBackground ?? config.transparentBackground ?? defaultConfig.transparentBackground,
         videoSeconds:
             workflowProvider === "model" && !isH3Model(preferredModel)
@@ -183,6 +195,8 @@ export function resolveCanvasGenerationModel(config: AiConfig, model: string | u
     // Validation will report unavailable instead of choosing a standard default.
     if (mode === "video" && seedancePortraitModel(model)) return normalized || model;
     if (!normalized) return "";
+    const workflow = comfyUIWorkflowForModel(config, normalized);
+    if (workflow) return workflow.capability === mode ? comfyUIWorkflowModel(workflow.workflowId) : "";
     return configuredModelMatchesCapability(config, normalized, mode) ? normalized : "";
 }
 

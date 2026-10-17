@@ -51,7 +51,9 @@ export function ModelPicker({
     const triggerRef = useRef<HTMLButtonElement>(null);
     const options = useMemo(() => Array.from(new Set(selectableModelsByCapability(config, capability).filter(Boolean))), [capability, config]);
     const optionGroups = useMemo(() => {
-        const channelGroups = config.channels
+        const knownChannelIds = new Set(config.channels.map((channel) => channel.id));
+        const virtualChannels = Array.from(new Map(options.map((model) => resolveModelChannel(config, model)).filter((channel) => !knownChannelIds.has(channel.id)).map((channel) => [channel.id, channel])).values());
+        const channelGroups = [...config.channels, ...virtualChannels]
             .map((channel) => ({
                 key: channel.id,
                 label: channel.name || "未命名渠道",

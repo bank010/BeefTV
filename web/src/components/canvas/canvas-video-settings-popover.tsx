@@ -31,10 +31,11 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
     const sizeSupported = Boolean(videoProfile?.ratios.length);
     const resolution = videoProfile ? resolveVideoResolutionValue(videoProfile, config.vquality) : "";
     const size = videoProfile ? resolveVideoRatioValue(videoProfile, config.size) : "";
+    const workflowDuration = config.model.startsWith("comfyui-workflow::") && videoProfile?.duration.selection === "enum" && !videoProfile.duration.values?.length;
     const summary = [
         ...(resolutionSupported ? [videoResolutionLabel(resolution)] : []),
         ...(sizeSupported ? [taskConstraints?.ratioLabel || videoSizeLabel(size)] : []),
-        taskConstraints?.durationLocked ? "随原视频时长" : videoSecondsLabel(config.videoSeconds, videoProfile),
+        taskConstraints?.durationLocked ? "随原视频时长" : workflowDuration ? "时长随工作流" : videoSecondsLabel(config.videoSeconds, videoProfile),
     ].join(" · ");
     const displaySummary = summaryOverride || summary;
 

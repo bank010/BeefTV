@@ -70,7 +70,7 @@ func validateWorkflowMediaInputs(fields []Field, input Input) error {
 	capacities := map[string]int{"referenceimage": 0, "referencevideo": 0, "referenceaudio": 0}
 	hasMaskMapping := false
 	for _, field := range fields {
-		if field.Enabled != nil && !*field.Enabled {
+		if field.Enabled != nil && !*field.Enabled || field.SafeToOverride != nil && !*field.SafeToOverride {
 			continue
 		}
 		source := strings.ReplaceAll(strings.ReplaceAll(normalizeWorkflowFieldSource(field), "_", ""), "-", "")
@@ -1030,7 +1030,7 @@ func isWorkflowPromptCandidate(fieldName string, classType string, metaTitle str
 
 func workflowNodeMetaTitle(node map[string]interface{}) string {
 	meta, _ := node["_meta"].(map[string]interface{})
-	return fmt.Sprint(meta["title"])
+	return strings.TrimSpace(workflowScalarString(meta["title"]))
 }
 
 func workflowScalarString(value interface{}) string {

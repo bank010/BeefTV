@@ -104,6 +104,18 @@ func comfySavedWorkflowToAPI(saved map[string]any) (map[string]any, error) {
 			links[fmt.Sprint(link[0])] = link
 		}
 	}
+	nodesByID := make(map[string]map[string]any, len(nodes))
+	for _, raw := range nodes {
+		node, ok := raw.(map[string]any)
+		if !ok {
+			return nil, errors.New("ComfyUI 工作流包含无效节点")
+		}
+		id := workflowScalarString(node["id"])
+		if id == "" || nodesByID[id] != nil {
+			return nil, errors.New("ComfyUI 工作流节点 ID 缺失或重复")
+		}
+		nodesByID[id] = node
+	}
 	graph := make(map[string]any, len(nodes))
 	for _, raw := range nodes {
 		node, ok := raw.(map[string]any)
@@ -117,6 +129,9 @@ func comfySavedWorkflowToAPI(saved map[string]any) (map[string]any, error) {
 		}
 		if _, duplicate := graph[id]; duplicate {
 			return nil, fmt.Errorf("ComfyUI 工作流节点 ID 重复：%s", id)
+		}
+		if mode := managementIntValue(node["mode"], 0); mode == 2 || mode == 4 {
+			continue
 		}
 		inputs := make(map[string]any)
 		uiInputs, _ := node["inputs"].([]any)
@@ -135,13 +150,23 @@ func comfySavedWorkflowToAPI(saved map[string]any) (map[string]any, error) {
 			if input["widget"] != nil {
 				widgetValueIndex = widgetIndex
 				widgetIndex++
+				// ComfyUI serializes seed control_after_generate beside the seed,
+				// but that UI-only widget is absent from the API input list.
+				if isManagementSeedField(name) && widgetIndex < len(widgetValues) {
+					switch workflowScalarString(widgetValues[widgetIndex]) {
+					case "fixed", "increment", "decrement", "randomize":
+						widgetIndex++
+					}
+				}
 			}
 			if linkID := input["link"]; linkID != nil {
-				link, exists := links[fmt.Sprint(linkID)]
-				if !exists {
-					return nil, fmt.Errorf("ComfyUI 工作流节点 %s 的输入 %s 引用了不存在的连线", id, name)
+				link, err := comfySavedInputLink(linkID, nodesByID, links, make(map[string]bool))
+				if err != nil {
+					return nil, fmt.Errorf("ComfyUI 工作流节点 %s 的输入 %s：%w", id, name, err)
 				}
-				inputs[name] = []any{fmt.Sprint(link[1]), link[2]}
+				if link != nil {
+					inputs[name] = link
+				}
 				continue
 			}
 			if widgetValueIndex >= 0 {
@@ -151,9 +176,61 @@ func comfySavedWorkflowToAPI(saved map[string]any) (map[string]any, error) {
 				continue
 			}
 		}
-		graph[id] = map[string]any{"class_type": classType, "inputs": inputs}
+		graph[id] = comfyAPIWorkflowNode(classType, inputs, strings.TrimSpace(workflowScalarString(node["title"])))
 	}
 	return cloneComfyWorkflow(graph)
+}
+
+// Bypassed nodes forward a matching connected input; muted nodes contribute no
+// input. Ambiguous custom routing must be exported by ComfyUI as an API graph.
+func comfySavedInputLink(linkID any, nodes map[string]map[string]any, links map[string][]any, visiting map[string]bool) ([]any, error) {
+	key := workflowScalarString(linkID)
+	link, ok := links[key]
+	if !ok || visiting[key] {
+		return nil, errors.New("连线不存在或旁路形成循环")
+	}
+	visiting[key] = true
+	nodeID := workflowScalarString(link[1])
+	node := nodes[nodeID]
+	if node == nil {
+		return nil, errors.New("连线来源节点不存在")
+	}
+	switch managementIntValue(node["mode"], 0) {
+	case 2:
+		return nil, nil
+	case 4:
+		outputs, _ := node["outputs"].([]any)
+		slot := managementIntValue(link[2], -1)
+		if slot < 0 || slot >= len(outputs) {
+			return nil, errors.New("无法确定旁路输出，请在 ComfyUI 中导出 API 格式工作流")
+		}
+		output, _ := outputs[slot].(map[string]any)
+		outputType := workflowScalarString(output["type"])
+		inputs, _ := node["inputs"].([]any)
+		var candidates []any
+		for _, raw := range inputs {
+			input, _ := raw.(map[string]any)
+			if input["link"] != nil && outputType != "" && workflowScalarString(input["type"]) == outputType {
+				candidates = append(candidates, input["link"])
+			}
+		}
+		if len(candidates) != 1 {
+			return nil, errors.New("无法唯一确定旁路输入，请在 ComfyUI 中导出 API 格式工作流")
+		}
+		return comfySavedInputLink(candidates[0], nodes, links, visiting)
+	default:
+		return []any{nodeID, link[2]}, nil
+	}
+}
+
+// comfyAPIWorkflowNode keeps the UI node title in _meta so the settings page can
+// label fields with a human-readable name instead of a bare class_type.
+func comfyAPIWorkflowNode(classType string, inputs map[string]any, title string) map[string]any {
+	node := map[string]any{"class_type": classType, "inputs": inputs}
+	if title != "" && title != classType {
+		node["_meta"] = map[string]any{"title": title}
+	}
+	return node
 }
 
 func isComfyAPIWorkflow(value map[string]any) bool {
