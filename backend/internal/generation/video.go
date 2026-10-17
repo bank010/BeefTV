@@ -391,6 +391,9 @@ func BeefAPIVideoRequestBody(input Input) (map[string]interface{}, error) {
 	if VideoCapabilitySupportsAudio(input) {
 		body["generate_audio"] = ParseBool(input.Config.VideoGenerateAudio, true)
 	}
+	if VideoCapabilitySupportsWatermark(input) {
+		body["watermark"] = ParseBool(input.Config.VideoWatermark, false)
+	}
 	images := make([]map[string]interface{}, 0, len(input.ReferenceImages))
 	for _, image := range input.ReferenceImages {
 		url, err := openAIImageInputURL(image)

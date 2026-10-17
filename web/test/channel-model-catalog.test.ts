@@ -24,6 +24,7 @@ const originalApiRequest = apiClient.request;
 test("官方GPT图片旧默认配置升级质量和21:9尺寸，保留显式限制与第三方配置", () => {
     const model = "gpt-image-2.5-flare";
     const legacy = defaultModelCapabilityConfig("openai-image", "gpt-image-2");
+    legacy.image!.quality = { supported: true, values: ["auto", "low", "medium", "high"], default: "auto" };
     legacy.image!.size.values = ["2048x878"];
     legacy.image!.size.default = "2048x878";
     legacy.image!.size.presets = [{ tier: "1k", ratio: "21:9", size: "2048x878", width: 2048, height: 878 }];

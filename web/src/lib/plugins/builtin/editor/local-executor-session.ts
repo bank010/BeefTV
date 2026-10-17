@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { assertUserScope, captureUserScope, isUserScopeAbandonedError, type CapturedUserScope } from "@/lib/user-scope-guard";
 import { createDepthCaptureTask, type DepthCaptureResult } from "@/services/api/depth-capture";
 import { getResource, type RemoteResource } from "@/services/api/resources";
@@ -74,7 +75,7 @@ export function nextLocalExecutorClientOperationId(
     ) {
         return previous.clientOperationId;
     }
-    return crypto.randomUUID();
+    return createClientId();
 }
 
 export function localExecutorIntentAfterSubmit(

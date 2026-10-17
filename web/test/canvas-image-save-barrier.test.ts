@@ -18,6 +18,26 @@ const task: GenerationTask = { id: "task-original", type: "canvas_image", status
 
 beforeEach(() => useCanvasStore.setState({ projects: [structuredClone(project)] }));
 
+test("submission creates a stable operation ID without randomUUID in an HTTP WebView", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+    let savedOperation = "";
+    let submittedOperation = "";
+    try {
+        await runCanvasGenerationTaskToConsumer({ ...input, clientOperationId: undefined }, {
+            prepareTarget: async (options) => { savedOperation = options.clientOperationId || ""; },
+            bindTask: () => undefined,
+            consumeTask: async () => undefined,
+            runTask: async (options) => { submittedOperation = options.clientOperationId || ""; options.onTaskCreated?.(task); return { images: [] }; },
+        });
+        expect(savedOperation).toMatch(/^[A-Za-z0-9_-]{21}$/);
+        expect(submittedOperation).toBe(savedOperation);
+    } finally {
+        if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor);
+        else delete (crypto as Partial<Crypto>).randomUUID;
+    }
+});
+
 test("restoring a completed image retains recovery flags and cannot open a second paid generation", () => {
     const target = { ...project.nodes[0], metadata: { taskId: task.id, taskStatus: "succeeded" as const, status: "error" as const, resourceReloadAvailable: true, generationErrorCode: "canvas_conflict" as const, errorDetails: "生成结果已保留，请点击「继续取回」" } };
     const restored = canvasGenerationTaskNodes([target], target.id, task)[0];

@@ -40,6 +40,41 @@ func TestExportRecordsKeepFailureEvidenceAndLocalReason(t *testing.T) {
 	}
 }
 
+func TestExportIncludesIndependentEnvironmentEvidence(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:diagnostics-environment?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Task{}, &model.TaskLog{}, &model.ApiCallLog{}); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	svc := New(Dependencies{DataDir: dir, Store: repository.New(db)})
+	var req ExportRequest
+	if err := json.Unmarshal([]byte(`{"runtime":{"capabilities":{"secureRandom":true,"storageWritable":false,"secret":"never-export-me"}}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := svc.Export("user-1", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := readTestZIP(t, bundle.Data)
+	if !strings.Contains(files["context/environment.json"], `"catalog"`) || !strings.Contains(files["context/environment.json"], `"storage-write"`) {
+		t.Fatal("missing native evidence")
+	}
+	if !strings.Contains(files["context/runtime.json"], `"storageWritable": false`) {
+		t.Fatal("missing client capability")
+	}
+	if strings.Contains(files["context/runtime.json"], `"h264"`) {
+		t.Fatal("uncollected capability was inferred false")
+	}
+	for _, contents := range files {
+		if strings.Contains(contents, dir) || strings.Contains(contents, "never-export-me") {
+			t.Fatal("environment leaked unapproved fields")
+		}
+	}
+}
+
 func TestExportRedactsSensitiveValuesFromFixture(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:diagnostics-test?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

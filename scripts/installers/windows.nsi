@@ -483,6 +483,10 @@ Section "BeefTV (required)" SEC_APP
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BeefTV" "DisplayIcon" "$INSTDIR\BeefTV.exe"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BeefTV" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BeefTV" "NoRepair" 1
+  WriteRegStr HKCU "Software\Classes\beeftv" "" "URL:BeefTV"
+  WriteRegStr HKCU "Software\Classes\beeftv" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\beeftv\DefaultIcon" "" '$\"$INSTDIR\BeefTV.exe$\",0'
+  WriteRegStr HKCU "Software\Classes\beeftv\shell\open\command" "" '$\"$INSTDIR\BeefTV.exe$\" $\"%1$\"'
   # A successful move replaces the registered install; remove only the old
   # installer's shipped payload. Unknown user files remain in that directory.
   ${If} $PreviousInstallDir != ""
@@ -508,6 +512,12 @@ Section "Uninstall"
   SetOutPath "$0"
   StrCpy $CleanDir "$INSTDIR"
   Call un.RemovePayload
+  # A relocated or newer installation can own the same scheme. Only remove
+  # the association while its exact command still points at this executable.
+  ReadRegStr $0 HKCU "Software\Classes\beeftv\shell\open\command" ""
+  ${If} $0 == '$\"$INSTDIR\BeefTV.exe$\" $\"%1$\"'
+    DeleteRegKey HKCU "Software\Classes\beeftv"
+  ${EndIf}
   # A stale uninstaller copied from an older location must not unregister
   # or remove shortcuts for the current installation.
   ReadRegStr $RegisteredInstallDir HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BeefTV" "InstallLocation"

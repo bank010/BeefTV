@@ -382,7 +382,8 @@ export function upgradeGPTImageCapability(profile: ImageCapabilityConfig, protoc
     if (!Array.isArray(profile.quality?.values) || !Array.isArray(profile.size?.values)) return profile;
     const defaults = defaultImageCapabilityConfig(protocol, model);
     const legacyQuality = profile.quality.supported && profile.quality.default === "auto" && profile.quality.values.length === 4 && ["auto", "low", "medium", "high"].every((value) => profile.quality.values.includes(value));
-    const quality = legacyQuality && defaults.quality.values.includes("xhigh") ? { ...profile.quality, values: [...defaults.quality.values] } : profile.quality;
+    const quality = legacyQuality && (model.trim().toLowerCase() === "gpt-image-2" || defaults.quality.values.includes("xhigh"))
+        ? { ...profile.quality, values: [...defaults.quality.values], default: defaults.quality.default } : profile.quality;
     const fixSize = (value: string) => value === "2048x878" ? "2048x880" : value;
     return { ...profile, quality, size: { ...profile.size, values: profile.size.values.map(fixSize), default: fixSize(profile.size.default),
         ...(Array.isArray(profile.size.presets) ? { presets: profile.size.presets.map((preset) => preset.size === "2048x878" ? { ...preset, size: "2048x880", height: 880 } : preset) } : {}) } };
@@ -400,6 +401,9 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
     };
     if (protocol === "openai-image" && ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"].includes(model.trim().toLowerCase())) {
         image.quality.values = ["auto", "low", "medium", "high", "xhigh", "max"];
+    }
+    if (protocol === "openai-image" && model.trim().toLowerCase() === "gpt-image-2") {
+        image.quality = { supported: true, values: ["low", "medium", "high"], default: "low" };
     }
     const contract = protocol === "openai-image" ? beefAPIImageContract(model) : undefined;
     if (contract) {
@@ -1332,7 +1336,7 @@ export function normalizeImageValue(profile: ImageCapabilityConfig, value: { siz
     const presetTier = !profile.quality.supported ? imagePresetTierForSelection(profile, size) : undefined;
     const quality = profile.quality.supported
         ? requestedQuality === "auto" || requestedQuality === "any"
-            ? "auto"
+            ? profile.quality.values.includes("auto") ? "auto" : profile.quality.default
             : value.quality && profile.quality.values.includes(value.quality)
               ? value.quality
               : profile.quality.default || "auto"

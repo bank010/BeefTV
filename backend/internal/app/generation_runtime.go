@@ -15,6 +15,14 @@ import (
 
 type appResourcePort struct{ service *Service }
 
+func (p appResourcePort) EnsureMetadata(ctx context.Context, userID, resourceID string) (generation.ResourceInfo, error) {
+	resource, err := p.service.resourceDomain().EnsureMediaMetadata(ctx, userID, resourceID)
+	if err != nil {
+		return generation.ResourceInfo{}, err
+	}
+	return resourceInfoFromModel(userID, resource), nil
+}
+
 func (p appResourcePort) Lookup(userID, resourceID string) (generation.ResourceInfo, error) {
 	resource, err := p.service.repo.ResourceForUser(userID, resourceID)
 	if err != nil {

@@ -598,7 +598,9 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
         nodes.push({ ...node, metadata });
     }
     const chatSessions: CanvasAssistantSession[] = [];
-    for (const session of project.chatSessions) {
+    // Backend-created canvases may omit assistant sessions. Treat the missing
+    // optional collection like an empty one, as document hydration does.
+    for (const session of project.chatSessions || []) {
         const durableSession = durableSessions.get(session.id);
         const durableKeys = durableSession?.generationEffectKeys;
         if (durableProject && hasUnconfirmedGenerationKey(session.generationEffectKeys, durableKeys)) {

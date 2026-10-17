@@ -8,6 +8,7 @@ import { getClientDiagnosticEvents, getDiagnosticRuntime } from "@/services/diag
 import { clearVideoPreviewCache } from "@/services/api/resources";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { getDesktopAppBinding } from "@/services/desktop-runtime";
+import { EnvironmentChecks } from "./environment-checks";
 
 type DiagnosticsPanelProps = {
     taskId?: string;
@@ -90,6 +91,7 @@ export default function DiagnosticsPanel({ taskId, projectId, open, onClose }: D
             )}
         >
             <div className="max-h-[calc(100dvh-180px)] space-y-5 overflow-y-auto pt-4">
+                {open ? <EnvironmentChecks /> : null}
                 <div>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <span className="text-sm font-medium">日志范围</span>

@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { confinedArchivePath } from "@/lib/zip";
 import { canonicalize } from "json-canonicalize";
 import { isLocalRuntimeMode } from "@/lib/runtime-mode";
@@ -178,7 +179,7 @@ export function createCanvasArchiveRestoreHost(overrides: Partial<CanvasArchiveR
         discardProjects: (ids) => store().deleteProjects([...ids]),
         uploadMedia: async (blob, kind, meta) => {
             if (!usesCanonicalBackend) {
-                const storageKey = `${kind}:${scope.userScope}:${crypto.randomUUID()}`;
+                const storageKey = `${kind}:${scope.userScope}:${createClientId()}`;
                 const url = await (kind === "image" ? setImageBlob(storageKey, blob) : setMediaBlob(storageKey, blob));
                 assertUserScope(scope);
                 return { storageKey, url: url || "" };

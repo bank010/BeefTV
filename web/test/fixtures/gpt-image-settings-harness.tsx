@@ -8,11 +8,13 @@ import { submitBackendGenerationTask } from "../../src/services/api/generation-t
 import { qualityOptions } from "../../src/pages/create/creation-types";
 
 const models = ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"];
+const legacyProfile = defaultModelCapabilityConfig("openai-image", "gpt-image-2");
+legacyProfile.image!.quality = { supported: true, values: ["auto", "low", "medium", "high"], default: "auto" };
 const channel = createModelChannel({ id: "beefapi", baseUrl: "https://enterprise.beefapi.com/v1", apiKey: "fixture-only", models,
-    modelProfiles: models.map((model) => ({ model, capability: "image", protocol: "openai-image", capabilityConfig: defaultModelCapabilityConfig("openai-image", "gpt-image-2") })) });
+    modelProfiles: models.map((model) => ({ model, capability: "image", protocol: "openai-image", capabilityConfig: legacyProfile })) });
 
 function Harness() {
-    const [config, setConfig] = useState<AiConfig>(() => normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [channel], model: "beefapi::gpt-image-2", imageModel: "beefapi::gpt-image-2", quality: "low", size: "1024x1024", count: "1" } }).config);
+    const [config, setConfig] = useState<AiConfig>(() => normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [channel], model: "beefapi::gpt-image-2", imageModel: "beefapi::gpt-image-2", quality: "auto", size: "1024x1024", count: "1" } }).config);
     const [status, setStatus] = useState("");
     const theme = new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
     return <main className="p-4" style={{ width: 360, maxWidth: "100%", color: canvasThemes[theme].node.text, background: canvasThemes[theme].canvas.background }}>

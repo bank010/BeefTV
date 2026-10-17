@@ -2,9 +2,10 @@ import { type AxiosError, type AxiosRequestConfig } from "axios";
 
 import { appPathnameFrom } from "@/lib/app-routing";
 import { apiClient } from "@/services/api/request";
+import { browserCapabilities } from "./browser-environment";
 
 export type ClientDiagnosticLevel = "info" | "warning" | "error";
-export type ClientDiagnosticCategory = "navigation" | "action" | "request" | "runtime" | "task" | "plugin";
+export type ClientDiagnosticCategory = "navigation" | "action" | "request" | "runtime" | "task" | "plugin" | "environment";
 
 export type ClientDiagnosticEvent = {
     id: string;
@@ -140,7 +141,11 @@ export function recordDiagnosticEvent(input: DiagnosticEventInput) {
         stack: redactClientText(input.stack, 4000),
     };
     events.push(event);
-    if (events.length > maxEvents) events.splice(0, events.length - maxEvents);
+    while (events.length > maxEvents) {
+        const routineRequestIndex = events.findIndex((item) => item.category === "request" && item.level === "info");
+        if (routineRequestIndex >= 0) events.splice(routineRequestIndex, 1);
+        else events.shift();
+    }
 }
 
 export function getClientDiagnosticEvents(range?: { from?: Date; to?: Date }) {
@@ -161,6 +166,7 @@ export function getDiagnosticRuntime() {
         browser: typeof navigator !== "undefined" ? navigator.userAgent : "",
         os: typeof navigator !== "undefined" ? navigator.platform : "",
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+        capabilities: browserCapabilities(),
     };
 }
 

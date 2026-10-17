@@ -10,8 +10,6 @@ import { CanvasH3Controls, CanvasH3UnsupportedFrames } from "./canvas-h3-control
 import { resolveVideoOperation } from "@/lib/model-selection";
 
 import {
-    configuredModelMatchesCapability,
-    defaultConfig,
     modelOptionName,
     normalizeRunningHubCapability,
     resolveModelChannel,
@@ -21,14 +19,10 @@ import {
     type RunningHubWorkflow,
     type RunningHubWorkflowKind,
 } from "@/stores/use-config-store";
-import { resolveAudioSpeechSettings } from "@/lib/audio-generation";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import {
     defaultModelCapabilityConfig,
     modelCapabilityConfigFor,
-    normalizeImageValue,
-    normalizeVideoValue,
     workflowFieldChoiceValues,
     workflowFieldCurrentValue,
     workflowFieldHasStoredValue,
@@ -38,13 +32,13 @@ import {
     workflowFieldSubmissionValue,
     workflowFieldValueError,
     workflowImageCapabilityConfig,
-    workflowOutputSizeValue,
     workflowParameterFields,
     workflowVideoCapabilityConfig,
     workflowVideoFieldsFromJson,
     type WorkflowVideoFieldLike,
 } from "@/lib/model-capabilities";
-import { defaultImageParamsForModel, modelCompatibilityError, modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, type ModelRequirements } from "@/lib/model-selection";
+import { defaultImageParamsForModel, modelCompatibilityError } from "@/lib/model-selection";
+import { buildGenerationConfig as buildNodeConfig, buildCanvasGenerationRequirements } from "@/lib/canvas/canvas-generation-config";
 import { resolveCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import type { CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
@@ -105,30 +99,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const resolvedProvider = resolveCanvasWorkflowProvider(node.metadata);
     const workflowProvider = resolvedProvider;
     const workflowCapability: RunningHubCapability = mode === "video" ? "video" : mode === "audio" ? "audio" : "image";
-    const requirements: ModelRequirements = {
-        capability: mode,
-        input: inputSummary,
-        videoOperation: node.metadata?.videoEditOperation,
-        videoSeconds: mode === "video" ? node.metadata?.seconds || globalConfig.videoSeconds : undefined,
-        options: modelRequestOptions(
-            {
-                ...globalConfig,
-                size: node.metadata?.size || globalConfig.size,
-                quality: node.metadata?.quality || globalConfig.quality,
-                count: String(node.metadata?.count || globalConfig.count),
-                videoSeconds: node.metadata?.seconds || globalConfig.videoSeconds,
-                vquality: node.metadata?.vquality || globalConfig.vquality,
-                videoGenerateAudio: node.metadata?.generateAudio || globalConfig.videoGenerateAudio,
-                videoWatermark: node.metadata?.watermark || globalConfig.videoWatermark,
-                audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice,
-                audioFormat: node.metadata?.audioFormat || globalConfig.audioFormat,
-                audioSpeed: node.metadata?.audioSpeed || globalConfig.audioSpeed,
-                audioPitch: node.metadata?.audioPitch || globalConfig.audioPitch,
-                audioVolume: node.metadata?.audioVolume || globalConfig.audioVolume,
-            },
-            mode,
-        ),
-    };
+    const requirements = buildCanvasGenerationRequirements(globalConfig, node, mode, inputSummary);
     const config = buildNodeConfig(globalConfig, node, mode, requirements);
     const defaultWorkflowCapability = normalizeRunningHubCapability(globalConfig.runningHub.capability);
     const selectedRunningHubWorkflow = globalConfig.runningHub.workflows.find(
@@ -679,161 +650,6 @@ function WorkflowSelectedLabel({ kind, label }: { kind: "app" | "workflow"; labe
             <span>{label}</span>
         </span>
     );
-}
-
-function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: CanvasGenerationMode, requirements: ModelRequirements): AiConfig {
-    const workflowProvider = mode === "text" ? "model" : resolveCanvasWorkflowProvider(node.metadata);
-    if (workflowProvider === "model") return buildModelNodeConfig(globalConfig, node, mode, requirements);
-    const defaultModel = mode === "image" ? globalConfig.imageModel : mode === "video" ? globalConfig.videoModel : mode === "audio" ? globalConfig.audioModel : globalConfig.textModel;
-    const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
-    const storedModel = node.metadata?.model;
-    const preferredModel = storedModel && configuredModelMatchesCapability(globalConfig, storedModel, mode) ? storedModel : defaultModel && configuredModelMatchesCapability(globalConfig, defaultModel, mode) ? defaultModel : fallbackModel;
-    const model = preferredModel;
-    const selectedRunningHubWorkflowId = node.metadata?.runningHubWorkflowId?.trim();
-    const modeCapability = mode === "video" || mode === "audio" ? mode : "image";
-    const selectedRunningHubWorkflow = selectedRunningHubWorkflowId
-        ? globalConfig.runningHub.workflows.find((item) => item.workflowId.trim() === selectedRunningHubWorkflowId && (!node.metadata?.runningHubWorkflowKind || runningHubWorkflowKind(item) === node.metadata.runningHubWorkflowKind))
-        : undefined;
-    const comfyUIWorkflowId = node.metadata?.comfyUIWorkflowId?.trim() || globalConfig.comfyUI.selectedWorkflowId.trim();
-    const selectedComfyUIWorkflow = workflowProvider === "comfyui" ? globalConfig.comfyUI.workflows.find((item) => item.workflowId.trim() === comfyUIWorkflowId) : undefined;
-    const selectedWorkflowFields = workflowProvider === "runninghub"
-        ? (selectedRunningHubWorkflow?.fields?.length ? selectedRunningHubWorkflow.fields : workflowVideoFieldsFromJson(selectedRunningHubWorkflow?.workflowJson))
-        : workflowProvider === "comfyui"
-          ? selectedComfyUIWorkflow?.fields || []
-          : [];
-    const capabilityProfile = {
-        ...defaultModelCapabilityConfig(),
-        image: workflowImageCapabilityConfig(selectedWorkflowFields, defaultModelCapabilityConfig().image!),
-        video: workflowVideoCapabilityConfig(selectedWorkflowFields, defaultModelCapabilityConfig().video!),
-    };
-    const imageProfile = mode === "image" ? capabilityProfile.image! : undefined;
-    const workflowParameters = node.metadata?.workflowParameters || {};
-    const workflowOutputSize = workflowOutputSizeValue(selectedWorkflowFields, workflowParameters);
-    const workflowParameter = (source: string) => (workflowParameters[`source:${source}`] === undefined ? "" : String(workflowParameters[`source:${source}`]));
-    const normalizedImage = imageProfile
-        ? normalizeImageValue(imageProfile, {
-              size: workflowOutputSize || node.metadata?.size || globalConfig.size || defaultConfig.size,
-              quality: node.metadata?.quality || workflowParameter("quality") || globalConfig.quality || defaultConfig.quality,
-              transparentBackground: node.metadata?.transparentBackground || globalConfig.transparentBackground,
-              count: String(node.metadata?.count || globalConfig.canvasImageCount || globalConfig.count || defaultConfig.count),
-          })
-        : undefined;
-    const videoProfile = mode === "video" ? capabilityProfile.video! : undefined;
-    const rawVideoSettings = {
-        seconds: node.metadata?.seconds || workflowParameter("videoSeconds") || globalConfig.videoSeconds || defaultConfig.videoSeconds,
-        ratio: workflowOutputSize || node.metadata?.size || globalConfig.size || defaultConfig.size,
-        resolution: node.metadata?.vquality || workflowParameter("vquality") || globalConfig.vquality || defaultConfig.vquality,
-    };
-    const normalizedVideo = videoProfile ? { seconds: String(rawVideoSettings.seconds), ratio: rawVideoSettings.ratio, resolution: rawVideoSettings.resolution } : undefined;
-    const runningHub = {
-        ...globalConfig.runningHub,
-        enabled: mode !== "text" && workflowProvider === "runninghub" && globalConfig.runningHub.enabled,
-        selectedKind: selectedRunningHubWorkflow ? runningHubWorkflowKind(selectedRunningHubWorkflow) : globalConfig.runningHub.selectedKind,
-        workflowId: selectedRunningHubWorkflowId || "",
-        capability: normalizeRunningHubCapability(selectedRunningHubWorkflow?.capability, normalizeRunningHubCapability(globalConfig.runningHub.capability)),
-    };
-    const comfyUI = {
-        ...globalConfig.comfyUI,
-        enabled: mode !== "text" && workflowProvider === "comfyui" && globalConfig.comfyUI.enabled,
-        selectedWorkflowId: comfyUIWorkflowId,
-        workflows: workflowProvider === "comfyui"
-            ? globalConfig.comfyUI.workflows.map((item) => item.workflowId.trim() === comfyUIWorkflowId
-                ? {
-                      ...item,
-                      fields: item.fields.map((field) => {
-                          const randomKey = workflowFieldRandomKey(field);
-                          const hasValue = workflowFieldHasStoredValue(field, workflowParameters);
-                          const hasRandom = Object.prototype.hasOwnProperty.call(workflowParameters, randomKey);
-                          if (!hasValue && !hasRandom) return field;
-                          const value = workflowFieldSubmissionValue(field, workflowFieldCurrentValue(field, workflowParameters));
-                          return { ...field, ...(hasValue ? { fieldValue: value, value } : {}), source: "", sourceAutomatic: false, sourceFromUpstream: false, randomEnabled: hasRandom ? workflowParameters[randomKey] === true : false };
-                      }),
-                  }
-                : item)
-            : globalConfig.comfyUI.workflows,
-    };
-    return {
-        ...globalConfig,
-        taskWorkflowProvider: workflowProvider,
-        runningHub,
-        comfyUI,
-        model,
-        quality: workflowParameter("quality") || normalizedImage?.quality || node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
-        size: normalizedImage?.size || normalizedVideo?.ratio || node.metadata?.size || globalConfig.size || defaultConfig.size,
-        transparentBackground: normalizedImage?.transparentBackground || ((node.metadata?.transparentBackground || globalConfig.transparentBackground) === "true" ? "true" : "false"),
-        videoSeconds: normalizedVideo?.seconds || normalizeVideoDuration(node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds),
-        vquality: String(node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality),
-        videoGenerateAudio: videoProfile?.generateAudio.supported ? node.metadata?.generateAudio || globalConfig.videoGenerateAudio || String(videoProfile.generateAudio.default) : "false",
-        videoWatermark: videoProfile?.watermark.supported ? node.metadata?.watermark || globalConfig.videoWatermark || String(videoProfile.watermark.default) : "false",
-        ...resolveAudioSpeechSettings(model, {
-            audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice,
-            audioFormat: node.metadata?.audioFormat || globalConfig.audioFormat,
-            audioSpeed: node.metadata?.audioSpeed || globalConfig.audioSpeed,
-            audioPitch: node.metadata?.audioPitch || globalConfig.audioPitch,
-            audioVolume: node.metadata?.audioVolume || globalConfig.audioVolume,
-            audioInstructions: node.metadata?.audioInstructions || globalConfig.audioInstructions,
-        }),
-        count: normalizedImage?.count || String(node.metadata?.count || (mode === "image" ? globalConfig.canvasImageCount || globalConfig.count : globalConfig.count) || defaultConfig.count),
-    };
-}
-
-function buildModelNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: CanvasGenerationMode, requirements: ModelRequirements): AiConfig {
-    const defaultModel = mode === "image" ? globalConfig.imageModel : mode === "video" ? globalConfig.videoModel : mode === "audio" ? globalConfig.audioModel : globalConfig.textModel;
-    const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
-    const storedModel = node.metadata?.model;
-    const preferredModel = storedModel && configuredModelMatchesCapability(globalConfig, storedModel, mode) ? storedModel : defaultModel && configuredModelMatchesCapability(globalConfig, defaultModel, mode) ? defaultModel : fallbackModel;
-    const model = resolveCompatibleModel(globalConfig, preferredModel, mode === "image" ? { ...requirements, imageSize: node.metadata?.size || globalConfig.size || defaultConfig.size } : requirements) || preferredModel;
-    const generationDefaults = resolveModelGenerationDefaults(
-        globalConfig,
-        model,
-        mode === "image" ? "image" : mode === "video" ? "video" : undefined,
-        mode === "image"
-            ? {
-                  size: node.metadata?.size,
-                  quality: node.metadata?.quality,
-                  transparentBackground: node.metadata?.transparentBackground,
-                  count: String(node.metadata?.count || globalConfig.canvasImageCount || globalConfig.count || defaultConfig.count),
-              }
-            : {
-                  size: node.metadata?.size,
-                  videoSeconds: node.metadata?.seconds,
-                  vquality: node.metadata?.vquality,
-                  videoGenerateAudio: node.metadata?.generateAudio,
-                  videoWatermark: node.metadata?.watermark,
-              },
-        {
-            size: globalConfig.size || defaultConfig.size,
-            quality: globalConfig.quality || defaultConfig.quality,
-            transparentBackground: globalConfig.transparentBackground || defaultConfig.transparentBackground,
-            count: String(globalConfig.canvasImageCount || globalConfig.count || defaultConfig.count),
-            videoSeconds: globalConfig.videoSeconds || defaultConfig.videoSeconds,
-            vquality: globalConfig.vquality || defaultConfig.vquality,
-            videoGenerateAudio: globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio,
-            videoWatermark: globalConfig.videoWatermark || defaultConfig.videoWatermark,
-        },
-    );
-    const videoProfile = mode === "video" ? modelCapabilityConfigFor(globalConfig, model).video! : undefined;
-    return {
-        ...globalConfig,
-        taskWorkflowProvider: "model",
-        model,
-        quality: generationDefaults.quality || globalConfig.quality || defaultConfig.quality,
-        size: generationDefaults.size ?? globalConfig.size ?? defaultConfig.size,
-        transparentBackground: generationDefaults.transparentBackground || "false",
-        videoSeconds: generationDefaults.videoSeconds || normalizeVideoDuration(globalConfig.videoSeconds || defaultConfig.videoSeconds),
-        vquality: generationDefaults.vquality ?? normalizeVideoResolution(globalConfig.vquality || defaultConfig.vquality),
-        videoGenerateAudio: videoProfile?.generateAudio.supported ? generationDefaults.videoGenerateAudio || String(videoProfile.generateAudio.default) : "false",
-        videoWatermark: videoProfile?.watermark.supported ? generationDefaults.videoWatermark || String(videoProfile.watermark.default) : "false",
-        ...resolveAudioSpeechSettings(model, {
-            audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice,
-            audioFormat: node.metadata?.audioFormat || globalConfig.audioFormat,
-            audioSpeed: node.metadata?.audioSpeed || globalConfig.audioSpeed,
-            audioPitch: node.metadata?.audioPitch || globalConfig.audioPitch,
-            audioVolume: node.metadata?.audioVolume || globalConfig.audioVolume,
-            audioInstructions: node.metadata?.audioInstructions || globalConfig.audioInstructions,
-        }),
-        count: generationDefaults.count || String(node.metadata?.count || (mode === "image" ? globalConfig.canvasImageCount || globalConfig.count : globalConfig.count) || defaultConfig.count),
-    };
 }
 
 function videoConfigPatch(key: keyof AiConfig, value: string) {

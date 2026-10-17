@@ -7,7 +7,7 @@ import { canvasNodeResourceId } from "@/lib/canvas/canvas-resource-id";
 import { bindBackendCanvasGenerationResult, CanvasGenerationDurableAckError, CanvasGenerationMaterializationError } from "@/services/canvas-generation-consumer";
 import { captureUserScope, isUserScopeAbandonedError, userScopeMatches } from "@/lib/user-scope-guard";
 import { ensureCanvasNodeAsset, retryCanvasAssetSyncAfterRateLimit } from "@/services/project-asset-sync";
-import { listGenerationTasks, queryFailedVideoProviderTask, subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
+import { findGenerationTaskByOperation, listGenerationTasks, queryFailedVideoProviderTask, subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
 import { useTaskDetails } from "@/hooks/use-task-details";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
@@ -349,7 +349,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 const pendingAgentContinuation = node.metadata?.agentGenerationContinuation?.status === "pending";
                 const aggregateBatchRoot = node.metadata?.isBatchRoot && node.metadata.batchChildIds?.length && !node.metadata.taskId;
                 if (aggregateBatchRoot && !pendingAgentContinuation) return false;
-                return pendingAgentContinuation || node.metadata?.status === NODE_STATUS_LOADING || node.metadata?.errorDetails === "页面刷新后生成已中断，请重新生成。" || Boolean(node.metadata?.taskId && (node.metadata.status !== NODE_STATUS_SUCCESS || (node.metadata.taskStatus === "succeeded" && !node.metadata.content && !node.metadata.storageKey)));
+                return pendingAgentContinuation || ["submitting", "unknown"].includes(node.metadata?.generationSubmissionState || "") || node.metadata?.status === NODE_STATUS_LOADING || node.metadata?.errorDetails === "页面刷新后生成已中断，请重新生成。" || Boolean(node.metadata?.taskId && (node.metadata.status !== NODE_STATUS_SUCCESS || (node.metadata.taskStatus === "succeeded" && !node.metadata.content && !node.metadata.storageKey)));
             });
             const needsDiscovery = recoveryNodes.some((node) => !node.metadata?.taskId && !node.metadata?.agentGenerationContinuation?.taskId);
             const projectTasks = needsDiscovery && !localMode
@@ -363,12 +363,20 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             if (!isCurrentProject()) return;
             await Promise.all(
                 recoveryNodes.map(async (node) => {
-                    const discoveredTask = projectTasks.find((task) => generationTaskNodeId(task) === node.id);
+                    let discoveredTask = projectTasks.find((task) => generationTaskNodeId(task) === node.id);
+                    if (!node.metadata?.taskId && node.metadata?.taskClientOperationId) {
+                        try {
+                            discoveredTask = await findGenerationTaskByOperation(node.metadata.taskClientOperationId, startedProjectId, signal);
+                            if (discoveredTask && generationTaskNodeId(discoveredTask) !== node.id) discoveredTask = undefined;
+                        } catch {
+                            // A failed lookup cannot prove that the paid submission was rejected.
+                        }
+                    }
                     const taskId = node.metadata?.taskId || node.metadata?.agentGenerationContinuation?.taskId || discoveredTask?.id;
                     if (!taskId) {
                         if (!isCurrentProject()) return;
                         setNodes((current) =>
-                            isCurrentProject() ? current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: "页面刷新后找不到对应任务，请重新生成。" } } : item)) : current,
+                            isCurrentProject() ? current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...(item.metadata?.taskClientOperationId ? { generationSubmissionState: "unknown" as const, taskStage: "提交结果待确认", errorDetails: "尚未查到上次提交的任务，请稍后重新打开画布查询，暂勿重新生成" } : { errorDetails: "页面刷新后找不到对应任务，请重新生成。" }) } } : item)) : current,
                         );
                         return;
                     }
@@ -502,7 +510,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             let changed = false;
             const next = current.map((node) => {
                 const metadata = node.metadata;
-                if (!metadata || metadata.status !== NODE_STATUS_LOADING || metadata.content || metadata.taskId || metadata.agentGenerationContinuation?.status === "pending" || generationRequestsRef.current.has(node.id)) return node;
+                if (!metadata || metadata.status !== NODE_STATUS_LOADING || metadata.content || metadata.taskId || metadata.taskClientOperationId || metadata.agentGenerationContinuation?.status === "pending" || generationRequestsRef.current.has(node.id)) return node;
                 changed = true;
                 return {
                     ...node,

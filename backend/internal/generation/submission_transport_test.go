@@ -53,6 +53,27 @@ func TestVideoSubmissionBeforeTLSConnectionIsRetryable(t *testing.T) {
 	}
 }
 
+func TestVideoSubmissionExplicitModelRejectionIsNotUncertain(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		rejected   bool
+	}{
+		{"unavailable-model", `{"error":{"code":"model_not_found","message":"分组 企业 下模型 grok-imagine-video-1.5 无可用渠道（distributor）"}}`, true},
+		{"generic-unavailable", `{"error":{"code":"service_unavailable"}}`, false},
+		{"text-only", `model_not_found`, false},
+		{"lost-response", `{"error":{"code":"do_request_failed"}}`, false},
+		{"has-task", `{"error":{"code":"model_not_found","task_id":"existing-task"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := HTTPError{StatusCode: http.StatusServiceUnavailable, Body: tc.body}
+			failure := ClassifyError(UncertainVideoSubmission(context.Background(), err))
+			if SafeRouteRejection(err) != tc.rejected || failure.Uncertain == tc.rejected {
+				t.Fatalf("incorrect submission classification: %+v", failure)
+			}
+		})
+	}
+}
+
 func TestVideoSubmissionAfterRequestOrRedirectRemainsUncertain(t *testing.T) {
 	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	stalled, closeServer := stalledTLS(t)

@@ -339,6 +339,7 @@ export type CanvasNodeMetadata = {
     actionBoardColumns?: number;
     taskId?: string;
     taskClientOperationId?: string;
+    generationSubmissionState?: "submitting" | "unknown" | "accepted" | "rejected";
     taskClientOperationInput?: string;
     taskClientOperationTerminal?: boolean;
     retryOf?: string;

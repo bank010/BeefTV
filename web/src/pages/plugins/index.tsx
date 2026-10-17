@@ -109,6 +109,7 @@ export default function PluginsPage() {
                 const runtime = await fetchPluginRuntimeState();
                 setPluginStates(runtime.states);
                 setRuntimeStatuses(runtime.statuses);
+                if (runtime.states[EAGLE_PLUGIN_ID]) setEnabled(EAGLE_PLUGIN_ID, runtime.states[EAGLE_PLUGIN_ID].effectiveEnabled);
             } catch (error) {
                 message.error(error instanceof Error ? error.message : "读取插件状态失败");
                 setPluginStates({});
@@ -219,7 +220,7 @@ export default function PluginsPage() {
     const togglePlugin = async (plugin: RegisteredPlugin, enabled: boolean) => {
         try {
             const backendManagedWorkflow = plugin.manifest.id === COMFYUI_PLUGIN_ID || plugin.manifest.id === RUNNINGHUB_PLUGIN_ID;
-            if (localRuntime && !backendManagedWorkflow) {
+            if (localRuntime && !backendManagedWorkflow && plugin.manifest.id !== EAGLE_PLUGIN_ID) {
                 setEnabled(plugin.manifest.id, enabled);
                 message.success(`${plugin.manifest.name}${enabled ? "已启用" : "已停用"}`);
                 return;

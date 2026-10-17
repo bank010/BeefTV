@@ -8,6 +8,7 @@ import { buildAudioGenerationMetadata, buildVideoGenerationMetadata, clearInPlac
 import { canvasGenerationPromptMetadata } from "@/lib/canvas/canvas-generation-submission";
 import { mediaResultMetadata } from "@/lib/canvas/canvas-node-semantics";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { rebaseCanvasGenerationTarget } from "@/lib/canvas/canvas-generation-live-target";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
@@ -82,7 +83,7 @@ export async function executeVideoGeneration({
     registerPendingNodeIds([videoId]);
     // 待生成版本先加入版本族，但只有成功结果才能替换当前主版本。
     const applyVideoNodes = (current: CanvasNodeData[]): CanvasNodeData[] => {
-        if (reuseSourceNode) return current.map((node) => (node.id === nodeId ? { ...node, ...videoNode } : node));
+        if (reuseSourceNode) return current.map((node) => (node.id === nodeId ? rebaseCanvasGenerationTarget(node, videoNode, sourceNode) : node));
         if (!isExistingVideoNode || !sourceNode) return [...current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } } : node)), videoNode];
         const rootId = versionRootId!;
         const nextLabel = nextCanvasVersionLabel(rootId, current);
@@ -149,6 +150,7 @@ export async function executeVideoGeneration({
                 },
             },
             {
+                onSubmission: (metadata) => setNodes((current) => current.map((node) => node.id === videoId ? { ...node, metadata: { ...node.metadata, ...metadata } } : node)),
                 bindTask: (task) => bindGenerationTask(videoId, task),
                 consumeTask: (task) => applyGenerationTaskResult(videoId, task),
             },
@@ -205,7 +207,7 @@ export async function executeAudioGeneration({
     };
     registerPendingNodeIds([audioId]);
     const applyAudioNodes = (current: CanvasNodeData[]): CanvasNodeData[] =>
-        reuseSourceNode ? current.map((node) => (node.id === nodeId ? { ...node, ...audioNode } : node)) : [...current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } } : node)), audioNode];
+        reuseSourceNode ? current.map((node) => (node.id === nodeId ? rebaseCanvasGenerationTarget(node, audioNode, sourceNode) : node)) : [...current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS } } : node)), audioNode];
     const newAudioConnection: CanvasConnection | null = !reuseSourceNode && !isExistingAudioNode ? { id: nanoid(), fromNodeId: nodeId, toNodeId: audioId } : null;
     const storedAudioProject = projectId ? useCanvasStore.getState().projects.find((project) => project.id === projectId) : undefined;
     const workingAudioConnections = storedAudioProject?.connections?.length ? storedAudioProject.connections : canvasConnections;
@@ -239,6 +241,7 @@ export async function executeAudioGeneration({
                 metadata: { sourceNodeId: nodeId, ...taskContext, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, resolvedCharacterVoiceKey: generationContext.resolvedCharacterVoices[0]?.voiceKey, ...skillMetadata },
             },
             {
+                onSubmission: (metadata) => setNodes((current) => current.map((node) => node.id === audioId ? { ...node, metadata: { ...node.metadata, ...metadata } } : node)),
                 bindTask: (task) => bindGenerationTask(audioId, task),
                 consumeTask: (task) => applyGenerationTaskResult(audioId, task),
             },

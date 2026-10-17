@@ -289,6 +289,7 @@ export async function healCanvasProjectMediaAssets(
 export async function persistCanvasGenerationTarget(input: {
     projectId: string;
     nodeId: string;
+    clientOperationId?: string;
     signal?: AbortSignal;
     expectedScope: CapturedUserScope;
     ensureNodeAsset?: typeof ensureCanvasNodeAsset;
@@ -305,6 +306,10 @@ export async function persistCanvasGenerationTarget(input: {
     assertCurrent();
     const project = useCanvasStore.getState().openProject(input.projectId);
     if (!project?.nodes.some((node) => node.id === input.nodeId)) throw new CanvasGenerationTargetSaveError(undefined, "生成节点已不存在，未开始生成");
+    if (input.clientOperationId) {
+        project.nodes = project.nodes.map((node) => node.id === input.nodeId ? { ...node, metadata: { ...node.metadata, taskClientOperationId: input.clientOperationId, generationSubmissionState: "submitting" } } : node);
+        useCanvasStore.getState().updateProject(project.id, { nodes: project.nodes });
+    }
     syncInMemoryCanvasProjectMediaAssets(project);
     try {
         await persist(input.projectId, { nodes: project.nodes, connections: project.connections }, input.expectedScope);

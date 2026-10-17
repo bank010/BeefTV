@@ -40,6 +40,15 @@ test("GPT Image 39档在设置面板均能点击并原值提交，明暗主题�
             await page.goto(`${server.url}?theme=${theme}`);
             expect(await page.locator(".image-size-tiers").evaluate((element) => getComputedStyle(element).display)).toBe("grid");
             expect(await page.getByTestId("creation-labels").textContent()).toBe("超高、最高");
+            expect(await page.getByRole("button", { name: "自动", exact: true }).count()).toBe(0);
+            expect(await page.getByRole("button", { name: "低", exact: true }).getAttribute("aria-pressed")).toBe("true");
+            await page.getByRole("button", { name: "校验请求", exact: true }).click();
+            await page.waitForFunction(() => Boolean(document.querySelector('[role="status"]')?.textContent));
+            expect((requests.at(-1)! as { input: { config: { quality: string } } }).input.config.quality).toBe("low");
+            if (process.env.GPT_IMAGE_SETTINGS_SCREENSHOTS) {
+                mkdirSync(process.env.GPT_IMAGE_SETTINGS_SCREENSHOTS, { recursive: true });
+                await page.screenshot({ path: `${process.env.GPT_IMAGE_SETTINGS_SCREENSHOTS}/image2-default-${theme}-${width}.png`, fullPage: true });
+            }
             for (const model of ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]) {
                 await page.getByRole("combobox", { name: "模型" }).selectOption(`beefapi::${model}`);
                 const qualities = model === "gpt-image-2" ? ["low", "medium", "high"] : ["low", "medium", "high", "xhigh", "max"];
@@ -70,6 +79,6 @@ test("GPT Image 39档在设置面板均能点击并原值提交，明暗主题�
             }
             await page.close();
         }
-        expect(requests.length).toBe(78);
+        expect(requests.length).toBe(80);
     } finally { await browser.close(); server.stop(true); }
 }, 90000);

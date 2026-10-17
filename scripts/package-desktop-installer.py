@@ -33,7 +33,7 @@ def package(version, platform, payload, output):
             (stage / 'Applications').symlink_to('/Applications')
             shutil.copy2(ROOT / 'docs/desktop-install.md', stage / 'Installation.txt')
             subprocess.run(['hdiutil', 'create', '-volname', 'BeefTV', '-srcfolder', str(stage),
-                            '-format', 'UDZO', '-ov', str(output)], check=True)
+                            '-fs', 'HFS+', '-nospotlight', '-format', 'UDZO', '-verbose', '-ov', str(output)], check=True)
     elif platform == 'windows-amd64':
         compiler = shutil.which('makensis') or r'C:\Program Files (x86)\NSIS\makensis.exe'
         with tempfile.TemporaryDirectory(prefix='beeftv-nsis-') as directory:

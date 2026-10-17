@@ -13,6 +13,8 @@ import { CanvasPresetPicker, type CanvasPromptPreset } from "./canvas-preset-pic
 import type { CanvasGenerationMode, CanvasNodeMetadata, CanvasWorkspaceMode } from "@/types/canvas";
 import { CanvasH3ReferenceOrder } from "./canvas-h3-reference-order";
 import { isH3Style } from "@/lib/h3-video";
+import { CanvasPromptFontControl } from "./canvas-prompt-font-control";
+import { DEFAULT_PROMPT_FONT_SIZE, useCreationPreferencesStore } from "@/stores/use-creation-preferences-store";
 
 type CanvasConfigComposerProps = {
     model?: string;
@@ -49,6 +51,8 @@ export const CONFIG_REFERENCE_PATTERN = /@\[node:([^\]]+)\]|@(图片|视频|音�
 
 export function CanvasConfigComposer({ value, inputs, skillReferences = [], generationMode, metadata, model="", onChange, onMetadataChange, onClose, workspaceMode = "professional" }: CanvasConfigComposerProps) {
     const theme = canvasThemes[useActiveTheme()];
+    const promptFontSize = useCreationPreferencesStore((state) => state.preferences.promptFontSize ?? DEFAULT_PROMPT_FONT_SIZE);
+    const promptTextStyle = { fontSize: promptFontSize, lineHeight: 1.5 };
     const editorRef = useRef<HTMLDivElement>(null);
     const composingRef = useRef(false);
     const [mention, setMention] = useState<MentionState | null>(null);
@@ -181,6 +185,7 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
                     <div className="truncate text-[var(--fs-label)] opacity-55">{simpleMode ? "已连接素材会自动带入" : workflowVideoReferenceMode ? "已连接媒体会按工作流字段顺序自动带入" : "@ 引用已连接素材或已激活技能，发送前自动组装"}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                    <CanvasPromptFontControl />
                     <Button size="small" type="text" className="!h-7 !w-7 !min-w-7 !p-0" icon={<X className="size-3.5" />} onClick={onClose} />
                 </div>
             </div>
@@ -203,13 +208,13 @@ export function CanvasConfigComposer({ value, inputs, skillReferences = [], gene
                 </div>
             ) : null}
             <div className="canvas-config-composer-editor relative rounded-lg" style={{ background: theme.node.fill }}>
-                {!value.trim() ? <div className="pointer-events-none absolute left-4 top-3 text-sm leading-7" style={{ color: theme.node.placeholder }}>输入提示词，按 @ 引用连接素材或技能</div> : null}
+                {!value.trim() ? <div className="pointer-events-none absolute left-4 top-3 text-sm leading-7" style={{ color: theme.node.placeholder, ...promptTextStyle }}>输入提示词，按 @ 引用连接素材或技能</div> : null}
                 <div
                     ref={editorRef}
                     contentEditable
                     suppressContentEditableWarning
                     className="thin-scrollbar min-h-32 max-h-[min(42vh,360px)] w-full overflow-y-auto whitespace-pre-wrap break-words px-4 py-3 text-sm leading-7 outline-none"
-                    style={{ color: theme.node.text }}
+                    style={{ color: theme.node.text, ...promptTextStyle }}
                     onInput={() => {
                         if (!composingRef.current) syncFromEditor();
                     }}

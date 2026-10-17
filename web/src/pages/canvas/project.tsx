@@ -3066,6 +3066,9 @@ function InfiniteCanvasPage() {
                         ) : null}
 
                         <CanvasProjectContextMenu
+                            canvasId={projectId}
+                            projectId={currentProject?.projectId}
+                            readOnly={readOnly}
                             menu={contextMenu}
                             node={contextMenuNode}
                             workspaceMode={workspaceMode}

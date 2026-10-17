@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { chromium, type Browser, type Page } from "playwright";
+import { productCss } from "./fixtures/product-css";
 
 let browser: Browser;
 let server: ReturnType<typeof Bun.serve>;
@@ -17,8 +18,7 @@ beforeAll(async () => {
     if (!build.success) throw new Error(build.logs.join("\n"));
     const js = await build.outputs.find(o => o.path.endsWith(".js"))!.text();
     const css = (await build.outputs.find(o => o.path.endsWith(".css"))?.text() || "")
-        + readFileSync(import.meta.dir + "/../src/styles/globals.css", "utf8").replace(/^@import .*;$/gm, "")
-        + readFileSync(import.meta.dir + "/../src/styles/workspace-product.css", "utf8");
+        + await productCss();
     server = Bun.serve({ port: 0, fetch(req) {
         const path = new URL(req.url).pathname;
         if (path === "/harness.js") return new Response(js, { headers: { "Content-Type": "application/javascript" } });
@@ -57,6 +57,90 @@ test("菜单在窗口外时诊断报告不可见，保留动效偏好", async ()
         expect(recorded.some(event => event.code === "MODEL_PICKER_OPEN")).toBe(false);
     } finally { await page.close(); }
 }, 30000);
+
+test("高分屏默认模型菜单紧贴自己的选择框", async () => {
+    const page = await open({ reduced: true });
+    try {
+        await page.setViewportSize({ width: 2560, height: 1440 });
+        await page.evaluate(() => document.body.classList.add("app-user-overlays"));
+        const select = page.locator(".model-default-select").first();
+        await select.click();
+        const popup = page.locator(".model-default-select-popup-image:not(.ant-select-dropdown-hidden)");
+        await popup.waitFor();
+        await page.waitForFunction(() => (window as unknown as { diagnostics: () => DiagnosticEvent[] }).diagnostics().some(event => event.code === "MODEL_PICKER_OPEN"));
+        const triggerBox = (await select.boundingBox())!;
+        const popupBox = (await popup.boundingBox())!;
+        expect(Math.abs(popupBox.y - triggerBox.y - triggerBox.height)).toBeLessThanOrEqual(8);
+        if (process.env.BEEFTV_SETTINGS_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.BEEFTV_SETTINGS_SCREENSHOT_DIR}/default-model-highdpi.png` });
+    } finally { await page.close(); }
+}, 15000);
+
+for (const surface of ["侧栏", "弹窗"]) {
+    test(`减少动态效果下，${surface}里的菜单保持贴合选择框`, async () => {
+        const page = await open({ reduced: true });
+        try {
+            await page.getByRole("button", { name: `打开验证${surface}` }).click();
+            const container = page.locator(surface === "侧栏" ? ".ant-drawer" : ".ant-modal");
+            const select = container.locator(".model-default-select").first();
+            await select.click();
+            const popup = page.locator(".model-default-select-popup-image:not(.ant-select-dropdown-hidden)");
+            await popup.waitFor();
+            await page.waitForTimeout(150);
+            const triggerBox = (await select.boundingBox())!;
+            const popupBox = (await popup.boundingBox())!;
+            expect(Math.abs(popupBox.y - triggerBox.y - triggerBox.height)).toBeLessThanOrEqual(8);
+            expect(Math.abs(popupBox.x - triggerBox.x)).toBeLessThanOrEqual(8);
+            // Inspect the placement mechanism instead of assuming transform
+            // carries translation in this pinned Ant Design version.
+            const placement = await popup.evaluate(element => ({ transform: (element as HTMLElement).style.transform, left: (element as HTMLElement).style.left, top: (element as HTMLElement).style.top }));
+            expect(placement.transform).not.toContain("translate");
+            expect(parseFloat(placement.left)).toBeGreaterThan(0);
+            expect(parseFloat(placement.top)).toBeGreaterThan(0);
+        } finally { await page.close(); }
+    }, 15000);
+}
+
+test("菜单仍在窗口内但偏离选择框时单独告警", async () => {
+    const page = await open({ reduced: true });
+    try {
+        await page.addStyleTag({ content: ".model-default-select-popup { top: 700px !important; }" });
+        await page.locator(".model-default-select").first().click();
+        await page.waitForFunction(() => (window as unknown as { diagnostics: () => DiagnosticEvent[] }).diagnostics().some(event => event.code === "MODEL_PICKER_POPUP_MISALIGNED"));
+        const event = (await events(page)).find(event => event.code === "MODEL_PICKER_POPUP_MISALIGNED")!;
+        expect(event.level).toBe("warning");
+        expect(event.message).toContain("在窗口内");
+        expect(event.message).toContain("菜单位置偏离选择框");
+    } finally { await page.close(); }
+}, 15000);
+
+for (const dark of [false, true]) {
+    test(`模型能力标签有可读的文字与底色：${dark ? "深色" : "浅色"}`, async () => {
+        const page = await open({ dark });
+        try {
+            await page.getByRole("button", { name: "查看模型能力标签" }).click();
+            const tag = page.locator(".ant-tag").first();
+            const contrast = await tag.evaluate(element => {
+                const style = getComputedStyle(element);
+                const context = document.createElement("canvas").getContext("2d")!;
+                const parse = (color: string) => {
+                    context.clearRect(0, 0, 1, 1);
+                    context.fillStyle = color;
+                    context.fillRect(0, 0, 1, 1);
+                    const rgba = [...context.getImageData(0, 0, 1, 1).data];
+                    return [rgba[0]!, rgba[1]!, rgba[2]!, rgba[3]! / 255];
+                };
+                const surface = parse(getComputedStyle(document.body).backgroundColor);
+                const blend = (rgba: number[]) => rgba.slice(0, 3).map((value, i) => value * (rgba[3] ?? 1) + surface[i]! * (1 - (rgba[3] ?? 1)));
+                const luminance = (rgb: number[]) => rgb.map(value => { const c = value / 255; return c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4; }).reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i]!, 0);
+                const foreground = luminance(blend(parse(style.color)));
+                const background = luminance(blend(parse(style.backgroundColor)));
+                return (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05);
+            });
+            expect(contrast).toBeGreaterThanOrEqual(4.5);
+            if (process.env.BEEFTV_SETTINGS_SCREENSHOT_DIR) await page.getByTestId("model-capabilities").screenshot({ path: `${process.env.BEEFTV_SETTINGS_SCREENSHOT_DIR}/model-tags-${dark ? "dark" : "light"}.png` });
+        } finally { await page.close(); }
+    }, 15000);
+}
 
 test("快速切换模型时诊断只检查最后打开的菜单", async () => {
     const page = await open({ reduced: true });
@@ -147,6 +231,8 @@ for (const reduced of [false, true]) {
                         await page.waitForFunction((title) => (window as unknown as { diagnostics: () => DiagnosticEvent[] }).diagnostics().some(event => event.code === "MODEL_PICKER_OPEN" && event.message.startsWith(title!)), title, { timeout: 3000 });
                         const popup = page.locator(".model-default-select-popup:not(.ant-select-dropdown-hidden)");
                         const box = (await popup.boundingBox())!;
+                        const trigger = (await row.locator(".model-default-select").boundingBox())!;
+                        expect(Math.min(Math.abs(box.y - trigger.y - trigger.height), Math.abs(trigger.y - box.y - box.height))).toBeLessThanOrEqual(8);
                         const viewport = page.viewportSize()!;
                         expect(box.x).toBeGreaterThanOrEqual(0);
                         expect(box.y).toBeGreaterThanOrEqual(0);

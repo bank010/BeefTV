@@ -48,6 +48,12 @@ type ResourcePort interface {
 	LocalMode() bool
 }
 
+// ResourceMetadataPort repairs missing facts from authorized local bytes.
+// It is separate from reads because it can persist a completed probe.
+type ResourceMetadataPort interface {
+	EnsureMetadata(ctx context.Context, userID, resourceID string) (ResourceInfo, error)
+}
+
 type LimitsPort interface {
 	GeneratedFileBytes(ctx context.Context) (int64, error)
 	ResourceUploadBytes(ctx context.Context) (int64, error)

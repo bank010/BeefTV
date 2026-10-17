@@ -3,12 +3,32 @@ package app
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 
 	"infinite-canvas/backend/internal/generation"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/provider/workflow"
 )
+
+func TestRejectedModelSubmissionSurvivesPersistenceWithoutRetryLock(t *testing.T) {
+	s, task := workflowPaidTaskFixture(t)
+	cause := generation.UncertainVideoSubmission(context.Background(), generation.HTTPError{
+		StatusCode: http.StatusServiceUnavailable,
+		Body:       `{"error":{"code":"model_not_found","message":"分组 企业 下模型 grok-imagine-video-1.5 无可用渠道（distributor）"}}`,
+	})
+	_ = s.terminalCoordinator().handleExecutionFailure(&task, cause, false, false)
+	stored, err := s.repo.Task(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != model.TaskStatusFailed || stored.Stage == "submission_unknown" || persistedFailureBlocksRetry(stored.Error, stored.Stage) {
+		t.Fatalf("explicit rejection remained uncertain: %+v", stored)
+	}
+	if code := taskForOutput(*stored).ErrorCode; code != "provider_unavailable" {
+		t.Fatalf("code = %q", code)
+	}
+}
 
 func TestUnsentVideoFailureSurvivesPersistenceWithoutRetryLock(t *testing.T) {
 	s, task := workflowPaidTaskFixture(t)

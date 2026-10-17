@@ -26,7 +26,9 @@ func TestDefaultPixelPresetsSatisfyImageGenerationConstraints(t *testing.T) {
 
 func TestGPTImageQualityTiersValidateAll39Selections(t *testing.T) {
 	count := 0
-	legacyJSON, err := json.Marshal(&ModelCapabilityConfig{Version: 1, Image: DefaultImageCapabilityConfig("openai-image", "gpt-image-2")})
+	legacyProfile := DefaultImageCapabilityConfig("openai-image", "gpt-image-2")
+	legacyProfile.Quality = ImageQualityConfig{Supported: true, Values: []string{"auto", "low", "medium", "high"}, Default: "auto"}
+	legacyJSON, err := json.Marshal(&ModelCapabilityConfig{Version: 1, Image: legacyProfile})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +64,7 @@ func TestGPTImageQualityTiersValidateAll39Selections(t *testing.T) {
 
 func TestGPTImageLegacyUpgradePreservesCustomLimitsAndSource(t *testing.T) {
 	legacy := DefaultImageCapabilityConfig("openai-image", "gpt-image-2")
+	legacy.Quality = ImageQualityConfig{Supported: true, Values: []string{"auto", "low", "medium", "high"}, Default: "auto"}
 	legacy.Size.Values = []string{"2048x878"}
 	legacy.Size.Default = "2048x878"
 	legacy.Size.Presets = []ImageSizePreset{{Tier: "1k", Ratio: "21:9", Size: "2048x878", Width: 2048, Height: 878}}
@@ -76,6 +79,33 @@ func TestGPTImageLegacyUpgradePreservesCustomLimitsAndSource(t *testing.T) {
 	limited := applyModelSpecificImageCapability(legacy, "openai-image", "gpt-image-2.5-flare", "")
 	if len(limited.Quality.Values) != 1 || limited.Quality.Default != "low" {
 		t.Fatal("explicit custom quality restriction changed")
+	}
+}
+
+func TestImage2DefaultAndLegacyAutoResolveLowWithoutChangingExplicitTiers(t *testing.T) {
+	profile := DefaultImageCapabilityConfig("openai-image", "gpt-image-2")
+	if profile.Quality.Default != "low" || containsCapabilityString(profile.Quality.Values, "auto") {
+		t.Fatal("image2 must show low as its default")
+	}
+	legacy := *profile
+	legacy.Quality = ImageQualityConfig{Supported: true, Values: []string{"auto", "low", "medium", "high"}, Default: "auto"}
+	upgraded := applyModelSpecificImageCapability(&legacy, "openai-image", "gpt-image-2", "")
+	if upgraded.Quality.Default != "low" || legacy.Quality.Default != "auto" {
+		t.Fatal("legacy migration must not mutate the source")
+	}
+	for _, quality := range []string{"", "auto", "medium", "high"} {
+		config := map[string]any{"quality": quality, "size": "2880x2880"}
+		ApplyChannelCapabilityDefaults(config, "image", &ModelCapabilityConfig{Image: upgraded})
+		want := quality
+		if quality == "" || quality == "auto" {
+			want = "low"
+		}
+		if config["quality"] != want || config["size"] != "2880x2880" {
+			t.Fatalf("selection changed: %#v", config)
+		}
+	}
+	if DefaultImageCapabilityConfig("openai-image", "gpt-image-2.5-flare").Quality.Default != "auto" {
+		t.Fatal("2.5 default changed")
 	}
 }
 

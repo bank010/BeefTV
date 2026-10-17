@@ -85,11 +85,16 @@ export function recordModelPickerOpenChange(snapshot: ModelPickerSnapshot, open:
             openChecks.delete(snapshot.pickerId);
             const popup = doc.querySelector<HTMLElement>(`${POPUP_SELECTOR}-${snapshot.pickerId}`) ?? undefined;
             const visible = popup && popupVisible(doc, popup);
+            const trigger = doc.querySelector<HTMLElement>(`[data-model-picker-id="${snapshot.pickerId}"]`);
+            const triggerRect = trigger?.getBoundingClientRect();
+            const popupRect = popup?.getBoundingClientRect();
+            const gap = triggerRect && popupRect ? Math.min(Math.abs(popupRect.top - triggerRect.bottom), Math.abs(triggerRect.top - popupRect.bottom)) : undefined;
+            const misaligned = visible && triggerRect && popupRect && gap !== undefined && (gap > 16 || popupRect.right <= triggerRect.left || popupRect.left >= triggerRect.right);
             recordDiagnosticEvent({
-                level: visible ? "info" : "warning",
+                level: visible && !misaligned ? "info" : "warning",
                 category: "action",
-                code: visible ? "MODEL_PICKER_OPEN" : "MODEL_PICKER_POPUP_HIDDEN",
-                message: `${snapshot.title} 展开：${snapshotText(snapshot)}，${describePopup(doc, popup)}，${surroundings(doc)}`,
+                code: !visible ? "MODEL_PICKER_POPUP_HIDDEN" : misaligned ? "MODEL_PICKER_POPUP_MISALIGNED" : "MODEL_PICKER_OPEN",
+                message: `${snapshot.title} 展开：${snapshotText(snapshot)}，${describePopup(doc, popup)}${triggerRect && gap !== undefined ? `，选择框位于 (${Math.round(triggerRect.left)}, ${Math.round(triggerRect.top)})，菜单间距 ${Math.round(gap)}px${misaligned ? "，菜单位置偏离选择框" : ""}` : ""}，${surroundings(doc)}`,
                 durationMs: delay,
             });
         },

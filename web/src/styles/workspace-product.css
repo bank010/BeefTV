@@ -1184,8 +1184,8 @@
 @media (prefers-reduced-motion: reduce) {
     .app-product-workspace *,
     .app-product-overlays * { animation-duration: 1ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
-    /* Coordinate transitions corrupt synchronous placement measurements; keep motion-end events. */
-    .app-product-overlays .model-default-select-popup { transition-property: opacity, transform !important; }
+    /* Placement must measure unscaled coordinates; keep motion-end events. */
+    .app-product-overlays .model-default-select-popup { transition-property: opacity !important; transform: none !important; }
     .app-product-workspace .product-collection-card:hover,
     .app-product-workspace .library-card:hover,
     .app-product-workspace .task-grid-card:hover,

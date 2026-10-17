@@ -83,6 +83,7 @@ export function ModelDefaultGrid({ config, onChange, onOpenChannels }: { config:
                             <Select
                                 aria-label={row.title}
                                 className="model-default-select"
+                                data-model-picker-id={row.id}
                                 value={value}
                                 options={options}
                                 placeholder={unavailable ? "已选模型不可用，请重新选择" : options.length ? "选择模型" : "暂无可用模型"}

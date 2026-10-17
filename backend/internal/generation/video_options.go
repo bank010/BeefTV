@@ -2,6 +2,7 @@ package generation
 
 import (
 	"context"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -43,7 +44,13 @@ func IsBeefAPIVideoConfig(ctx context.Context, config Config) bool {
 		want := strings.TrimRight(testBase, "/")
 		return got == want || strings.HasPrefix(got, want+"/")
 	}
-	return providerpreset.IsBeefAPIEndpoint(config.BaseURL)
+	if providerpreset.IsBeefAPIEndpoint(config.BaseURL) {
+		return true
+	}
+	// The domestic gateway uses the same video wire contract. This only selects
+	// the request format; hosted-account credential ownership stays unchanged.
+	u, err := url.Parse(strings.TrimSpace(config.BaseURL))
+	return err == nil && u.Scheme == "https" && strings.EqualFold(u.Hostname(), "beefapi.com") && u.User == nil && (u.Port() == "" || u.Port() == "443")
 }
 
 func IsBeefAPISeedancePreuploadConfig(ctx context.Context, config Config) bool {

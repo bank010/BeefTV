@@ -239,6 +239,10 @@ func (s *Service) Task(userID string, id string) (*model.Task, error) {
 	return s.taskDomain().Get(userID, id)
 }
 
+func (s *Service) TaskByClientOperation(userID, projectID, operationID string) (*model.Task, error) {
+	return s.taskDomain().FindOperation(userID, projectID, operationID)
+}
+
 func (s *Service) hydrateTaskProviderRequestID(task *model.Task) {
 	if task == nil || task.ProviderRequestID != "" {
 		return

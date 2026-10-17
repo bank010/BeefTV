@@ -14,6 +14,29 @@ import (
 type systemProxySettings struct {
 	config        httpproxy.Config
 	excludeSimple bool
+	autoConfig    bool
+}
+
+// ConfigurationStatus returns no proxy addresses, bypass hosts or credentials.
+func ConfigurationStatus() struct {
+	Mode           string
+	AutoConfigOnly bool
+} {
+	status := struct {
+		Mode           string
+		AutoConfigOnly bool
+	}{Mode: "direct"}
+	if ExplicitProxyConfigured() {
+		status.Mode = "environment"
+		return status
+	}
+	system := readSystemProxy()
+	if system.config.HTTPProxy != "" || system.config.HTTPSProxy != "" {
+		status.Mode = "system"
+	} else {
+		status.AutoConfigOnly = system.autoConfig
+	}
+	return status
 }
 
 // Desktop launchers do not inherit shell proxy variables. Read system settings
@@ -167,5 +190,6 @@ func parseMacProxy(output string) systemProxySettings {
 	return systemProxySettings{
 		config:        httpproxy.Config{HTTPProxy: address("HTTP"), HTTPSProxy: address("HTTPS"), NoProxy: strings.Join(bypass, ",")},
 		excludeSimple: values["ExcludeSimpleHostnames"] == "1",
+		autoConfig:    values["ProxyAutoConfigEnable"] == "1" || values["ProxyAutoDiscoveryEnable"] == "1",
 	}
 }

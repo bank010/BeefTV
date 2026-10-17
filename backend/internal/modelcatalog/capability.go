@@ -79,6 +79,9 @@ func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapab
 	if name := strings.ToLower(strings.TrimSpace(modelName)); protocol == "openai-image" && (name == "gpt-image-2.5-flare" || name == "gpt-image-2.5-sunburst") {
 		image.Quality.Values = []string{"auto", "low", "medium", "high", "xhigh", "max"}
 	}
+	if protocol == "openai-image" && strings.EqualFold(strings.TrimSpace(modelName), "gpt-image-2") {
+		image.Quality = ImageQualityConfig{Supported: true, Values: []string{"low", "medium", "high"}, Default: "low"}
+	}
 	switch model.ChannelInterfaceType(protocol) {
 	case model.ChannelInterfaceGrokImage:
 		image.References.MaxImages = 1
@@ -712,8 +715,8 @@ func applyModelSpecificImageCapability(profile *ImageCapabilityConfig, protocol 
 		return profile
 	}
 	result := *profile
-	if name != "gpt-image-2" && profile.Quality.Supported && profile.Quality.Default == "auto" && len(profile.Quality.Values) == 4 && containsCapabilityString(profile.Quality.Values, "auto") && containsCapabilityString(profile.Quality.Values, "low") && containsCapabilityString(profile.Quality.Values, "medium") && containsCapabilityString(profile.Quality.Values, "high") {
-		result.Quality.Values = DefaultImageCapabilityConfig(protocol, name).Quality.Values
+	if profile.Quality.Supported && profile.Quality.Default == "auto" && len(profile.Quality.Values) == 4 && containsCapabilityString(profile.Quality.Values, "auto") && containsCapabilityString(profile.Quality.Values, "low") && containsCapabilityString(profile.Quality.Values, "medium") && containsCapabilityString(profile.Quality.Values, "high") {
+		result.Quality = DefaultImageCapabilityConfig(protocol, name).Quality
 	}
 	result.Size.Values = append([]string(nil), profile.Size.Values...)
 	for i, size := range result.Size.Values {

@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { rebaseCanvasGenerationTarget } from "@/lib/canvas/canvas-generation-live-target";
 
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { canGenerateImageInPlace, findAvailableGenerationGroupPosition, imageGenerationChildPosition, generationFailureNodeStatus, imageGenerationGroupSize } from "@/lib/canvas/canvas-generation-layout";
@@ -167,7 +168,7 @@ export async function executeImageGeneration({
         ...workingNodes.map((node) => {
             if (node.id !== nodeId) return node;
             if (isConfigNode) return { ...node, metadata: { ...node.metadata, ...canvasGenerationPromptMetadata(prompt, effectivePrompt), status: NODE_STATUS_LOADING, errorDetails: undefined } };
-            if (reuseSourceNode) return { ...node, position: rootNode.position, width: rootNode.width, height: rootNode.height, title: rootNode.title, metadata: { ...rootNode.metadata, errorDetails: undefined } };
+            if (reuseSourceNode) return rebaseCanvasGenerationTarget(node, rootNode, sourceNode);
             if (isImageNode) return node.metadata?.content ? node : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } };
             return {
                 ...node,
@@ -231,6 +232,7 @@ export async function executeImageGeneration({
                         },
                     },
                     {
+                        onSubmission: (metadata) => setNodes((current) => current.map((node) => node.id === targetId ? { ...node, metadata: { ...node.metadata, ...metadata } } : node)),
                         bindTask: (task) => bindGenerationTask(targetId, task),
                         consumeTask: (task) => applyGenerationTaskResult(targetId, task),
                         isCurrent,

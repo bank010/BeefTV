@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { useCallback, useRef, type Dispatch, type SetStateAction } from "react";
 import { App } from "antd";
 
@@ -237,7 +238,7 @@ export function useCanvasGenerationRetry({
                 // Edited input after a non-retryable failure is a new submission, not replay of the old retry operation.
                 const retryContext = node.metadata?.taskId && !shouldBlockAutomaticRetry(originalError, node.metadata?.taskStage)
                     ? await createGenerationRetryContext(node.metadata.taskId, node.metadata.attemptGroupId)
-                    : { clientOperationId: crypto.randomUUID() };
+                    : { clientOperationId: createClientId() };
                 setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined, failedInputFingerprint: undefined } } : item)));
                 await runCanvasGenerationTaskToConsumer(
                     { ...input, ...retryContext, expectedScope },

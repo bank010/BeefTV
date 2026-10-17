@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type Dispatch, type DragEvent, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
@@ -568,7 +569,7 @@ export function useCanvasUpload({
         }
         if(target?.referenceToNodeId) {
             const persistedNode = nodesRef.current.find(item=>item.id===node.id) ?? node;
-            const linked=connectDirectorReferenceNodes([...nodesRef.current.filter(item=>item.id!==node.id),persistedNode],connectionsRef.current,[node.id],target.referenceToNodeId,()=>crypto.randomUUID());
+            const linked=connectDirectorReferenceNodes([...nodesRef.current.filter(item=>item.id!==node.id),persistedNode],connectionsRef.current,[node.id],target.referenceToNodeId,()=>createClientId());
             nodesRef.current = linked.nodes;
             connectionsRef.current = linked.connections;
             setNodes(linked.nodes); setConnections(linked.connections);

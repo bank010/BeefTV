@@ -1,7 +1,7 @@
 import { generationErrorMessage } from "@/lib/generation-error";
 import { GENERATION_RESULT_FETCH_STAGE } from "@/lib/generation-delivery-progress";
 import { assertUserScope, captureUserScope, isUserScopeAbandonedError, type CapturedUserScope } from "@/lib/user-scope-guard";
-import { http, apiBaseURL, type BackendEnvelope, type HttpRequestConfig } from "@/services/api/request";
+import { ApiError, http, apiBaseURL, type BackendEnvelope, type HttpRequestConfig } from "@/services/api/request";
 import { consumeTaskTextStream, createTaskTextStreamParser, type TaskTextStreamEvent } from "@/services/api/task-text-stream";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 import { publishGenerationDeliveryProgress } from "@/stores/use-generation-delivery-progress";
@@ -150,6 +150,16 @@ export type GenerationTaskPageRequest = {
     activeOnly: boolean;
     cursor?: string;
 };
+
+/** A missing receipt never authorizes another paid generation. */
+export async function findGenerationTaskByOperation(operationId: string, projectId: string, signal?: AbortSignal): Promise<GenerationTask | undefined> {
+    try {
+        return await http.get<GenerationTask>(`/tasks/by-operation/${encodeURIComponent(operationId)}`, { params: { projectId }, signal });
+    } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return undefined;
+        throw error;
+    }
+}
 
 type GenerationTaskPage<T> = { tasks: T[]; nextCursor?: string };
 type GenerationTaskListOptions = { projectId?: string; activeOnly?: boolean };

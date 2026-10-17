@@ -169,6 +169,19 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *app.Service, hostedProfile ...b
 		}
 		ok(c, tasks)
 	})
+	r.GET("/tasks/by-operation/:operationId", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		task, err := svc.TaskByClientOperation(user.ID, c.Query("projectId"), c.Param("operationId"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, task)
+	})
 	r.GET("/tasks/:id", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

@@ -1,8 +1,10 @@
 package diagnostics
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"infinite-canvas/backend/internal/environment"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 )
 
 type Dependencies struct {
+	DataDir      string
 	UpdateLogDir string
 	Store        Store
 	Brand        Brand
@@ -21,6 +24,7 @@ type Dependencies struct {
 }
 
 type Service struct {
+	dataDir      string
 	updateLogDir string
 	store        Store
 	brand        Brand
@@ -42,7 +46,11 @@ func New(deps Dependencies) *Service {
 	if brand == nil {
 		brand = staticBrand{name: defaultBrandName, slug: defaultBrandSlug}
 	}
-	return &Service{store: deps.Store, brand: brand, config: deps.Config, now: now, newID: newID, updateLogDir: deps.UpdateLogDir}
+	return &Service{dataDir: deps.DataDir, store: deps.Store, brand: brand, config: deps.Config, now: now, newID: newID, updateLogDir: deps.UpdateLogDir}
+}
+
+func (s *Service) CheckEnvironment(ctx context.Context, repair bool) environment.Report {
+	return environment.Inspect(ctx, s.dataDir, repair)
 }
 
 func (s *Service) Preview(userID string, req ExportRequest) (*Preview, error) {
@@ -142,10 +150,12 @@ func (s *Service) collect(userID string, req ExportRequest) (*collection, error)
 		truncated = true
 	}
 	collected := &collection{
-		Window: window, Description: redactText(req.Description, maxDescription), TaskID: taskID, ProjectID: projectID, Truncated: truncated,
+		Environment: s.CheckEnvironment(context.Background(), false),
+		Window:      window, Description: redactText(req.Description, maxDescription), TaskID: taskID, ProjectID: projectID, Truncated: truncated,
 		Runtime: runtimeRecord{
 			AppVersion: redactText(req.Runtime.AppVersion, 120), BuildCommit: redactText(req.Runtime.BuildCommit, 120),
 			Browser: redactText(req.Runtime.Browser, 240), OS: redactText(req.Runtime.OS, 120), Timezone: redactText(req.Runtime.Timezone, 80),
+			Capabilities: req.Runtime.Capabilities,
 		},
 	}
 	for _, event := range clientEvents {

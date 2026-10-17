@@ -296,9 +296,6 @@ export const CanvasNode = React.memo(function CanvasNode({
 
     const connectionTilt = isConnectionTarget && !reduceMediaEffects && !dragOffset
         ? canvasConnectionTilt(data, connectionApproach) : undefined;
-    // 分镜远景以分组标题和缩略图表达结构；子节点标题在 25% 以下会互相挤压，
-    // 只对内置分镜 Fixture 的子节点收起外置标题，回到近景后仍恢复完整标题。
-    const hideDistantStoryboardChildHeader = scale < 0.5 && Boolean(data.parentId) && (data.metadata?.fixture === "libtv-storyboard" || data.type === CanvasNodeType.Image || data.type === CanvasNodeType.Video);
 
     return (
         <div
@@ -353,23 +350,21 @@ export const CanvasNode = React.memo(function CanvasNode({
             }}
             onContextMenu={(event) => onContextMenu(event, data.id)}
         >
-            {hideDistantStoryboardChildHeader ? null : (
-                <NodeExternalHeader
-                    node={data}
-                    scale={scale}
-                    dimensionLabel={null}
-                    active={isSelected || isFocusRelated}
-                    editable={!readOnly && !data.metadata?.locked && Boolean(onTitleChange)}
-                    editing={isEditingTitle}
-                    draft={titleDraft}
-                    theme={theme}
-                    onDraftChange={setTitleDraft}
-                    onDragStart={readOnly ? undefined : (event) => onMouseDown(event, data.id)}
-                    onEdit={() => setIsEditingTitle(true)}
-                    onCommit={commitTitle}
-                    onCancel={() => { setTitleDraft(data.title); setIsEditingTitle(false); }}
-                />
-            )}
+            <NodeExternalHeader
+                node={data}
+                scale={scale}
+                dimensionLabel={null}
+                active={isSelected || isFocusRelated}
+                editable={!readOnly && !data.metadata?.locked && Boolean(onTitleChange)}
+                editing={isEditingTitle}
+                draft={titleDraft}
+                theme={theme}
+                onDraftChange={setTitleDraft}
+                onDragStart={readOnly ? undefined : (event) => onMouseDown(event, data.id)}
+                onEdit={() => setIsEditingTitle(true)}
+                onCommit={commitTitle}
+                onCancel={() => { setTitleDraft(data.title); setIsEditingTitle(false); }}
+            />
             <div
                 className="canvas-node-shell relative h-full w-full overflow-visible rounded-[var(--node-radius)]"
                 data-node-selected={isSelected ? "true" : "false"}
@@ -709,8 +704,6 @@ function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDo
     return <div className={`absolute z-[var(--node-z-handle)] size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
 }
 
-const NODE_EXTERNAL_HEADER_MIN_SCALE = 0.35;
-
 function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, editing, draft, theme, onDragStart, onDraftChange, onEdit, onCommit, onCancel }: {
     node: CanvasNodeData;
     scale: number;
@@ -726,25 +719,33 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
     onCommit: () => void;
     onCancel: () => void;
 }) {
-    // 标题保持屏幕尺寸只适用于近景；远景继续反向缩放会遮住节点和连线。
-    if (scale < NODE_EXTERNAL_HEADER_MIN_SCALE && !editing && node.metadata?.fixture !== "libtv-readonly-dense") return null;
+    const titleInputRef = useRef<HTMLInputElement>(null);
+    useEffect(() => {
+        if (!editing) return;
+        const commitOutsideInput = (event: PointerEvent) => {
+            const input = titleInputRef.current;
+            if (!input || !(event.target instanceof Node) || input.contains(event.target)) return;
+            // 画布手势可能阻止鼠标默认失焦，主动触发同一条 onBlur 保存路径。
+            input.blur();
+        };
+        window.addEventListener("pointerdown", commitOutsideInput, true);
+        return () => window.removeEventListener("pointerdown", commitOutsideInput, true);
+    }, [editing]);
     const inverseScale = 1 / Math.max(scale, 0.05);
     const isDirectorNode = node.type === CanvasNodeType.Director || Boolean(node.metadata?.directorSceneId);
     const Icon = isDirectorNode ? Move3d : nodeTypeIcon(node.type);
-    const maxHeaderWidth = Math.min(240, node.width * scale);
     const directorCardWidth = Math.min(node.width, node.height);
 
     return (
         <div
-            className="canvas-node-external-header absolute bottom-full left-0 z-[var(--node-z-overlay)] flex h-6 items-center gap-1 overflow-hidden"
+            className="canvas-node-external-header absolute bottom-full left-0 z-[var(--node-z-overlay)] flex min-h-6 items-center gap-1"
+            data-expanded={active || editing ? "true" : undefined}
+            data-editing={editing ? "true" : undefined}
             style={{
-                width: dimensionLabel ? "calc(var(--canvas-node-width) * var(--canvas-live-scale, 1))" : undefined,
-                maxWidth: dimensionLabel ? undefined : maxHeaderWidth,
                 left: node.metadata?.directorSceneId ? Math.max(0, (node.width - directorCardWidth) / 2) : undefined,
-                "--canvas-node-width": `${node.width}px`,
+                "--canvas-node-width": `${node.metadata?.directorSceneId ? directorCardWidth : node.width}px`,
+                "--canvas-node-header-width": `min(240px, calc(var(--canvas-node-width) * var(--canvas-live-scale, ${scale})))`,
                 borderRadius: "var(--r-sm)",
-                background: "transparent",
-                paddingInline: "var(--space-1-half)",
                 color: active ? theme.node.text : theme.node.label,
                 transform: `scale(var(--canvas-live-inverse-scale, ${inverseScale}))`,
                 transformOrigin: "left bottom",
@@ -762,7 +763,7 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
                 event.stopPropagation();
             }}
         >
-            <div className="flex min-w-0 items-center gap-1" style={{ maxWidth: maxHeaderWidth }}>
+            <div className="flex min-w-0 flex-1 items-center gap-1">
                 <button
                     type="button"
                     // LibTV 标题行只展示节点类型图标；保留无障碍拖动按钮，但不额外绘制抓手，
@@ -782,9 +783,10 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
                 >
                     {node.metadata?.locked ? <Lock className="size-3" /> : <GripVertical className="size-3" strokeWidth={1.8} />}
                 </button>
-                <Icon className="size-3 shrink-0" strokeWidth={1.8} data-node-header-icon={isDirectorNode ? "director" : undefined} />
+                <Icon className="canvas-node-title-type-icon size-3 shrink-0" strokeWidth={1.8} data-node-header-icon={isDirectorNode ? "director" : undefined} />
                 {editing ? (
                     <input
+                        ref={titleInputRef}
                         autoFocus
                         value={draft}
                         className="h-6 min-w-20 max-w-[190px] flex-1 truncate rounded bg-transparent px-1.5 text-xs font-medium outline-none"
@@ -799,12 +801,12 @@ function NodeExternalHeader({ node, scale, dimensionLabel, active, editable, edi
                         aria-label="节点名称"
                     />
                 ) : editable ? (
-                    <button type="button" className="group flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 text-xs font-medium outline-none transition-opacity hover:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1" style={{ opacity: active ? 1 : 0.78, outlineColor: theme.node.muted }} onClick={onEdit} aria-label={`编辑节点名称：${node.title}`}>
-                        <span className="min-w-0 flex-1 truncate" title={node.title}>{node.title}</span>
+                    <button type="button" className="group flex min-w-0 flex-1 items-center gap-1 rounded px-0.5 text-left text-xs font-medium outline-none transition-opacity hover:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1" style={{ opacity: active ? 1 : 0.78, outlineColor: theme.node.muted }} onClick={onEdit} title={node.title} aria-label={`编辑节点名称：${node.title}`}>
+                        <span className="canvas-node-title-text min-w-0 truncate">{node.title}</span>
                         <Pencil className="canvas-node-title-edit-icon size-2.5 shrink-0 opacity-55 transition-opacity group-hover:opacity-100" />
                     </button>
                 ) : (
-                    <span className="min-w-0 flex-1 truncate text-xs font-medium" title={node.title} style={{ opacity: active ? 1 : 0.78 }}>{node.title}</span>
+                    <span className="canvas-node-title-text min-w-0 flex-1 truncate text-xs font-medium" title={node.title} style={{ opacity: active ? 1 : 0.78 }}>{node.title}</span>
                 )}
             </div>
             {dimensionLabel ? <span className="ml-auto shrink-0 whitespace-nowrap text-[var(--fs-micro)] font-medium leading-none tabular-nums" style={{ color: theme.node.muted }}>{dimensionLabel}</span> : null}

@@ -29,7 +29,7 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Verify migration with real Windows file locks
         working-directory: backend
-        run: go test ./internal/desktopstorage -count=1 -v
+        run: go test ./internal/environment ./internal/desktopstorage -count=1 -v
       - uses: msys2/setup-msys2@v2
         id: storage-msys2
         with:
@@ -146,6 +146,13 @@ jobs:
         run: |
           bunx playwright install --with-deps chromium
           bun run test
+      - name: Preserve environment check screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: environment-check-screenshots-${{ github.sha }}
+          path: output/environment-check/*.png
+          if-no-files-found: warn
 
   database-platforms:
     if: github.event_name == 'workflow_dispatch'

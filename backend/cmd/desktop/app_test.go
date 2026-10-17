@@ -18,6 +18,7 @@ import (
 
 	"infinite-canvas/backend/internal/bootstrap"
 
+	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
@@ -151,15 +152,53 @@ func TestDesktopStartupHookStartsRuntimeBeforeFrontendBootstrap(t *testing.T) {
 	app.shutdown(context.Background())
 }
 
-func TestPrepareDesktopAppStartsRuntimeBeforeWailsMainLoop(t *testing.T) {
+func TestPrepareDesktopAppRecordsFailureAndClearsItAfterRecovery(t *testing.T) {
 	app := newDesktopApp(t.TempDir())
-	if err := prepareDesktopApp(app); err != nil {
+	t.Setenv("CANVAS_DESKTOP_BACKEND_ADDR", "invalid-listen-address")
+	if err := prepareDesktopApp(context.Background(), app); err == nil {
+		t.Fatal("invalid runtime address was accepted")
+	}
+	path := filepath.Join(app.dataDir, "startup-error.log")
+	if contents, err := os.ReadFile(path); err != nil || len(contents) == 0 {
+		t.Fatalf("startup failure was not recorded: %q %v", contents, err)
+	}
+	t.Setenv("CANVAS_DESKTOP_BACKEND_ADDR", "127.0.0.1:0")
+	if err := prepareDesktopApp(context.Background(), app); err != nil {
 		t.Fatal(err)
 	}
 	defer app.stop(context.Background())
-	config := app.RuntimeConfig()
-	if config.BaseURL == "" || config.LaunchToken == "" {
-		t.Fatalf("desktop app was not ready before Wails main loop: %#v", config)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("recovered startup retained its error file", err)
+	}
+}
+
+func TestDesktopOptionsAndSecondInstanceDoNotOpenTheWorkspace(t *testing.T) {
+	app := newDesktopApp(t.TempDir())
+	config := desktopAppOptions(app)
+	config.SingleInstanceLock.OnSecondInstanceLaunch(options.SecondInstanceData{Args: []string{"beeftv://skills/install?id=preview&version=1"}})
+	if app.RuntimeConfig().BaseURL != "" {
+		t.Fatal("second-instance notification opened a backend before Wails startup")
+	}
+	if _, err := os.Stat(filepath.Join(app.dataDir, "open_ai_canvas.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("second-instance notification opened the workspace", err)
+	}
+	if got := app.ConsumeSkillInstallLink(); got != "/skills?install=preview&version=1" {
+		t.Fatal("second-instance link was lost", got)
+	}
+}
+
+func TestEarlyRuntimeConfigStartsOnceBeforeStartupHook(t *testing.T) {
+	app := newDesktopApp(t.TempDir())
+	defer app.stop(context.Background())
+	response := httptest.NewRecorder()
+	desktopAssetHandler{app: app}.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/__desktop/runtime-config", nil))
+	var early DesktopRuntimeConfig
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &early) != nil || early.BaseURL == "" || early.LaunchToken == "" {
+		t.Fatalf("early bootstrap did not wait for runtime: %d %s", response.Code, response.Body)
+	}
+	app.startup(context.Background())
+	if current := app.RuntimeConfig(); current != early {
+		t.Fatalf("startup opened another runtime: %+v %+v", early, current)
 	}
 }
 
@@ -170,7 +209,7 @@ func TestDesktopAppBoundMethodsStayTiny(t *testing.T) {
 		names = append(names, typ.Method(i).Name)
 	}
 	sort.Strings(names)
-	if !reflect.DeepEqual(names, []string{"CheckForUpdate", "ChooseStorageDirectory", "CleanupPreviousStorage", "ConfirmUpdateStartup", "DownloadUpdate", "InstallUpdate", "MigrateStorage", "OpenBeefTVGitHub", "OpenBeefTVWebsite", "OpenBeefTVX", "OpenUpdateLogDirectory", "ReferenceStorageSettings", "RuntimeConfig", "SaveOwnedArtifact", "SaveOwnedMedia", "SaveReferenceStorage", "StorageSettings", "UpdateStatus", "UploadReferenceMedia"}) {
+	if !reflect.DeepEqual(names, []string{"CheckForUpdate", "ChooseStorageDirectory", "CleanupPreviousStorage", "ConfirmUpdateStartup", "ConsumeSkillInstallLink", "DownloadUpdate", "InstallUpdate", "MigrateStorage", "OpenBeefTVGitHub", "OpenBeefTVWebsite", "OpenBeefTVX", "OpenSkillPublishingURL", "OpenUpdateLogDirectory", "ReferenceStorageSettings", "RuntimeConfig", "SaveOwnedArtifact", "SaveOwnedMedia", "SaveReferenceStorage", "StorageSettings", "UpdateStatus", "UploadReferenceMedia"}) {
 		t.Fatalf("bound methods = %v", names)
 	}
 }

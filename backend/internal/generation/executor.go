@@ -100,10 +100,12 @@ func Execute(ctx context.Context, input Input) (map[string]any, error) {
 				return nil, err
 			}
 		}
-		if input.Mode == "video" {
+		if input.Mode == "video" || len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0 {
 			if err := HydrateVideoReferenceMetadata(ctx, userID, &input); err != nil {
-				return nil, err
+				return nil, RequestPreparationError{Cause: err}
 			}
+		}
+		if input.Mode == "video" {
 			if runtime.Config != nil {
 				if err := runtime.Config.ApplyCapabilities(ctx, &input); err != nil {
 					return nil, err
