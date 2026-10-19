@@ -21,7 +21,6 @@ func RegisterDefaultOps(r *Registry) {
 	registerModelCatalogOp(r)
 	registerMediaOps(r)
 	registerSkillOps(r)
-	registerSkillPublishingOps(r)
 	registerProjectSearchOps(r)
 	registerCanvasTimelineOps(r)
 	registerCanvasRenderOps(r)

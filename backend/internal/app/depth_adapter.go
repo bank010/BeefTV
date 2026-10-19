@@ -33,6 +33,8 @@ func (s *Service) depthCaptureRuntime() *depthcapture.Service {
 	return s.depthCapture
 }
 
+func (s *Service) DepthComponents() *depthcapture.Service { return s.depthCaptureRuntime() }
+
 func (w *taskWorkerCoordinator) processDepthCapture(task *model.Task, ctx context.Context) error {
 	if w == nil || w.service == nil {
 		return depthcapture.ErrBadInput

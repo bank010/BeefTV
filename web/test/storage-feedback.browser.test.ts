@@ -3,6 +3,38 @@ import { existsSync } from "node:fs";
 import postcss from "postcss";
 import tailwindcss from "@tailwindcss/postcss";
 import { chromium, type Browser } from "playwright";
+for (const width of [1440, 390]) for (const dark of [false, true]) test(`reference transport and storage check ${width} dark=${dark}`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 1000 } });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    try {
+        await page.goto(server.url + "?transport&auto" + (dark ? "&dark" : ""));
+        await page.getByRole("combobox", { name: "图片传输方式" }).click();
+        await page.getByText("直接传素材", { exact: true }).click();
+        await page.getByRole("combobox", { name: "视频传输方式" }).click();
+        await page.locator(".ant-select-dropdown:visible").getByText("手动填写 HTTPS 链接", { exact: true }).click();
+        await page.getByRole("button", { name: "保存并测试上传" }).click();
+        await page.getByText("存储测试通过", { exact: true }).waitFor();
+        await page.getByText("上传、公开读取和测试文件清理均已通过", { exact: true }).waitFor();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+        await page.screenshot({ path: import.meta.dir + `/../../output/reference-transport-${width}-${dark}.png`, fullPage: true });
+        await page.getByRole("textbox", { name: "S3 端点" }).fill("https://changed.example.com");
+        expect(await page.getByText("存储测试通过", { exact: true }).count()).toBe(0);
+        expect(errors).toEqual([]);
+    } finally { await page.close(); }
+}, 30000);
+
+test("failed storage check keeps an actionable HTTP status", async () => {
+    const page = await browser.newPage();
+    try {
+        await page.goto(server.url + "?transport&auto&test-error");
+        await page.getByRole("button", { name: "保存并测试上传" }).click();
+        await page.getByText("存储测试未通过", { exact: true }).waitFor();
+        await page.getByText(/HTTP 403/).waitFor();
+        expect(await page.getByText("存储测试通过", { exact: true }).count()).toBe(0);
+    } finally { await page.close(); }
+}, 30000);
+
 let browser: Browser;
 let server: ReturnType<typeof Bun.serve>;
 beforeAll(async () => {

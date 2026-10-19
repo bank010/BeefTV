@@ -16,13 +16,27 @@ import (
 	"strings"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/modelcatalog"
 	"infinite-canvas/backend/internal/providerpreset"
 )
 
 func RunImageTask(ctx context.Context, input Input) (map[string]interface{}, error) {
+	outputCount := 1
+	if input.ImageCapability != nil && input.ImageCapability.FixedOutputs > 0 {
+		outputCount = input.ImageCapability.FixedOutputs
+	}
 	if providerpreset.IsBeefAPIEndpoint(input.Config.BaseURL) {
 		if contract, ok := providerpreset.BeefAPIImageContract(input.Config.Model); ok {
-			return runBeefAPIImageTask(ctx, input, contract)
+			if contract.FixedOutputs == 0 {
+				return runBeefAPIImageTask(ctx, input, contract)
+			}
+			if input.Config.TransparentBackground == "true" || len(input.ReferenceVideos)+len(input.ReferenceAudios) > 0 {
+				return nil, errors.New("当前图片模型不支持透明背景或参考音视频")
+			}
+			if err := modelcatalog.ValidateImageTask(nil, taskInputFromCanvas(input)); err != nil {
+				return nil, err
+			}
+			outputCount = contract.FixedOutputs
 		}
 	}
 	if _, ok := DeclarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
@@ -55,7 +69,7 @@ func RunImageTask(ctx context.Context, input Input) (map[string]interface{}, err
 		writer := multipart.NewWriter(body)
 		writeField(writer, "model", input.Config.Model)
 		writeField(writer, "prompt", WithSystemPrompt(input.Config, input.Prompt))
-		writeField(writer, "n", "1")
+		writeField(writer, "n", strconv.Itoa(outputCount))
 		if ImageParameterSupported(input.ImageCapability, "response_format") {
 			writeField(writer, "response_format", "b64_json")
 		}
@@ -91,7 +105,7 @@ func RunImageTask(ctx context.Context, input Input) (map[string]interface{}, err
 		body := map[string]interface{}{
 			"model":  input.Config.Model,
 			"prompt": WithSystemPrompt(input.Config, input.Prompt),
-			"n":      1,
+			"n":      outputCount,
 		}
 		if ImageParameterSupported(input.ImageCapability, "response_format") {
 			body["response_format"] = "b64_json"

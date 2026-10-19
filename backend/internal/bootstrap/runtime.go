@@ -20,6 +20,7 @@ import (
 	"infinite-canvas/backend/internal/buildinfo"
 	"infinite-canvas/backend/internal/conversation"
 	"infinite-canvas/backend/internal/database"
+	"infinite-canvas/backend/internal/depthcapture"
 	"infinite-canvas/backend/internal/eagle"
 	canvasHandler "infinite-canvas/backend/internal/handler"
 	"infinite-canvas/backend/internal/localapp"
@@ -51,7 +52,7 @@ type Runtime struct {
 	started          atomic.Bool
 	closed           atomic.Bool
 	closeOnce        sync.Once
-	background       sync.WaitGroup
+	backgroundDone   chan struct{}
 	closeErr         error
 }
 
@@ -106,6 +107,12 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 	}
 
 	repo := repository.New(db)
+	if cfg.Profile == ProfileDesktop {
+		if err := repo.PauseDepthCapturesAfterRestart(context.Background()); err != nil {
+			cleanupDB()
+			return nil, err
+		}
+	}
 	svc := app.NewLocal(repo, cfg.DataDir)
 	cleanupService := func() {
 		_ = svc.Close()
@@ -343,9 +350,9 @@ func (r *Runtime) Start() error {
 	} else {
 		r.service.StartWorker()
 	}
-	r.background.Add(1)
+	r.backgroundDone = make(chan struct{})
 	go func() {
-		defer r.background.Done()
+		defer close(r.backgroundDone)
 		r.service.RecoverPlaybackTranscodes()
 	}()
 	// The assistant loads its operation catalog from this server before becoming
@@ -408,6 +415,12 @@ func (r *Runtime) Errors() <-chan error {
 	return r.serveErr
 }
 
+func (r *Runtime) DepthComponents() *depthcapture.Service { return r.service.DepthComponents() }
+
+func (r *Runtime) PrepareStorageMigration(ctx context.Context) (func(), error) {
+	return r.service.PrepareStorageMigration(ctx)
+}
+
 func (r *Runtime) Close(ctx context.Context) error {
 	if r == nil {
 		return nil
@@ -419,6 +432,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 			r.beefAPI.Close()
 		}
 		var failures []error
+		if err := r.DepthComponents().CloseComponents(ctx); err != nil {
+			failures = append(failures, fmt.Errorf("暂停组件下载：%w", err))
+		}
 		// 干净退出先撤掉运行时地址：留着会让下一次发现连到一个已经不在的端口。
 		if r.cfg.Profile == ProfileDesktop {
 			if err := runtimeinfo.Remove(r.cfg.DataDir); err != nil {
@@ -444,15 +460,16 @@ func (r *Runtime) Close(ctx context.Context) error {
 			failures = append(failures, fmt.Errorf("等待后台任务退出：%w", workerErr))
 		}
 		cancel()
-		backgroundDone := make(chan struct{})
-		go func() {
-			r.background.Wait()
-			close(backgroundDone)
-		}()
-		select {
-		case <-backgroundDone:
-		case <-ctx.Done():
-			failures = append(failures, fmt.Errorf("等待初始化任务退出：%w", ctx.Err()))
+		if r.backgroundDone != nil {
+			select {
+			case <-r.backgroundDone:
+			default:
+				select {
+				case <-r.backgroundDone:
+				case <-ctx.Done():
+					failures = append(failures, fmt.Errorf("等待初始化任务退出：%w", ctx.Err()))
+				}
+			}
 		}
 		// 本进程启动的内置宿主子进程必须跟着一起退出：否则后端重启后旧宿主会占着端口，
 		// 让状态查询显示「可用」但其实是上一个进程的实例。只清理本进程启动过的 PID。

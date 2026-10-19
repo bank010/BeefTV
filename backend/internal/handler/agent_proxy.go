@@ -270,7 +270,6 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc *app.Service, clients *agentops
 		return raw, true
 	}
 
-	registerAssistantSkillContextRoutes(r, svc, guard, hostJSON)
 	r.GET("/assistant/sessions", func(c *gin.Context) {
 		if !guard(c, false) {
 			return

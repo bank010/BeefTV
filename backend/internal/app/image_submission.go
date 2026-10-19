@@ -308,6 +308,10 @@ func (s *Service) sendImageSubmissionWith(ctx context.Context, task model.Task, 
 			return data, mime, nil
 		}
 		if !retrySameImageSubmission(sendErr) {
+			var preparation generation.RequestPreparationError
+			if errors.As(sendErr, &preparation) {
+				return nil, "", sendErr
+			}
 			var upstream providerHTTPError
 			if errors.As(sendErr, &upstream) && (upstream.StatusCode == 409 || upstream.StatusCode == 410 || upstream.StatusCode >= 500) {
 				return nil, "", imageRecoveryError{sendErr}
@@ -332,6 +336,10 @@ func (s *Service) sendImageSubmissionWith(ctx context.Context, task model.Task, 
 }
 
 func retrySameImageSubmission(err error) bool {
+	var preparation generation.RequestPreparationError
+	if errors.As(err, &preparation) {
+		return false
+	}
 	if errors.Is(err, context.Canceled) {
 		return false
 	}

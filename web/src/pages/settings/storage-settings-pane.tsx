@@ -4,6 +4,7 @@ import { FolderOpen } from "lucide-react";
 import { getDesktopAppBinding, type DesktopStorageUsage } from "@/services/desktop-runtime";
 import { flushModelConfig, getModelConfigPersistenceState } from "@/services/model-config-repository";
 import { saveRemoteUserDataNow } from "@/services/local-workspace-sync";
+import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 
 const size = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 
@@ -42,14 +43,19 @@ export function StorageSettingsPane() {
     const migrate = async () => {
         setBusy(true);
         setError("");
+        let phase = "save_workspace";
+        recordDiagnosticEvent({ level: "info", category: "action", code: "storage_migration_started", message: "开始准备存储迁移" });
         try {
             await Promise.all([flushModelConfig(), saveRemoteUserDataNow()]);
             const state = getModelConfigPersistenceState();
             if (state.dirty || state.status === "error") throw new Error("模型配置尚未保存，请先解决保存错误再迁移");
+            phase = "migrate_workspace";
             await binding.MigrateStorage!(target.trim());
             window.location.reload();
         } catch (error) {
-            setError(error instanceof Error ? error.message : String(error));
+            const details = error instanceof Error ? error.message : String(error);
+            recordDiagnosticEvent({ level: "error", category: "action", code: "storage_migration_failed", reason: phase, message: details });
+            setError(details);
             setBusy(false);
         }
     };

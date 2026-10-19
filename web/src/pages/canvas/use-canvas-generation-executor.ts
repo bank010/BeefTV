@@ -31,8 +31,8 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/ty
 import { executeImageGeneration } from "./canvas-image-generation-executor";
 import { executeAudioGeneration, executeVideoGeneration } from "./canvas-media-generation-executors";
 import { executeTextGeneration } from "./canvas-text-generation-executor";
-import { canvasGenerationFailureMetadata, canvasGenerationRetryBlocked, canvasImageGenerationHasPendingResult } from "./canvas-generation-failure";
-import { createReferenceLinkResolver } from "./canvas-reference-links";
+import { canvasGenerationFailureMetadata, canvasGenerationRetryBlocked, canvasImageGenerationHasPendingResult, canvasImagePendingResultMessage } from "./canvas-generation-failure";
+import { createReferenceLinkResolver } from "@/components/generation-reference-links";
 import { confirmCanvasGeneration, waitForCanvasPreparation } from "./canvas-generation-preflight";
 
 type UseCanvasGenerationExecutorOptions = {
@@ -163,7 +163,7 @@ export function useCanvasGenerationExecutor({
                         }
                         if (mode === "image" && canvasImageGenerationHasPendingResult(sourceNode, inputNodes)) {
                             diagnostic("generation_pending_result", "warning");
-                            message.warning("生成结果已保留，请点击「继续取回」");
+                            message.warning(canvasImagePendingResultMessage(sourceNode, inputNodes));
                             return;
                         }
                         if (isCanvasNodeGenerating(nodesRef.current.find((node) => node.id === nodeId))) {

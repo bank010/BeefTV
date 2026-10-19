@@ -19,5 +19,18 @@
       "9:16": "720x1280",
       "21:9": "1344x576"
     }
+  },
+  {
+    "model": "midjourney-v8.2",
+    "protocol": "openai-image",
+    "path": "/images/generations",
+    "fixedOutputs": 4,
+    "promptMaxChars": 2000,
+    "maxImages": 1,
+    "maxImageBytes": 10485760,
+    "minSide": 1024,
+    "maxSide": 1024,
+    "maxPixels": 1048576,
+    "sizes": { "1:1": "1024x1024" }
   }
 ]

@@ -9,12 +9,6 @@ description: BeefTV后端核心持久化表与状态边界
 
 ## 结构迁移与版本
 
-v18 `skill-market-release-metadata` 为 `skill_versions` 追加文本列 `market_release_json`。每个市场安装版本保存审核后的发布资料，包括原作者、许可证、来源、名称和说明；资料不写入规范 ZIP，也不改变文件清单及内容哈希。离线读取和私人改写沿用对应版本的来源资料；回滚恢复目标发布版本的名称、说明与来源。旧行保持空值，不猜测或联网补写历史署名。关闭自动迁移时缺列拒绝 Ready。
-
-v17 `assistant-active-skill-context` 追加 `assistant_skill_contexts` 与 `assistant_skill_context_mutations`。Go按用户、画布和Durable会话保存活动技能的固定版本、scope、revision及幂等变更回执。正文仍存版本包中，历史回合及旧loadedSkills不自动推断为活动选择。clear停止活动投影但保留历史；new_scope经官方reset隔离旧指令。旧数据库迁移不改写对话、任务或素材。关闭自动迁移时，缺少任一新表即拒绝Ready。
-
-市场安装和本地版本仍复用skills/skill_versions/skill_files/user_skill_states；云端稿件、审核和Release在账号后端。桌面投稿授权和不可变文件确认计划位于工作区skill-market目录，按用户隔离、0600写入，不能当作市场发布状态的第二来源。
-
 ### 本地模型配置加密
 
 `local-model-config.json` 和它的 `.bak` 使用 `schemaVersion: 2` 外层封装，`encryptedConfig` 为 AES-GCM 密文。解密后仍使用原有 provider state、revision 与助手默认授权记录；保存冲突校验保持不变。API Key、Secret Key 和自定义 Header 值不以明文保存在这些文件或持久任务输入中。明文旧配置可以读取，在下一次成功保存时连同备份迁移。
@@ -23,7 +17,7 @@ v17 `assistant-active-skill-context` 追加 `assistant_skill_contexts` 与 `assi
 
 旧版本不能读取这个加密封装。降级前须停止所有工作区写入者，恢复升级前的完整工作区备份；不能只替换可执行文件后继续写入新配置。自动更新器的二进制回滚与工作区数据恢复是不同操作。
 
-当前本地候选的结构版本为 v18。正式 v1.6.21 的结构版本为 v3，历史 Agent 候选曾使用 v3–v6，另有图片恢复预览分支使用 v3 或 v7；这些预览编号不能当作正式版本已发布的证据。
+当前本地候选的结构版本为 v16。正式 v1.6.21 的结构版本为 v3，历史 Agent 候选曾使用 v3–v6，另有图片恢复预览分支使用 v3 或 v7；这些预览编号不能当作正式版本已发布的证据。
 
 v14 `assistant-skill-version-pins` 为 `assistant_turns` 追加文本列 `skill_pins_json`。保存用户明确选定的技能、版本和内容摘要；旧回合留空。迁移保留未知字段、旧历史和回合快照。恢复时重新校验安装授权与包文件校验和，不自动切换新版。
 
@@ -178,7 +172,7 @@ HTTPS 图片提交前读取同源 `/models` 元数据，仅成功响应明确声
 | 表 | 用途 | 关键边界 |
 | --- | --- | --- |
 | `skills` | 保存技能公开元数据、当前版本指针、来源和 GitHub 同步状态 | `instruction` 仅保留入口 `SKILL.md` 的兼容投影；目录文件不展开写入该字段 |
-| `skill_versions` | 保存每次安装、编辑或同步形成的不可变技能版本 | 记录内容哈希、入口路径、规范化 ZIP 的存储键、文件数、总大小、GitHub commit；`market_release_json` 保存该版本审核后的市场资料，私人改写保留原发布来源 |
+| `skill_versions` | 保存每次安装、编辑或同步形成的不可变技能版本 | 记录内容哈希、入口路径、规范化 ZIP 的存储键、文件数、总大小和 GitHub commit |
 | `skill_files` | 保存某个版本的文件索引 | `(skill_version_id, path)` 唯一；只保存路径、类型、MIME、大小和 SHA-256，不保存正文 |
 | `user_skill_states` | 保存用户的加入、收藏、安装版本和自动更新选择 | 技能正文读取仍经过公开性和归属校验，不能通过文件接口绕过私有技能权限 |
 

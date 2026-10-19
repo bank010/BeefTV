@@ -25,6 +25,16 @@ test("depth task stages show the existing CPU slow-path and CUDA fallback notice
     expect(generationTaskStageLabel({ status: "running", stage: "CUDA 设备故障，改用 CPU（可能耗时较长）" })).toBe("CUDA 设备故障，改用 CPU（可能耗时较长）");
 });
 
+test("restart-paused depth tasks ask for explicit continuation", () => {
+    const paused = { ...depth, metadata: { ...depth.metadata, status: "error" as const, taskStatus: "failed", taskStage: "已暂停，等待手动继续" } };
+    const explanation = canvasNodeFailureExplanation(paused);
+    expect(explanation.reason).toBe("深度捕捉已暂停");
+    expect(explanation.action).toContain("重试继续");
+    expect(explanation.blockAutomaticRetry).toBe(false);
+    const html = renderToStaticMarkup(createElement(GenerationFailureNotice, { explanation, onRetry: () => {} }));
+    expect(html).toContain("重新生成");
+});
+
 test("confirmed local depth failure offers retry without relaxing paid unknown-result guards", () => {
     const failed = { ...depth, metadata: { ...depth.metadata, status: "error" as const, taskStatus: "failed", generationErrorCode: "download_failed", errorDetails: "下载生成结果失败" } };
     const explanation = canvasNodeFailureExplanation(failed);

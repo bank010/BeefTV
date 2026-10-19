@@ -39,8 +39,14 @@ func main() {
 	if err := configureDesktopTemp(dataDir); err != nil {
 		log.Fatal(err)
 	}
-	// Wails must make its single-instance decision before opening the database
-	// or starting workers. OnStartup and the asset handler prepare the runtime.
+	startupErrorPath := filepath.Join(dataDir, "startup-error.log")
+	if err := prepareDesktopApp(app); err != nil {
+		_ = os.MkdirAll(dataDir, 0o755)
+		_ = os.WriteFile(startupErrorPath, []byte(err.Error()+"\n"), 0o600)
+		log.Fatalf("启动本地后端失败: %v", err)
+	}
+	_ = os.Remove(startupErrorPath)
+
 	err = wails.Run(desktopAppOptions(app))
 	if err != nil {
 		log.Fatal(err)
@@ -54,7 +60,6 @@ func desktopAppOptions(app *DesktopApp) *options.App {
 		Height:           960,
 		BackgroundColour: &options.RGBA{R: 13, G: 15, B: 18, A: 255},
 		Mac: &mac.Options{
-			OnUrlOpen: app.acceptSkillLink,
 			// WKWebView disables element fullscreen by default, including the
 			// video player's fullscreen control.
 			Preferences: &mac.Preferences{FullscreenEnabled: mac.Enabled},
@@ -74,26 +79,14 @@ func desktopAppOptions(app *DesktopApp) *options.App {
 			Assets:  assets,
 			Handler: desktopAssetHandler{app: app},
 		},
-		OnStartup: app.startup,
-		SingleInstanceLock: &options.SingleInstanceLock{UniqueId: "beeftv.desktop.skill-links.v1", OnSecondInstanceLaunch: func(data options.SecondInstanceData) {
-			for _, arg := range data.Args {
-				app.acceptSkillLink(arg)
-			}
-		}},
+		OnStartup:  app.startup,
 		OnShutdown: app.shutdown,
 		Bind:       []interface{}{app},
 	}
 }
 
-func prepareDesktopApp(ctx context.Context, app *DesktopApp) error {
-	startupErrorPath := filepath.Join(app.dataDir, "startup-error.log")
-	if err := app.start(ctx); err != nil {
-		_ = os.MkdirAll(app.dataDir, 0o755)
-		_ = os.WriteFile(startupErrorPath, []byte(err.Error()+"\n"), 0o600)
-		return err
-	}
-	_ = os.Remove(startupErrorPath)
-	return nil
+func prepareDesktopApp(app *DesktopApp) error {
+	return app.start(context.Background())
 }
 
 func defaultDataDir() (string, error) {

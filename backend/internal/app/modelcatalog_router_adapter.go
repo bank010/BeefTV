@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"infinite-canvas/backend/internal/generation"
 	"log"
 	"time"
 
@@ -151,6 +152,11 @@ func routeFailureInfo(err error) modelcatalog.FailureInfo {
 	if err == nil {
 		return info
 	}
+	var unknown generation.SubmissionUnknownError
+	if errors.As(err, &unknown) {
+		// Earlier uncertainty invalidates any nested rejection evidence.
+		return info
+	}
 	if isImageRecoveryError(err) {
 		info.ImageRecovery = true
 	}
@@ -163,6 +169,8 @@ func routeFailureInfo(err error) modelcatalog.FailureInfo {
 		info.RetryAfter = upstream.RetryAfter
 	}
 	info.ImageThrottle = definiteImageThrottle(err)
+	var preparation generation.RequestPreparationError
+	info.PreparationFailed = errors.As(err, &preparation)
 	info.Canceled = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 	return info
 }

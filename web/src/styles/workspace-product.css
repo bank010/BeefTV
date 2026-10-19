@@ -1184,9 +1184,10 @@
 @media (prefers-reduced-motion: reduce) {
     /* Nonzero universal transitions animate layout coordinates and corrupt popup measurements. */
     .app-product-workspace *,
-    .app-product-overlays * { animation-duration: 1ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: 0ms !important; transition-delay: 0ms !important; }
-    /* Placement must measure unscaled coordinates. */
-    .app-product-overlays .model-default-select-popup { transform: none !important; }
+    .app-product-overlays * { animation-duration: 1ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+    /* Placement must measure unscaled coordinates; keep motion-end events. */
+    .app-product-overlays .model-default-select-popup,
+    .app-product-overlays .model-channel-delete-confirm { transition-property: opacity !important; transform: none !important; }
     .app-product-workspace .product-collection-card:hover,
     .app-product-workspace .library-card:hover,
     .app-product-workspace .task-grid-card:hover,

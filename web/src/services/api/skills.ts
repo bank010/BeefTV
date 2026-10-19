@@ -1,6 +1,6 @@
 import { ApiError, http, apiBaseURL, compactApiParams, serializeApiParams, type ApiParams } from "@/services/api/request";
 import { getActiveUserScope } from "@/lib/user-scope";
-import type { MarketRelease } from "./skill-market";
+
 
 let addedSkillsRequest: { scope: string; promise: Promise<{ skills: Skill[] }> } | null = null;
 let addedSkillsCache: { scope: string; value: { skills: Skill[] }; expiresAt: number } | null = null;
@@ -23,7 +23,6 @@ export type Skill = {
     versionId: string;
     version: string;
     contentHash: string;
-    marketRelease?: MarketRelease;
     fileCount: number;
     totalBytes: number;
     sourceType: "builtin" | "markdown" | "zip" | "github" | string;
@@ -110,7 +109,6 @@ export type SkillPackageBundle = {
     versionId: string;
     version: string;
     contentHash: string;
-    marketRelease?: MarketRelease;
     files: Array<{ path: string; mimeType: string; contentBase64: string }>;
 };
 
@@ -133,6 +131,7 @@ export type InstallGitHubSkillInput = {
     isPrivate?: boolean;
     autoUpdate?: boolean;
 };
+
 
 export function listSkills(input: ListSkillsInput = {}) {
     const params = serializeApiParams(compactApiParams(input as ApiParams));
@@ -172,7 +171,7 @@ async function readAddedSkillsWithRetry() {
     }
 }
 
-export function invalidateAddedSkillsCache() {
+function invalidateAddedSkillsCache() {
     addedSkillsCache = null;
     if (typeof window !== "undefined") window.dispatchEvent(new Event("canvas-skills-changed"));
 }

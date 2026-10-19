@@ -457,6 +457,9 @@ func doBinaryWithAdmission(req *http.Request, onChunk func(string, []byte), admi
 			IdempotencyReplayed: strings.EqualFold(resp.Header.Get("Idempotency-Replayed"), "true"),
 		}
 		observation.StatusCode = resp.StatusCode
+		if gatewayReferenceNotSubmitted(req, resp, data) {
+			return nil, "", RequestPreparationError{Cause: httpErr}
+		}
 		if videoIdleTimeout > 0 && !SameProviderOrigin(req.URL.String(), resp.Request.URL.String()) && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
 			return nil, "", videoBackupLinkExpiredError{cause: httpErr}
 		}

@@ -95,7 +95,7 @@ func upload(ctx context.Context, config Config, path string, client *http.Client
 	}
 	defer check.Body.Close()
 	if check.StatusCode != http.StatusOK && check.StatusCode != http.StatusPartialContent {
-		return "", errors.New("素材已上传，但公网地址不可读取，请检查公开读取设置")
+		return "", fmt.Errorf("素材已上传，但公网地址不可读取（HTTP %d），请检查公开读取设置", check.StatusCode)
 	}
 	first := make([]byte, n)
 	if n == 0 {

@@ -10,6 +10,7 @@ import { McpSettingsPane } from "./mcp-settings-pane";
 import { ModelDefaultGrid } from "./model-default-grid";
 import DiagnosticsPanel from "./diagnostics-panel";
 import { StorageSettingsPane } from "./storage-settings-pane";
+import { DepthComponentsPanel } from "@/components/depth-components-panel";
 import { ReferenceStoragePane } from "./reference-storage-pane";
 import { getDesktopAppBinding } from "@/services/desktop-runtime";
 import { PageHeader } from "@/components/layout/workspace-page";
@@ -87,6 +88,10 @@ export default function SettingsPage() {
                 <div className="storage-settings-sections">
                     <StorageSettingsPane />
                     <ReferenceStoragePane />
+                    <section className="settings-section storage-settings-block space-y-4" aria-label="深度捕捉组件">
+                        <div className="settings-pane-header"><h2>深度捕捉组件</h2></div>
+                        <DepthComponentsPanel />
+                    </section>
                 </div>
             </SettingsPane>
         ),

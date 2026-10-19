@@ -27,11 +27,13 @@ export type DesktopUpdateState = {
 };
 
 export type DesktopRuntimeBinding = {
-	OpenSkillPublishingURL?: (url: string) => Promise<void>;
-	ConsumeSkillInstallLink?: () => Promise<string>;
+	DepthComponentStatus?: (refresh: boolean) => Promise<DepthComponentState>;
+	DownloadDepthComponents?: () => Promise<DepthComponentState>;
+	PauseDepthComponentDownload?: () => Promise<DepthComponentState>;
 	ReferenceStorageSettings?: () => Promise<ReferenceStorageConfig>;
 	SaveReferenceStorage?: (config: ReferenceStorageConfig & { secretAccessKey: string }) => Promise<ReferenceStorageConfig>;
 	UploadReferenceMedia?: (ids: string[]) => Promise<Record<string,string>>;
+	TestReferenceStorage?: () => Promise<void>;
 	StorageSettings?: () => Promise<DesktopStorageUsage>;
 	ChooseStorageDirectory?: () => Promise<string>;
 	MigrateStorage?: (target: string) => Promise<DesktopStorageUsage>;
@@ -51,6 +53,16 @@ export type DesktopRuntimeBinding = {
 };
 
 export type DesktopStorageUsage = { dataDir: string; usedBytes: number; freeBytes: number; previousDir?: string; previousBytes?: number };
+export type DepthComponentState = {
+    status: "not_installed" | "downloading" | "installing" | "ready" | "paused" | "error" | "unsupported";
+    variant: string;
+    dataDir: string;
+    downloadBytes: number;
+    requiredBytes: number;
+    freeBytes: number;
+    downloadedBytes: number;
+    error?: string;
+};
 export type ReferenceStorageConfig = { enabled: boolean; endpoint: string; bucket: string; region: string; accessKeyId: string; publicBaseURL: string; hasSecret: boolean };
 
 declare global {
@@ -101,7 +113,7 @@ export async function bootstrapDesktopRuntime() {
             // Wails can expose the WebView before generated bindings settle.
         }
     }
-    if (!config && (window.location?.protocol === "wails:" || window.location?.origin === "http://wails.localhost")) {
+    if (!config && window.location?.protocol === "wails:") {
         const response = await fetch("/__desktop/runtime-config", { cache: "no-store" });
         if (!response.ok) throw new Error(`Desktop runtime bootstrap failed: ${response.status}`);
         const candidate = await response.json();

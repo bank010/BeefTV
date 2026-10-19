@@ -33,6 +33,7 @@ type ImageCapabilityConfig struct {
 	ResponseFormat        ParameterSupport     `json:"responseFormat"`
 	OutputFormat          ParameterSupport     `json:"outputFormat"`
 	MaxOutputs            int                  `json:"maxOutputs"`
+	FixedOutputs          int                  `json:"fixedOutputs,omitempty"`
 }
 
 type ImageReferenceConfig struct {

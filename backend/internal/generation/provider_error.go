@@ -279,6 +279,8 @@ var providerCodeCategories = map[string]FailureCategory{
 	"pre_consume_token_quota_failed":       CategoryUnknown,
 	"upstream_crowded":                     CategoryThrottled,
 	"upstream_unavailable":                 CategoryProviderUnavailable,
+	"image_reference_upload_failed":        CategoryProviderUnavailable,
+	"reference_media_upload_failed":        CategoryProviderUnavailable,
 	"upstream_rejected":                    CategoryUnknown,
 	"upstream_error":                       CategoryUnknown,
 }
@@ -304,7 +306,7 @@ func (f Failure) IsModeration() bool {
 }
 
 func (f Failure) BlocksAutomaticRetry() bool {
-	if f.Uncertain {
+	if f.Uncertain || f.ProviderCode == "image_reference_upload_failed" || f.ProviderCode == "reference_media_upload_failed" {
 		return true
 	}
 	switch f.Category {
@@ -382,6 +384,12 @@ func (e PayloadError) Error() string {
 }
 
 func ClassifyHTTP(status int, statusText string, body string) Failure {
+	fields := extractProviderFields(body)
+	if _, persisted := persistedReferencePreparationFailure(firstNonEmpty(fields.Message, body)); persisted {
+		// Only the typed transport boundary may attest an unsent request. A
+		// provider response cannot grant that proof by echoing our saved copy.
+		return normalizeFailure(Failure{Category: CategorySubmissionUncertain, HTTPStatus: status, ProviderCode: sanitizeProviderCode(fields.Code)})
+	}
 	failure := ClassifyText(body)
 	// This boundary handles provider responses, not local filesystem errors.
 	if failure.Category == CategoryLocalDiskFull || failure.Category == CategoryLocalCredential {
@@ -435,6 +443,10 @@ func ClassifyError(err error) Failure {
 	if err == nil {
 		return normalizeFailure(Failure{Category: CategoryUnknown})
 	}
+	var unknown SubmissionUnknownError
+	if errors.As(err, &unknown) {
+		return normalizeFailure(Failure{Category: CategorySubmissionUncertain, Uncertain: true, Retryable: false})
+	}
 	if errors.Is(err, context.Canceled) {
 		return normalizeFailure(Failure{Category: CategoryCancelled})
 	}
@@ -444,7 +456,26 @@ func ClassifyError(err error) Failure {
 	}
 	var preparation RequestPreparationError
 	if errors.As(err, &preparation) {
+		var storage ReferenceStoragePreparationError
+		if errors.As(preparation.Cause, &storage) {
+			failure := normalizeFailure(Failure{Category: CategoryProviderUnavailable, ProviderCode: "reference_media_upload_failed", Reason: "参考素材上传失败，本次尚未开始生成", Action: "请检查对象存储配置和公开读取权限后重试"})
+			failure.Retryable = false
+			return failure
+		}
+		failure := classifyHTTPErrorCause(preparation.Cause)
+		if failure.ProviderCode == "image_reference_upload_failed" {
+			failure.Category = CategoryProviderUnavailable
+			failure.Uncertain = false
+			failure.Reason = "参考图片上传失败，本次尚未开始生成"
+			failure.Action = "请稍后重试"
+			failure = normalizeFailure(failure)
+			failure.Retryable = false
+			return failure
+		}
 		return normalizeFailure(Failure{Category: CategoryInputInaccessible, Reason: "本次请求在准备时失败，未发送到模型服务", Action: "请检查参考素材和生成参数后重试"})
+	}
+	if _, echoed := persistedReferencePreparationFailure(err.Error()); echoed {
+		return normalizeFailure(Failure{Category: CategorySubmissionUncertain})
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return normalizeFailure(Failure{Category: CategoryTimeout, Uncertain: true, Reason: "模型服务响应超时，请求可能仍在执行", Action: "请先查询原任务，不要立即重新提交"})
@@ -466,10 +497,6 @@ func ClassifyError(err error) Failure {
 		}
 		return normalizeFailure(failure)
 	}
-	var unknown SubmissionUnknownError
-	if errors.As(err, &unknown) {
-		return normalizeFailure(Failure{Category: CategorySubmissionUncertain, Uncertain: true, Retryable: false})
-	}
 	var pending StatePendingError
 	if errors.As(err, &pending) {
 		failure := classifyHTTPErrorCause(pending.Cause)
@@ -487,6 +514,10 @@ func ClassifyError(err error) Failure {
 	var payload PayloadError
 	if errors.As(err, &payload) {
 		raw := firstNonEmpty(payload.raw, payload.message)
+		fields := extractProviderFields(raw)
+		if _, echoed := persistedReferencePreparationFailure(firstNonEmpty(fields.Message, raw)); echoed {
+			return normalizeFailure(Failure{Category: CategorySubmissionUncertain})
+		}
 		failure := ClassifyText(raw)
 		if payload.message != "" && failure.Category == CategoryUnknown && !failure.Structured {
 			return ClassifyText(payload.message)
@@ -497,6 +528,9 @@ func ClassifyError(err error) Failure {
 }
 
 func ClassifyText(raw string) Failure {
+	if failure, ok := persistedReferencePreparationFailure(raw); ok {
+		return failure
+	}
 	if copy, ok := persistedTaskConstraintCopy(raw); ok {
 		requestID, taskID := persistedReferenceIDs(raw)
 		return normalizeFailure(Failure{Category: CategoryInvalidParams, Reason: copy.Reason, Action: copy.Action, RequestID: requestID, TaskID: taskID})

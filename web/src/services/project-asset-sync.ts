@@ -263,6 +263,7 @@ export function hasBackendDeliveredGenerationOutputs(task: Pick<GenerationTask, 
 }
 
 export type HydrateBackendGeneratedAssetDependencies = {
+    expectedScope?: CapturedUserScope;
     getAsset?: (id: string, signal?: AbortSignal) => Promise<{ asset: Asset }>;
     readAssets?: () => Asset[];
     writeAsset?: (asset: Asset) => void;
@@ -284,13 +285,16 @@ export async function hydrateBackendGeneratedAsset(
     throwIfAborted(signal);
     const id = assetId.trim();
     if (!id) throw new Error("任务产物尚未由后端交付");
-    const getAsset = dependencies.getAsset ?? defaultHydrateBackendGeneratedAssetDependencies.getAsset!;
+    const expectedScope = dependencies.expectedScope;
+    if (expectedScope) assertUserScope(expectedScope);
+    const getAsset = dependencies.getAsset ?? ((id, signal) => getWorkspaceAsset(id, signal, { expectedScope }).then((payload) => ({ asset: payload.asset })));
     const readAssets = dependencies.readAssets ?? defaultHydrateBackendGeneratedAssetDependencies.readAssets!;
     const writeAsset = dependencies.writeAsset ?? defaultHydrateBackendGeneratedAssetDependencies.writeAsset!;
     const existing = readAssets().find((asset) => asset.id === id);
     if (existing) return existing;
     const payload = await getAsset(id, signal);
     throwIfAborted(signal);
+    if (expectedScope) assertUserScope(expectedScope);
     const asset = parseAssetRecord(payload.asset);
     writeAsset(asset);
     return asset;

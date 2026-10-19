@@ -226,6 +226,10 @@ func RetryableVideoPollError(ctx context.Context, err error) (retry bool, notFou
 	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return false, false
 	}
+	var preparation RequestPreparationError
+	if errors.As(err, &preparation) {
+		return false, false
+	}
 	var downloadError VideoDownloadError
 	if errors.As(err, &downloadError) {
 		return false, false

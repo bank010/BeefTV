@@ -77,3 +77,22 @@ test("second admission rejection propagates without a third submission", async (
     })).rejects.toBe(rejected);
     expect(calls).toBe(2);
 });
+
+test("mixed media recovery uploads only the references identified by admission", async () => {
+    let calls = 0;
+    let recovered: any;
+    await submitBackendGenerationTask({ ...options, referenceAudios: [{ id: "audio", name: "audio.mp3", type: "audio/mpeg", durationMs: 1000, storageKey: "resource:audio" }], resolveReferenceLinks: async (refs) => {
+        expect(refs.map((ref) => ref.key)).toEqual(["referenceAudios:0"]);
+        return { "referenceAudios:0": "https://cdn.example/audio.mp3" };
+    } }, {
+        createTask: async (input) => {
+            if (calls++ === 0) throw new ApiError("audio needs URL", { status: 400, reason: "reference_media_requires_url", details: { requiredReferences: [{ kind: "audio", index: 0 }] } });
+            recovered = input.input;
+            return { id: "accepted" } as GenerationTask;
+        }, waitTask: async () => { throw new Error("must not poll"); }, createId: () => "mixed-transport",
+    });
+    expect(calls).toBe(2);
+    expect(recovered.referenceImages[0].storageKey).toBe("resource:one");
+    expect(recovered.referenceAudios[0].storageKey).toBeUndefined();
+    expect(recovered.referenceAudios[0].url).toBe("https://cdn.example/audio.mp3");
+});

@@ -1,7 +1,10 @@
+import { hydrateBackendGeneratedOutputs } from "@/services/project-asset-sync";
 import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 import { nanoid } from "nanoid";
+import { buildGenerationConfig } from "@/lib/canvas/canvas-project-generation";
+import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { captureUserScope, userScopeMatches } from "@/lib/user-scope-guard";
 
 import { promoteLegacyBatchTableSize } from "@/lib/canvas/canvas-batch-table";
@@ -209,6 +212,7 @@ export function useCanvasGenerationOrchestration({
         finishGenerationRequest,
         bindGenerationTask,
         applyGenerationTaskResult,
+        regenerateImageBatch: async (nodeId, prompt) => { await handleGenerateNode(nodeId, "image", prompt); },
     });
 
     const cancelCanvasTask = useCallback(
@@ -249,6 +253,7 @@ export function useCanvasGenerationOrchestration({
             if (!insertingHistory.current.tryEnter()) return;
             const owner = lifetime.capture(projectId);
             try {
+                await hydrateBackendGeneratedOutputs(task, undefined, { expectedScope: captureUserScope() });
                 await runOwnedCanvasHistoryInsert({
                     owner,
                     getLiveCanvasId: () => projectIdRef.current,
@@ -268,8 +273,8 @@ export function useCanvasGenerationOrchestration({
                     }),
                     persist: (persisted) => persistCanvasDocument(owner.canvasId, { nodes: persisted }),
                     ensureAsset: (item) => ensureCanvasNodeAsset({ canvasId: owner.canvasId, domainProjectId, node: item, source: "canvas-generation", taskId: task.id }),
-                    onCommit: (node) => {
-                        setNodes((current) => rebaseInsertedCanvasNode(current, node));
+                    onCommit: (node, insertedNodes) => {
+                        setNodes((current) => insertedNodes.reduce((nodes, inserted) => rebaseInsertedCanvasNode(nodes, inserted), current));
                         setSelectedNodeIds(new Set([node.id]));
                         setGenerationHistoryOpen(false);
                         message.success("已从生成历史插入到画布");
@@ -296,6 +301,14 @@ export function useCanvasGenerationOrchestration({
             const { retryable, blocked } = selectRetryableImageBatchChildren(children);
             if (blocked) message.warning("部分图片需要先处理失败原因，请打开对应节点查看");
             if (!retryable.length) return;
+            const root = nodesRef.current.find((node) => node.id === rootId);
+            if (root) {
+                const config = buildGenerationConfig(effectiveConfig, root, "image");
+                if (modelCapabilityConfigFor(config, config.model).image?.fixedOutputs) {
+                    void handleRetryNode(root);
+                    return;
+                }
+            }
             void runImageBatchChildRetry({
                 rootId,
                 children: retryable,
@@ -304,7 +317,7 @@ export function useCanvasGenerationOrchestration({
                 reconcile: reconcileImageBatchRootNode,
             });
         },
-        [handleRetryNode, message, reconcileImageBatchRootNode, setNodes],
+        [effectiveConfig, handleRetryNode, message, nodesRef, reconcileImageBatchRootNode, setNodes],
     );
 
     const generateImageFromTextNode = useCallback(

@@ -16,7 +16,7 @@ type GenerationFailureNoticeProps = {
 export function GenerationFailureNotice({ explanation, context, compact, onRetry, retryLabel, onOpenDetails, retryDisabled }: GenerationFailureNoticeProps) {
     const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
     const diagnostics = formatGenerationDiagnostics(explanation, context);
-    const showRetry = Boolean(onRetry) && !explanation.blockAutomaticRetry && !retryDisabled;
+    const showRetry = Boolean(onRetry) && !explanation.blockManualRetry && !retryDisabled;
     const copyDiagnostics = async () => {
         try {
             if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {

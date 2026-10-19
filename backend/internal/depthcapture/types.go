@@ -25,8 +25,11 @@ const (
 	runtimeEnv  = "BEEFTV_DEPTH_RUNTIME"
 	manifestEnv = "BEEFTV_DEPTH_MANIFEST_URL"
 
-	defaultManifestURL        = "https://github.com/glanderness/BeefTV/releases/download/v1.5.5/depth-runtime-manifest.json"
-	defaultWindowsManifestURL = "https://github.com/glanderness/BeefTV/releases/download/depth-runtime-v2/depth-runtime-manifest.v2.json"
+	componentCOSBase          = "https://beeftv-components-1481187348.cos.ap-guangzhou.myqcloud.com/depth-runtime-v2/"
+	componentR2Base           = "https://updates.beefapi.com/beeftv/components/depth-runtime-v2/"
+	componentGHBase           = "https://github.com/glanderness/BeefTV/releases/download/depth-runtime-mirrors-v1/"
+	defaultManifestURL        = componentCOSBase + "depth-runtime-manifest.json"
+	defaultWindowsManifestURL = componentCOSBase + "depth-runtime-manifest.v2.json"
 )
 
 // CreateRequest is the HTTP create body. Handler keeps the app alias.

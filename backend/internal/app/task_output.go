@@ -51,7 +51,7 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		ProviderCancelAttempts:    task.ProviderCancelAttempts,
 		ProviderCancelRequestedAt: task.ProviderCancelRequestedAt,
 		ProviderCancelledAt:       task.ProviderCancelledAt,
-		Error:                     safePersistedFailureMessage(task.Error),
+		Error:                     safePersistedFailureMessage(task.Error, task.Stage),
 		ErrorCode:                 errorCode,
 		FailureDiagnostics:        generation.SanitizeTaskDiagnostics(task.FailureDiagnostics),
 		PreviewURL:                previewURL,
@@ -236,13 +236,16 @@ func taskForOutput(task model.Task) *model.Task {
 	if task.ErrorCode == string(generation.CategoryUnknown) && !isContentModerationFailure(task.Error) {
 		task.ErrorCode = ""
 	}
-	task.Error = safePersistedFailureMessage(task.Error)
+	task.Error = safePersistedFailureMessage(task.Error, task.Stage)
 	return &task
 }
 
-func safePersistedFailureMessage(message string) string {
+func safePersistedFailureMessage(message, stage string) string {
 	if strings.TrimSpace(message) == "" {
 		return ""
+	}
+	if stage == "submission_unknown" {
+		return (generation.Failure{Category: generation.CategorySubmissionUncertain}).UserMessage()
 	}
 	return generation.ClassifyText(message).UserMessage()
 }

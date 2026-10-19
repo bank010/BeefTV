@@ -362,6 +362,12 @@ func normalizeManifestForProvider(manifest *Manifest, index int) error {
 	manifest.Metadata.Cancel = operationSummaryPtr(provider.Cancel)
 	manifest.Metadata.ContentType = provider.Create.ContentType
 	manifest.Metadata.RequiresPublicMediaURLs = provider.RequiresPublicMediaURLs
+	for kind, transport := range provider.MediaTransport {
+		if (kind != "image" && kind != "video" && kind != "audio") || (transport != "inline" && transport != "url") {
+			return fmt.Errorf("invalid media transport %s: %s", kind, transport)
+		}
+	}
+	manifest.Metadata.MediaTransport = provider.MediaTransport
 	manifest.Metadata.Execution = manifest.Runtime.Backend
 	manifest.Create = provider.Create
 	manifest.Agent = provider.Agent

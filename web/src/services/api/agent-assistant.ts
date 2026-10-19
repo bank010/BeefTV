@@ -191,7 +191,7 @@ export async function getAgentHostStatus(): Promise<AgentHostStatus> {
 }
 
 /** UI 会话头由页面内存里的凭据提供；助手的每条路由都走同一套认证。 */
-export async function uiSessionConfig() {
+async function uiSessionConfig() {
     const token = await ensureAgentUiSession();
     return { headers: { "X-Beeftv-Ui-Session": token } };
 }

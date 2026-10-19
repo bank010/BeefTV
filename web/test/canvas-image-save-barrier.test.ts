@@ -219,7 +219,9 @@ test("a succeeded image with a bind failure keeps its original task and HTTP evi
     expect(recovered.taskFailureDiagnostics?.executionResult).toBe("completed");
     expect(recovered.taskFailureDiagnostics?.requests?.[0]?.httpStatus).toBe(200);
     const metadata = canvasGenerationFailureMetadata(caught, { prompt: input.prompt, mode: "image" });
-    expect(metadata.resourceReloadAvailable).toBe(true);
+    expect(metadata.resourceReloadAvailable).toBe(false);
+    expect(metadata.generationErrorCode).toBe("result_target_unavailable");
+    expect(metadata.errorDetails).toContain("生成历史");
     expect(canvasGenerationRetryBlocked(metadata, { prompt: "已修改提示词", mode: "image" })).toBe(true);
     expect(submissions).toBe(1);
 });

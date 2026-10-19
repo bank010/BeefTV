@@ -124,6 +124,17 @@ func (a *DesktopApp) MigrateStorage(target string) (desktopstorage.Usage, error)
 	a.migrationCancel = cancelMigration
 	a.mu.Unlock()
 	defer func() { a.mu.Lock(); a.migrating = false; a.migrationCancel = nil; a.mu.Unlock() }()
+	currentRuntime := a.runtime()
+	if currentRuntime == nil {
+		return desktopstorage.Usage{}, errors.New("工作区尚未就绪，迁移未开始。请重启 BeefTV 后重试")
+	}
+	prepareCtx, prepareCancel := context.WithTimeout(ctx, 10*time.Second)
+	resume, prepareErr := currentRuntime.PrepareStorageMigration(prepareCtx)
+	prepareCancel()
+	if prepareErr != nil {
+		return desktopstorage.Usage{}, prepareErr
+	}
+	defer resume()
 	// Nothing may reopen the source while SQLite and workers are being closed.
 	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	err = a.stop(stopCtx)
@@ -146,7 +157,7 @@ func (a *DesktopApp) MigrateStorage(target string) (desktopstorage.Usage, error)
 		a.mu.Lock()
 		a.closing = true
 		a.mu.Unlock()
-		return desktopstorage.Usage{}, fmt.Errorf("工作区未能完整关闭，原数据已保留。请重启应用后再迁移: %w", err)
+		return desktopstorage.Usage{}, fmt.Errorf("迁移未开始，原数据仍在原目录。工作区未能完整关闭，请重启 BeefTV 后重试\n\n%w", err)
 	}
 	sourceLock, err := runtimeinfo.LockWorkspace(source)
 	if err != nil {

@@ -46,6 +46,8 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -103,7 +105,7 @@ jobs:
           go test ./cmd/update-release
 
           curl --fail --location --retry 3 --max-time 60 \
-            https://github.com/glanderness/BeefTV/releases/download/depth-runtime-v2/depth-runtime-manifest.v2.json \
+            https://github.com/glanderness/BeefTV/releases/download/depth-runtime-mirrors-v1/depth-runtime-manifest.v2.json \
             --output "$RUNNER_TEMP/depth-manifest.json"
           go run ./cmd/update-release verify-depth --input "$RUNNER_TEMP/depth-manifest.json"
 

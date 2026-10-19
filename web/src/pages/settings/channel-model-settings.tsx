@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Alert, App, Button, Popconfirm, Segmented, Tag } from "antd";
+import { ReferenceMediaTransportFields } from "./reference-media-transport-fields";
 import { ChevronRight, FlaskConical, Settings2 } from "lucide-react";
 
 import { ModelEditorModal } from "@/components/model-editor-modal";
@@ -167,6 +168,7 @@ export function ChannelModelSettings({ channel, onChange, draft = false }: { cha
                                     }}
                                 />
                             </section>
+                            {channel.scope !== "system" && activeCapability !== "text" && activeProtocol !== "full-video" && <ReferenceMediaTransportFields value={activeModelProfile?.referenceMediaTransport} onChange={(referenceMediaTransport) => updateProfile(activeModel, { referenceMediaTransport })} />}
                             <section className="space-y-2">
                                 <div className="text-xs font-medium">请求协议</div>
                                 <ModelProtocolBrowser

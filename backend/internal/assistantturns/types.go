@@ -89,13 +89,12 @@ type Input struct {
 
 // Scope is the backend-verified read/write range for an open round.
 type Scope struct {
-	PermissionMode  string
-	CanvasID        string
-	AssetIDs        []string
-	CanvasIDs       []string
-	TaskIDs         []string
-	SkillPins       []skills.Pin
-	ActiveSkillPins []skills.Pin
+	PermissionMode string
+	CanvasID       string
+	AssetIDs       []string
+	CanvasIDs      []string
+	TaskIDs        []string
+	SkillPins      []skills.Pin
 	// SessionSkillPins are pins of earlier rounds of the same Durable
 	// conversation and owner. Their bodies are already in that transcript.
 	SessionSkillPins []skills.Pin

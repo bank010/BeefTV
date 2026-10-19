@@ -1,10 +1,11 @@
+import { getActiveUserScope, setActiveUserScope } from "@/lib/user-scope";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import { bindBackendCanvasGenerationResult, CanvasBindFlushError, CanvasBindProjectionAdoptionError } from "@/services/canvas-generation-consumer";
-import { UserScopeAbandonedError, type CapturedUserScope } from "@/lib/user-scope-guard";
+import { captureUserScope, UserScopeAbandonedError, type CapturedUserScope } from "@/lib/user-scope-guard";
 import { ApiError } from "@/services/api/request";
 import { CanvasBackendSubmitPausedError } from "@/services/canvas-revision-conflict";
 import type { CanvasTaskBindReceipt } from "@/services/api/operations";
@@ -1269,4 +1270,32 @@ describe("bindBackendCanvasGenerationResult", () => {
         expect(useCanvasStore.getState().projects[0]?.nodes.find((item) => item.id === "node-missing-row")?.metadata?.assetId).toBe("asset-server-only");
         expect(useCanvasStore.getState().projects[0]?.nodes.find((item) => item.id === "node-no-res-id")?.metadata?.assetId).toBe("asset-no-res-id");
     });
+});
+
+
+test("history asset hydration rejects account switches and A-to-B-to-A before writing any asset", async () => {
+    const previous = getActiveUserScope();
+    try {
+        for (const returnToA of [false, true]) {
+            setActiveUserScope("history-owner-a");
+            const expectedScope = captureUserScope();
+            let writes = 0;
+            let gets = 0;
+            const pending = hydrateBackendGeneratedOutputs({ outputs: [0, 1, 2, 3].map((outputIndex) => ({ outputIndex, mediaType: "image" as const, materializedAssetId: `history-${outputIndex}` })) }, undefined, {
+                expectedScope,
+                readAssets: () => [],
+                getAsset: async (id) => {
+                    gets++;
+                    await Promise.resolve();
+                    setActiveUserScope("history-owner-b");
+                    if (returnToA) setActiveUserScope("history-owner-a");
+                    return { asset: { ...completeImageAsset, id } };
+                },
+                writeAsset: () => { writes++; },
+            });
+            await expect(pending).rejects.toBeInstanceOf(UserScopeAbandonedError);
+            expect(gets).toBe(1);
+            expect(writes).toBe(0);
+        }
+    } finally { setActiveUserScope(previous); }
 });

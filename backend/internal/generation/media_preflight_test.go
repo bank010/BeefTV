@@ -120,3 +120,129 @@ func TestMaskOnlyDisablesURLTransportForImageEditing(t *testing.T) {
 		t.Fatal("image mask must retain byte transport for multipart editing")
 	}
 }
+
+func TestMediaTransportAppliesExplicitChoicesPerKind(t *testing.T) {
+	input := Input{Mode: "video", Config: Config{InterfaceType: "newapi-channel-2", ReferenceMediaTransport: map[string]string{"image": "inline", "video": "url", "audio": "link"}}, ReferenceImages: []Media{{StorageKey: "resource:private-image"}}, ReferenceVideos: []Media{{StorageKey: "resource:private-video"}}, ReferenceAudios: []Media{{URL: "https://cdn.example/audio.mp3"}}}
+	err := ValidateMediaTransport(context.Background(), input)
+	var appErr *kernel.AppError
+	if !errors.As(err, &appErr) || strings.Contains(err.Error(), "参考图片") || !strings.Contains(err.Error(), "参考视频 1") {
+		t.Fatalf("wrong references blocked: %v", err)
+	}
+	required := appErr.Details["requiredReferences"].([]map[string]any)
+	if len(required) != 1 || required[0]["kind"] != "video" || required[0]["index"] != 0 {
+		t.Fatal(required)
+	}
+	input.ReferenceVideos[0] = Media{URL: "https://cdn.example/video.mp4"}
+	if err := ValidateMediaTransport(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	input.Config.ChannelID = "managed"
+	if err := ValidateMediaTransport(context.Background(), input); err == nil {
+		t.Fatal("custom choice overrode managed channel policy")
+	}
+	input.Config.ReferenceMediaTransport["image"] = "guess"
+	if err := ValidateMediaTransport(context.Background(), input); err == nil {
+		t.Fatal("invalid transport accepted")
+	}
+}
+
+func TestDashScopeWanHydratesLocalImagesButRequiresOnlineAudio(t *testing.T) {
+	var events []string
+	ctx := WithProtocolRegistry(WithRuntime(context.Background(), Runtime{Resources: stageResources{events: &events}}), LoadOfficialFallbackRegistry())
+	input := Input{Mode: "video", Config: Config{InterfaceType: "dashscope-wan-video"}, ReferenceImages: []Media{{StorageKey: "resource:one"}}, ReferenceAudios: []Media{{URL: "https://cdn.example/audio.mp3"}}}
+	if err := ValidateMediaTransport(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	if err := HydrateMedia(ctx, "owner", &input, MediaHydrationPolicyFor(ctx, input)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(input.ReferenceImages[0].DataURL, "data:image/png;base64,") {
+		t.Fatal("local image did not become inline input")
+	}
+	if input.ReferenceAudios[0].URL != "https://cdn.example/audio.mp3" {
+		t.Fatal("online audio changed")
+	}
+	input.ReferenceAudios[0] = Media{StorageKey: "resource:audio"}
+	if err := ValidateMediaTransport(ctx, input); err == nil || !strings.Contains(err.Error(), "参考音频") {
+		t.Fatalf("local audio escaped URL contract: %v", err)
+	}
+}
+
+type referenceStorageFixture struct {
+	uploads int
+	failure error
+}
+
+func (p *referenceStorageFixture) Enabled() (bool, error) { return true, nil }
+func (p *referenceStorageFixture) Upload(ctx context.Context, userID, resourceID string) (string, error) {
+	p.uploads++
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if p.failure != nil {
+		return "", p.failure
+	}
+	if userID != "owner" || resourceID != "one" {
+		return "", errors.New("unexpected owned reference")
+	}
+	return "https://cdn.example/uploaded.png", nil
+}
+
+func TestReferenceStorageRunsOnlyDuringExecutionAndHonorsManualLinks(t *testing.T) {
+	for _, protocol := range []string{"newapi-channel-2", "volcengine-ark-video"} {
+		var events []string
+		storage := &referenceStorageFixture{}
+		ctx := WithRuntime(context.Background(), Runtime{Resources: stageResources{events: &events}, ReferenceStorage: storage})
+		input := Input{Mode: "video", Config: Config{InterfaceType: protocol, BaseURL: "https://ark.ap-southeast.bytepluses.com/api/v3"}, ReferenceVideos: []Media{{StorageKey: "resource:one"}}}
+		if err := ValidateMediaTransport(ctx, input); err != nil {
+			t.Fatal(err)
+		}
+		if storage.uploads != 0 || len(events) != 0 {
+			t.Fatal("admission read/uploaded reference bytes")
+		}
+		if err := HydrateMedia(ctx, "owner", &input, MediaHydrationPolicyFor(ctx, input)); err != nil {
+			t.Fatal(err)
+		}
+		if storage.uploads != 1 || input.ReferenceVideos[0].URL != "https://cdn.example/uploaded.png" {
+			t.Fatal("runtime upload did not supply the URL")
+		}
+		input.Config.ReferenceMediaTransport = map[string]string{"video": "link"}
+		if err := ValidateMediaTransport(ctx, input); err == nil {
+			t.Fatal("manual mode silently uploaded owned reference")
+		}
+		input.Config.ReferenceMediaTransport = nil
+		storage.failure = errors.New("HTTP 403 upload denied")
+		if err := HydrateMedia(ctx, "owner", &input, MediaHydrationPolicyFor(ctx, input)); err == nil || !strings.Contains(err.Error(), "参考视频 1") || !strings.Contains(err.Error(), "403") {
+			t.Fatalf("missing per-asset upload error: %v", err)
+		}
+	}
+}
+
+func TestBytePlusExplicitInlineVideoNeverPassesWithStorageEnabled(t *testing.T) {
+	storage := &referenceStorageFixture{}
+	ctx := WithRuntime(context.Background(), Runtime{ReferenceStorage: storage})
+	input := Input{Mode: "video", Config: Config{InterfaceType: "volcengine-ark-video", BaseURL: "https://ark.ap-southeast.bytepluses.com/api/v3", ReferenceMediaTransport: map[string]string{"video": "inline"}}, ReferenceVideos: []Media{{StorageKey: "resource:one"}}}
+	var appErr *kernel.AppError
+	if err := ValidateMediaTransport(ctx, input); !errors.As(err, &appErr) || appErr.Reason != "invalid_reference_transport" {
+		t.Fatalf("inline BytePlus video admitted: %v", err)
+	}
+	if !mediaPolicyForKind(ctx, input, "video", MediaHydrationPolicyFor(ctx, input)).RequireURL || storage.uploads != 0 {
+		t.Fatal("BytePlus video policy no longer requires a URL")
+	}
+}
+
+func TestWanInlineImageNeverUploadsEvenWhenStorageIsEnabled(t *testing.T) {
+	var events []string
+	storage := &referenceStorageFixture{}
+	ctx := WithProtocolRegistry(WithRuntime(context.Background(), Runtime{ReferenceStorage: storage, Resources: stageResources{events: &events}}), LoadOfficialFallbackRegistry())
+	input := Input{Mode: "video", Config: Config{InterfaceType: "dashscope-wan-video", ReferenceMediaTransport: map[string]string{"image": "inline"}}, ReferenceImages: []Media{{StorageKey: "resource:one"}}}
+	if err := ValidateMediaTransport(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	if err := HydrateMedia(ctx, "owner", &input, MediaHydrationPolicyFor(ctx, input)); err != nil {
+		t.Fatal(err)
+	}
+	if storage.uploads != 0 || !strings.HasPrefix(input.ReferenceImages[0].DataURL, "data:image/png;base64,") {
+		t.Fatal("inline image was uploaded instead")
+	}
+}

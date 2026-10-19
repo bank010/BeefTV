@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { validateTeamRelease } from './team-release-contract.mjs';
 import {
   THEME_AGENT_CONTRACT_VERSION,
   THEME_AGENT_SINCE,
@@ -27,7 +28,7 @@ const BUNNY_FIXTURES = {
 function copyGate(dir) {
   mkdirSync(join(dir, 'scripts'), { recursive: true });
   mkdirSync(join(dir, 'docs/release-evidence'), { recursive: true });
-  for (const name of ['verify-real-generation-release.mjs', 'real-generation-release-contract.mjs', 'h3-family-release-contract.mjs', 'video-direct-delivery-release-contract.mjs']) {
+  for (const name of ['verify-real-generation-release.mjs', 'real-generation-release-contract.mjs', 'h3-family-release-contract.mjs', 'video-direct-delivery-release-contract.mjs', 'team-release-contract.mjs', 'image-preparation-release-contract.mjs']) {
     writeFileSync(join(dir, 'scripts', name), readFileSync(new URL(`./${name}`, import.meta.url)));
   }
 }
@@ -49,6 +50,69 @@ function setupRepo(version) {
   };
   return { dir, git, run, save, commitVersion };
 }
+
+test('v1.7.25 defers #176 and keeps source-bound checks, financial uncertainty and package gates', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.25');
+  try {
+    const sourceDigest = run('--fingerprint').trim();
+    const evidence = ['synthetic gate fixture; not live acceptance'];
+    const bound = { sourceDigest, evidence };
+    const passed = method => ({ status: 'passed', method, ...bound });
+    const value = {
+      version: 'v1.7.25', sourceDigest,
+      ownerException: { scope: 'team-targeted-defer-skills-20261017', approvedBy: 'Ender', instruction: '本版豁免重跑付费矩阵，专项验收后发布（推荐）', ...bound },
+      releaseAuthorization: { additionalHumanReplyRequired: false, scope: 'v1.7.25 only', ...bound },
+      baseRelease: 'v1.7.24', baseCommit: '2fe2311198f82ad8904a5d4c5dcbed7fbd7c8dd2',
+      includedPullRequests: [160, 161, 162, 163, 167, 168, 169, 171, 172, 174, 175, 177, 178, 179],
+      deferredPullRequests: [176], revertedCommit: 'e2e278a7e71f9f4d25ae02b5b51b6ea2e6f6cf57',
+      paidSubmissionLimit: 0, newBudgetCNY: 0, newSpentCNY: 0, newPendingCNY: 0,
+      cases: [], billingAttempts: [], budgetCNY: null, spentCNY: null, pendingCNY: null,
+      liveMatrixStatus: 'not_run_owner_waived', agentAcceptanceStatus: 'not_run_owner_waived', acceptanceComplete: false,
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.24', pendingCNY: null, evidence: ['docs/release-evidence/v1.7.24.json'] },
+      review: { result: 'approved', independent: true, reviewer: 'synthetic reviewer', ...bound },
+      upgrade: { preservedData: true, ...bound },
+      verification: {
+        ...Object.fromEntries(Object.entries({ generationAndRecovery: 'test', canvasAndDiagnostics: 'test', assistantAndSkillDeferral: 'test', installers: 'test', noNewPaidGeneration: 'source-diff', ci: 'github-actions' }).map(([id, method]) => [id, passed(method)])),
+        localReleaseGate: { status: 'pending_release_workflow', method: 'local-script', beforeDraft: true, sourceDigest, evidence: ['.github/workflows/release-desktop.yml'] },
+      },
+      packages: { platforms: ['darwin-arm64', 'darwin-amd64', 'windows-amd64', 'linux-amd64'], status: 'pending_release_workflow', archives: null,
+        windowsReleasedUpgradeAndRollbackBeforeUpload: true, finalArchiveSmokeBeforeUpload: true, linuxNativeWindowBeforeUpload: true,
+        signedManifestBeforePublish: true, publicReadbackAfterPublish: true, workflowEvidence: ['.github/workflows/release-desktop.yml'] },
+      releasePublished: false, releaseComplete: false,
+    };
+    save(value);
+    assert.match(run(), /v1\.7\.25 targeted team release/);
+    for (const mutate of [
+      r => { r.ownerException.instruction = '发布吧'; },
+      r => { r.ownerException.sourceDigest = 'a'.repeat(64); },
+      r => { r.includedPullRequests.push(176); },
+      r => { r.deferredPullRequests = []; },
+      r => { r.newSpentCNY = 1; },
+      r => { r.cases.push({ status: 'succeeded' }); },
+      r => { r.pendingCNY = 0; },
+      r => { r.priorFinancialUncertainty.pendingCNY = 0; },
+      r => { r.review.independent = false; },
+      r => { r.review.sourceDigest = 'a'.repeat(64); },
+      r => { r.upgrade.preservedData = false; },
+      r => { r.verification.localReleaseGate.status = 'failed'; },
+      r => { r.verification.localReleaseGate.beforeDraft = false; },
+      r => { r.verification.localReleaseGate.evidence = evidence; },
+      r => { r.verification.ci.sourceDigest = 'a'.repeat(64); },
+      r => { r.packages.platforms.pop(); },
+      r => { r.packages.windowsReleasedUpgradeAndRollbackBeforeUpload = false; },
+      r => { r.packages.signedManifestBeforePublish = false; },
+      r => { r.packages.publicReadbackAfterPublish = false; },
+      r => { r.releaseComplete = true; },
+    ]) {
+      const invalid = structuredClone(value);
+      mutate(invalid);
+      assert.throws(() => validateTeamRelease(invalid, sourceDigest));
+    }
+    commitVersion('v1.7.26');
+    save({ ...value, version: 'v1.7.26', sourceDigest: run('--fingerprint').trim() }, 'v1.7.26');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('v1.7.24 packages cross-reviewed PRs and BytePlus/TLS fixes and cannot carry the waiver forward', () => {
   const { dir, run, save, commitVersion } = setupRepo('v1.7.24');

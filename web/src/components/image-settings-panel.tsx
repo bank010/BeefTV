@@ -106,7 +106,9 @@ export function ImageSettingsPanel({ config, imageCount, onConfigChange, theme, 
                     </span>
                 </div> : null}
                 {showSize ? <ImageSizePicker profile={profile} size={activeSize} quality={quality} onChange={(size, nextQuality) => applyImageSizeSelection(onConfigChange, size, nextQuality)} /> : null}
-                {showCount && effectiveMaxCount > 1 ? (
+                {showCount && profile.fixedOutputs ? (
+                    <div className="text-[var(--fs-label)]" style={{ color: theme.node.muted }}>每次固定生成 {profile.fixedOutputs} 张</div>
+                ) : showCount && effectiveMaxCount > 1 ? (
                     <div className="space-y-2">
                         <SettingTitle color={theme.node.muted}>生成张数</SettingTitle>
                         <div className="grid grid-cols-4 gap-1.5">

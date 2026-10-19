@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -76,13 +77,44 @@ func (a *DesktopApp) UploadReferenceMedia(ids []string) (map[string]string, erro
 		// CopyOwnedResourceTo checks ownership; arbitrary paths never reach the uploader.
 		path := filepath.Join(staging, strconv.Itoa(index))
 		if err = runtime.CopyOwnedResourceTo(id, path); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("参考素材 %d 读取失败：%w", index+1, err)
 		}
 		link, err := referencestorage.Upload(ctx, config, path)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("参考素材 %d 上传失败：%w", index+1, err)
 		}
 		links[id] = link
 	}
 	return links, nil
+}
+
+func (a *DesktopApp) TestReferenceStorage() error {
+	if !a.migrationMu.TryLock() {
+		return errors.New("工作区正在迁移或上传，请稍后测试")
+	}
+	defer a.migrationMu.Unlock()
+	a.mu.RLock()
+	dir, closing := a.dataDir, a.closing
+	a.mu.RUnlock()
+	if closing {
+		return errors.New("工作区正在关闭")
+	}
+	config, err := referencestorage.Load(dir)
+	if err != nil {
+		return err
+	}
+	temp := filepath.Join(dir, "cache", "tmp")
+	if err := os.MkdirAll(temp, 0700); err != nil {
+		return errors.New("无法创建存储测试文件，请检查本地磁盘")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	a.mu.Lock()
+	a.migrationCancel = cancel
+	if a.closing {
+		cancel()
+	}
+	a.mu.Unlock()
+	defer func() { a.mu.Lock(); a.migrationCancel = nil; a.mu.Unlock() }()
+	return referencestorage.Check(ctx, config, temp)
 }

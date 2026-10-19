@@ -19,6 +19,20 @@ type Usage struct {
 	PreviousBytes int64  `json:"previousBytes,omitempty"`
 }
 
+// FreeBytes reads volume capacity without walking project and media files.
+func FreeBytes(path string) (uint64, error) {
+	for {
+		_, err := os.Stat(path)
+		if err == nil {
+			return freeBytes(path)
+		}
+		if !os.IsNotExist(err) || filepath.Dir(path) == path {
+			return 0, err
+		}
+		path = filepath.Dir(path)
+	}
+}
+
 func Inspect(path string) (Usage, error) {
 	return inspect(path, false)
 }

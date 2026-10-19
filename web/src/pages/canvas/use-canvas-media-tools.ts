@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { App } from "antd";
+import { confirmDepthComponents } from "@/components/depth-components-panel";
 import { nanoid } from "nanoid";
 
 import type { CanvasImageCropRect } from "@/components/canvas/canvas-node-crop-dialog";
@@ -351,6 +352,12 @@ export function useCanvasMediaTools({
             message.error("请先等待视频保存到本地资源库，再进行深度动作捕捉");
             return;
         }
+        const requestedScope = captureUserScope();
+        try {
+            if (!await confirmDepthComponents(modal)) return;
+            assertUserScope(requestedScope);
+            if (projectIdRef.current !== projectId || !nodesRef.current.some(item => item.id === node.id)) return;
+        } catch (error) { message.error(generationErrorMessage(error)); return; }
         const expectedScope = captureUserScope();
         const originalProjectId = projectId;
         const observer = new AbortController();
@@ -441,7 +448,7 @@ export function useCanvasMediaTools({
         } finally {
             depthObserversRef.current.delete(observer);
         }
-    }, [message, nodesRef, connectionsRef, projectId, setConnections, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
+    }, [message, modal, nodesRef, connectionsRef, projectId, setConnections, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
 
     const retryDepthCaptureNode = useCallback(async (node: CanvasNodeData) => {
         // A known task is recovered before considering a new execution.
@@ -473,6 +480,12 @@ export function useCanvasMediaTools({
             message.error(details);
             return;
         }
+        const requestedScope = captureUserScope();
+        try {
+            if (!await confirmDepthComponents(modal)) return;
+            assertUserScope(requestedScope);
+            if (projectIdRef.current !== projectId || !nodesRef.current.some(item => item.id === node.id)) return;
+        } catch (error) { message.error(generationErrorMessage(error)); return; }
         const expectedScope = captureUserScope();
         const originalProjectId = projectId;
         const observer = new AbortController();
@@ -559,7 +572,7 @@ export function useCanvasMediaTools({
         } finally {
             depthObserversRef.current.delete(observer);
         }
-    }, [message, nodesRef, connectionsRef, projectId, setNodes]);
+    }, [message, modal, nodesRef, connectionsRef, projectId, setNodes]);
 
     const recoverDepthCaptureNodes = useCallback((signal: AbortSignal) => {
         recoverOwnedDepthCaptureNodes({

@@ -82,6 +82,7 @@ type Config struct {
 	InterfaceType            string                    `json:"interfaceType"`
 	BaseURL                  string                    `json:"baseUrl"`
 	ReferenceAssetOrigin     string                    `json:"referenceAssetOrigin,omitempty"`
+	ReferenceMediaTransport  map[string]string         `json:"referenceMediaTransport,omitempty"`
 	APIKey                   string                    `json:"apiKey"`
 	SecretKey                string                    `json:"secretKey"`
 	Headers                  []outbound.OutboundHeader `json:"headers"`
@@ -129,6 +130,7 @@ type Media struct {
 type WorkflowField = workflow.Field
 
 type MediaHydrationPolicy struct {
+	ManualURL   bool
 	RequireURL  bool
 	PreferURL   bool
 	PreferHTTPS bool

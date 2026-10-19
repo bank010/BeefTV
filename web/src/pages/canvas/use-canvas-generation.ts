@@ -4,7 +4,7 @@ import { App } from "antd";
 
 import { generationTaskCanReloadResource, generationTaskNodeId } from "@/lib/canvas/canvas-generation-task-sync";
 import { canvasNodeResourceId } from "@/lib/canvas/canvas-resource-id";
-import { bindBackendCanvasGenerationResult, CanvasGenerationDurableAckError, CanvasGenerationMaterializationError } from "@/services/canvas-generation-consumer";
+import { bindBackendCanvasGenerationResult, CanvasGenerationDurableAckError, CanvasGenerationMaterializationError, CanvasGenerationOutputMissingError } from "@/services/canvas-generation-consumer";
 import { captureUserScope, isUserScopeAbandonedError, userScopeMatches } from "@/lib/user-scope-guard";
 import { ensureCanvasNodeAsset, retryCanvasAssetSyncAfterRateLimit } from "@/services/project-asset-sync";
 import { findGenerationTaskByOperation, listGenerationTasks, queryFailedVideoProviderTask, subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
@@ -262,7 +262,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     canvasId: capturedCanvasId,
                     nodeId,
                     task,
-                    outputIndex: 0,
+                    outputIndex: nodesRef.current.find((node) => node.id === nodeId)?.metadata?.taskOutputIndex ?? 0,
                     signal: controller.signal,
                     isCurrent: isCurrentCanvas,
                     nodesRef,
@@ -272,7 +272,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             } catch (error) {
                 if (error instanceof Error && error.name === "AbortError") throw error;
                 if (isUserScopeAbandonedError(error)) throw error;
-                throw error instanceof CanvasGenerationDurableAckError || error instanceof CanvasGenerationMaterializationError ? error : new CanvasGenerationDurableAckError(error);
+                throw error instanceof CanvasGenerationDurableAckError || error instanceof CanvasGenerationMaterializationError || error instanceof CanvasGenerationOutputMissingError ? error : new CanvasGenerationDurableAckError(error);
             }
         },
         [nodesRef, projectId, setNodes],
@@ -345,6 +345,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
         async (startedProjectId: string, signal: AbortSignal, isCurrentProject: () => boolean) => {
             if (!isCurrentProject()) return;
             const recoveryNodes = nodesRef.current.filter((node) => {
+                if (node.metadata?.generationErrorCode === "result_target_unavailable") return false;
                 if (isDepthCaptureResultNode(node)) return false;
                 const pendingAgentContinuation = node.metadata?.agentGenerationContinuation?.status === "pending";
                 const aggregateBatchRoot = node.metadata?.isBatchRoot && node.metadata.batchChildIds?.length && !node.metadata.taskId;

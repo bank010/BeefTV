@@ -17,6 +17,7 @@ type ImageContract struct {
 	Model          string            `json:"model"`
 	Protocol       string            `json:"protocol"`
 	Path           string            `json:"path"`
+	FixedOutputs   int               `json:"fixedOutputs,omitempty"`
 	PromptMaxChars int               `json:"promptMaxChars"`
 	MaxImages      int               `json:"maxImages"`
 	MaxImageBytes  int64             `json:"maxImageBytes"`

@@ -61,6 +61,9 @@ func (s *Service) Process(ctx context.Context, task *model.Task) error {
 	}
 	python, toolDir, modelRuntime := cudaPython, cudaToolDir, cudaModelRuntime
 	if choice.Device != "cuda" {
+		if s.goos == "windows" && choice.Device == "cpu" {
+			s.requireCPUComponents()
+		}
 		python, toolDir, modelRuntime, err = s.resolveRuntime(ctx, task, platform, choice.Variant)
 	}
 	if err != nil {
@@ -111,6 +114,7 @@ func (s *Service) Process(ctx context.Context, task *model.Task) error {
 		}
 	})
 	if ShouldRetryOnCPU(runErr, ctx.Err(), 0) && choice.Device == "cuda" {
+		s.requireCPUComponents()
 		choice = DeviceChoice{Variant: "cpu", Device: "cpu", FallbackReason: runErr.Error()}
 		if err := s.progress(task, "CUDA 设备故障，改用 CPU（可能耗时较长）", 15); err != nil {
 			return err

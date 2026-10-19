@@ -156,7 +156,7 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
     const result = parseBackendGenerationResult(task);
 
     if (mode === "image") {
-        const image = result.images?.[0];
+        const image = result.images?.[node.metadata?.taskOutputIndex ?? 0];
         const imageSource = image?.dataUrl || image?.url || "";
         const reuseImageKey = reuseGeneratedMediaStorageKey(image?.storageKey, imageSource);
         if (!imageSource && !reuseImageKey) throw new Error("后端任务没有返回图片");
@@ -262,8 +262,9 @@ export async function applyGenerationTaskResultToNodes(nodes: CanvasNodeData[], 
  */
 export async function applyRecoveredGenerationTaskResultToNodes(nodes: CanvasNodeData[], task: GenerationTask, targetNodeId: string) {
     const applied = await applyGenerationTaskResultToNodes(nodes, task, targetNodeId);
-    if (!applied.updated || !applied.node) return { ...applied, effectKey: attachNodeEffectKey(task.id, targetNodeId, 0) };
-    const effectKey = attachNodeEffectKey(task.id, applied.nodeId, 0);
+    const outputIndex = nodes.find((node) => node.id === targetNodeId)?.metadata?.taskOutputIndex ?? 0;
+    if (!applied.updated || !applied.node) return { ...applied, effectKey: attachNodeEffectKey(task.id, targetNodeId, outputIndex) };
+    const effectKey = attachNodeEffectKey(task.id, applied.nodeId, outputIndex);
     const recoveredNodes = applied.nodes.map((node) => node.id === applied.nodeId
         ? { ...node, metadata: applyGenerationConsumerEffect(node.metadata || {}, effectKey, (metadata) => metadata).value }
         : node);
@@ -297,7 +298,8 @@ export async function applyMaterializedGenerationTaskResultToNodes(nodes: Canvas
     } else {
         throw new Error("生成任务输出素材类型不支持画布节点");
     }
-    const updatedNode = await buildGenerationTaskNodeResult(node, { ...task, resultJson: JSON.stringify(result) }, nodes);
+    const indexedNode = { ...node, metadata: { ...node.metadata, taskOutputIndex: output.outputIndex } };
+    const updatedNode = await buildGenerationTaskNodeResult(indexedNode, { ...task, resultJson: JSON.stringify(result) }, nodes);
     const durableNode = {
         ...updatedNode,
         metadata: applyGenerationConsumerEffect({ ...updatedNode.metadata, assetId: asset.id }, effectKey, (metadata) => metadata).value,
@@ -329,19 +331,23 @@ export async function syncGenerationTaskToCanvasStore(task: GenerationTask) {
     const { loadCanvasProjectForEditing } = await import("@/services/local-workspace-sync");
     const project = await loadCanvasProjectForEditing(task.projectId);
     if (!project) return false;
-    const node = findGenerationTaskNode(project.nodes, task);
-    if (!node) return false;
-    if (node.metadata?.taskId === task.id && node.metadata.status === "success" && node.metadata.content) return false;
-    const updatedNode = await buildGenerationTaskNodeResult(node, task, project.nodes);
-    const latest = useCanvasStore.getState().projects.find((item) => item.id === project.id);
-    if (!latest?.nodes.some((item) => item.id === node.id)) return false;
-    useCanvasStore.getState().updateProject(project.id, { nodes: latest.nodes.map((item) => (item.id === node.id ? updatedNode : item)) });
-    return true;
+    const target = findGenerationTaskNode(project.nodes, task);
+    const candidates = project.nodes.filter((node) => node.metadata?.taskId === task.id || node.id === target?.id);
+    let changed = false;
+    for (const node of candidates) {
+        if (node.metadata?.taskId === task.id && node.metadata.status === "success" && node.metadata.content) continue;
+        const updatedNode = await buildGenerationTaskNodeResult(node, task, project.nodes);
+        const latest = useCanvasStore.getState().projects.find((item) => item.id === project.id);
+        if (!latest?.nodes.some((item) => item.id === node.id)) continue;
+        useCanvasStore.getState().updateProject(project.id, { nodes: latest.nodes.map((item) => (item.id === node.id ? updatedNode : item)) });
+        changed = true;
+    }
+    return changed;
 }
 
 function findGenerationTaskNode(nodes: CanvasNodeData[], task: GenerationTask, targetNodeId?: string) {
     const nodeId = targetNodeId || generationTaskNodeId(task);
-    return nodes.find((node) => node.id === nodeId || node.metadata?.taskId === task.id);
+    return nodes.find((node) => node.id === nodeId) || (targetNodeId ? undefined : nodes.find((node) => node.metadata?.taskId === task.id));
 }
 
 function completedTaskMetadata(task: GenerationTask): CanvasNodeMetadata {

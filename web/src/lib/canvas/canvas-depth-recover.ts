@@ -1,5 +1,4 @@
-import { generationErrorMessage } from "@/lib/generation-error";
-import { depthCaptureTaskMetadata, depthCaptureWaitFailureMetadata } from "@/lib/canvas/canvas-depth-capture";
+import { depthCaptureTaskMetadata, depthCaptureWaitFailureMetadata, isDepthCaptureResultNode } from "@/lib/canvas/canvas-depth-capture";
 import { assertLocalExecutorSession, beginLocalExecutorSession, isLocalExecutorSessionStop, observeLocalExecutorTask, type LocalExecutorSession } from "@/lib/plugins/builtin/editor/local-executor-session";
 import type { CapturedUserScope } from "@/lib/user-scope-guard";
 import type { GenerationTask } from "@/services/api/task-center";
@@ -66,7 +65,7 @@ export async function recoverOwnedDepthCaptureNode(input: DepthTarget, bind = bi
             throw stop;
         }
         // Attachment failure must never turn a succeeded task into a failed one.
-        updateDepthTarget(input, node => ({ ...node, metadata: { ...node.metadata, ...depthCaptureWaitFailureMetadata(generationErrorMessage(error), latestTask || taskId) } }));
+        updateDepthTarget(input, node => ({ ...node, metadata: { ...node.metadata, ...depthCaptureWaitFailureMetadata(error, latestTask || taskId) } }));
     }
 }
 
@@ -81,7 +80,8 @@ export function recoverOwnedDepthCaptureNodes(input: {
 }): void {
     if (input.signal.aborted) return;
     for (const node of input.nodesRef.current) {
-        if (!node.metadata?.depthSourceNodeId || (node.metadata.status !== "loading" && !(node.metadata.status === "error" && node.metadata.taskId))) continue;
+        if (node.metadata?.generationErrorCode === "result_target_unavailable") continue;
+        if (!isDepthCaptureResultNode(node) || (node.metadata?.status !== "loading" && !(node.metadata?.status === "error" && node.metadata.taskId))) continue;
         const observer = new AbortController();
         input.observers.add(observer);
         const onAbort = () => observer.abort();

@@ -18,7 +18,9 @@ func hasNVIDIACandidate(ctx context.Context, goos string) bool {
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(probeCtx, "nvidia-smi", "-L").Output()
+	command := exec.CommandContext(probeCtx, "nvidia-smi", "-L")
+	configureDepthCommand(command)
+	output, err := command.Output()
 	return err == nil && strings.TrimSpace(string(output)) != ""
 }
 

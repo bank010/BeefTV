@@ -9,6 +9,7 @@ export type BackendEnvelope<T> = {
     data: T;
     msg: string;
     reason?: string;
+    details?: Record<string, unknown>;
 };
 
 /**
@@ -20,17 +21,19 @@ export class ApiError extends Error {
     readonly status?: number;
     readonly code?: number;
     readonly reason?: string;
+    readonly details?: Record<string, unknown>;
     readonly requestId?: string;
     readonly retryable: boolean;
     readonly retryAfterMs?: number;
     readonly cause?: unknown;
 
-    constructor(message: string, options: { status?: number; code?: number; reason?: string; requestId?: string; retryable?: boolean; retryAfterMs?: number; cause?: unknown } = {}) {
+    constructor(message: string, options: { status?: number; code?: number; reason?: string; details?: Record<string, unknown>; requestId?: string; retryable?: boolean; retryAfterMs?: number; cause?: unknown } = {}) {
         super(message);
         this.name = "ApiError";
         this.status = options.status;
         this.code = options.code;
         this.reason = options.reason;
+        this.details = options.details;
         this.requestId = options.requestId;
         this.retryable = options.reason === "local_credential_failed" || options.reason === "local_disk_full" ? false : options.retryable ?? isRetryableStatus(options.status ?? options.code);
         this.retryAfterMs = options.retryAfterMs;
@@ -71,6 +74,7 @@ export async function request<T>(promise: Promise<{ data: BackendEnvelope<T>; st
                 status: response.status,
                 code: response.data.code,
                 reason: response.data.reason,
+                details: response.data.details,
                 requestId: responseRequestId(response.headers),
                 retryable: isRetryableStatus(response.status) || isRetryableStatus(response.data.code),
                 retryAfterMs: retryAfterMilliseconds(response.headers),
@@ -96,6 +100,7 @@ function unwrapTransportError(error: unknown): never {
             status,
             code,
             reason: error.response?.data?.reason,
+            details: error.response?.data?.details,
             requestId: responseRequestId(error.response?.headers),
             retryable: isRetryableStatus(status) || isRetryableStatus(code),
             retryAfterMs: retryAfterMilliseconds(error.response?.headers),

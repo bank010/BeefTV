@@ -18,9 +18,10 @@ export class CanvasStaleScopeError extends Error {
     }
 }
 
-/** 409 与 428 都表示本次提交的前提 revision 已过时：后端拒绝，本地内容仍是唯一副本。 */
+/** 409 还可能表示节点/任务身份冲突，只有版本冲突才能进入草稿合并和重试。 */
 export function isCanvasRevisionConflict(error: unknown) {
-    return error instanceof ApiError && (error.status === 409 || error.status === 428 || error.reason === "stale_revision");
+    if (!(error instanceof ApiError)) return false;
+    return error.reason === "stale_revision" || error.status === 428 || (error.status === 409 && (!error.reason || error.reason === "conflict"));
 }
 
 export function isCanvasSubmitControlError(error: unknown) {

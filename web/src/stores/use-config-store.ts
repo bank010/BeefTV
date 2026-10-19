@@ -17,6 +17,7 @@ import { seedancePortraitLabel, seedancePortraitModel, type VideoPriceQuote } fr
 export type ApiCallFormat = "openai" | "gemini" | "claude";
 export type ChannelInterfaceType = ModelProtocol;
 export type ChannelHeader = { name: string; value: string };
+export type ReferenceMediaTransport = Partial<Record<"image" | "video" | "audio", "auto" | "inline" | "url" | "link">>;
 export type RunningHubCapability = "image" | "video" | "audio";
 export type RunningHubWorkflowKind = "workflow" | "app";
 
@@ -410,6 +411,7 @@ export type ModelChannel = {
         icon?: string;
         capability: ModelCapability;
         protocol?: ModelProtocol;
+        referenceMediaTransport?: ReferenceMediaTransport;
         authType?: string;
         capabilityConfig?: ModelCapabilityConfig;
         videoCapabilitiesVersion?: string;
@@ -1269,6 +1271,7 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
         model,
         baseUrl: channel.baseUrl,
         referenceAssetOrigin: channel.referenceAssetOrigin,
+        referenceMediaTransport: channel.scope === "system" ? undefined : modelProfile?.referenceMediaTransport,
         apiKey: channel.credentialRef ? "" : channel.apiKey,
         secretKey: channel.credentialRef ? "" : channel.secretKey,
         headers: channel.headers,

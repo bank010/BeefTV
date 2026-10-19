@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
-import { CanvasGenerationDurableAckError, CanvasGenerationMaterializationError } from "./canvas-generation-errors";
-export { CanvasGenerationDurableAckError, CanvasGenerationMaterializationError, CanvasGenerationTargetSaveError } from "./canvas-generation-errors";
+import { CanvasGenerationDurableAckError, CanvasGenerationMaterializationError, CanvasGenerationOutputMissingError } from "./canvas-generation-errors";
+export { CanvasGenerationDurableAckError, CanvasGenerationMaterializationError, CanvasGenerationOutputMissingError, CanvasGenerationTargetSaveError } from "./canvas-generation-errors";
 
 import { assertUserScope, captureUserScope, isUserScopeAbandonedError, UserScopeAbandonedError, userScopeMatches, type CapturedUserScope } from "@/lib/user-scope-guard";
 import { bindCanvasTaskOutput, type CanvasTaskBindReceipt } from "@/services/api/operations";
@@ -122,7 +122,7 @@ function isMediaGenerationTask(task: GenerationTask) {
 }
 
 function generationTaskOutput(task: GenerationTask, outputIndex: number): GenerationTaskOutput | undefined {
-    return task.outputs?.find((output) => output.outputIndex === outputIndex) ?? task.outputs?.[outputIndex];
+    return task.outputs?.find((output) => output.outputIndex === outputIndex);
 }
 
 function generationTaskOutputMaterialized(task: GenerationTask, outputIndex: number) {
@@ -258,6 +258,7 @@ export async function bindBackendCanvasGenerationResult(input: {
 
     assertBindDispatchScope(capturedScope, liveScope);
     let task = input.task;
+    if (task.outputs?.length && !generationTaskOutput(task, outputIndex)) throw new CanvasGenerationOutputMissingError(outputIndex);
     if (isMediaGenerationTask(task) && Boolean(task.outputs?.length) && !generationTaskOutputMaterialized(task, outputIndex)) {
         task = await waitForMaterialization(task);
     }

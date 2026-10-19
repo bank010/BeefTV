@@ -141,6 +141,46 @@ func TestPluginRuntimeRefreshesExistingOfficialPackageDocumentation(t *testing.T
 	t.Fatal("refreshed OpenAI Images plugin is missing")
 }
 
+func TestPluginRuntimeUpgradesInstalledWanMediaTransport(t *testing.T) {
+	packageData, err := os.ReadFile(filepath.Join("..", "..", "..", "plugin-packages", "dashscope-wan-video.beeftv-plugin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := protocol.ParsePluginPackage(packageData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := pkg.Manifest
+	stale.Metadata.Version = "2.0.0"
+	stale.Metadata.MediaTransport = nil
+	stale.Contributes.Providers[0].MediaTransport = nil
+	staleRaw, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := json.Marshal([]pluginRegistryRecord{{ID: "dashscope-wan-video", Raw: staleRaw, Source: PluginOriginOfficial, FileName: "dashscope-wan-video.beeftv-plugin", PackageSHA256: "stale"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "plugin_registry.json"), records, 0600); err != nil {
+		t.Fatal(err)
+	}
+	center, err := newPluginRuntime(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{pluginRuntime: center}
+	adapter, ok := svc.protocolRegistry().Resolve("dashscope-wan-video")
+	if !ok {
+		t.Fatal("installed Wan provider missing")
+	}
+	metadata := adapter.Metadata()
+	if metadata.Version != "2.0.1" || metadata.MediaTransport["image"] != "inline" || metadata.MediaTransport["audio"] != "url" {
+		t.Fatalf("installed provider retained stale transport: %#v", metadata)
+	}
+}
+
 func TestBundledWorkflowPluginsControlAvailability(t *testing.T) {
 	center, err := newPluginRuntime(t.TempDir())
 	if err != nil {

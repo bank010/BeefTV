@@ -30,7 +30,7 @@ beforeAll(async () => {
     } });
     const executablePath = [process.env.CHROME_PATH, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"].find((p): p is string => Boolean(p && existsSync(p)));
     browser = await chromium.launch({ executablePath, headless: true });
-}, 60000);
+}, 120000);
 afterAll(async () => { await browser?.close(); server?.stop(true); }, 30000);
 
 async function open(options: { reduced?: boolean; dark?: boolean; mobile?: boolean } = {}): Promise<Page> {
@@ -158,30 +158,68 @@ test("快速切换模型时诊断只检查最后打开的菜单", async () => {
     } finally { await page.close(); }
 }, 30000);
 
-test("删除渠道保持现有按钮与确认框，确认后渠道移除并留下诊断", async () => {
-    const page = await open();
-    try {
-        const trigger = page.getByRole("button", { name: "删除渠道 工作室渠道" });
-        await trigger.click();
-        const ok = page.locator(".ant-popconfirm button").filter({ hasText: /^删\s?除$/ });
-        await ok.waitFor();
-        // The popconfirm is visible before its enter motion accepts pointer events.
-        // Wait for hit testing, then use an actual pointer click at the button centre.
-        const handle = await ok.elementHandle();
-        await page.waitForFunction((button: Element) => {
-            const box = button.getBoundingClientRect();
-            const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
-            return hit === button || button.contains(hit);
-        }, handle, { timeout: 3000 });
-        const box = (await ok.boundingBox())!;
-        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-        await page.getByTestId("channel-count").filter({ hasText: /^0$/ }).waitFor({ timeout: 3000 });
-        await page.waitForFunction(() => (window as unknown as { diagnostics: () => DiagnosticEvent[] }).diagnostics().some(event => event.code === "CHANNEL_DELETED"), undefined, { timeout: 3000 });
-        const codes = (await events(page)).map(event => event.code);
-        expect(codes).toContain("CHANNEL_DELETE_CONFIRM_OPEN");
-        expect(codes).toContain("CHANNEL_DELETED");
-    } finally { await page.close(); }
-}, 30000);
+for (const reduced of [false, true]) {
+    for (const dark of [false, true]) {
+        for (const mobile of [false, true]) {
+            test(`删除渠道确认可见并可点击：${reduced ? "减少动态效果" : "普通动效"} / ${dark ? "深色" : "浅色"} / ${mobile ? "手机" : "桌面"}`, async () => {
+                const page = await open({ reduced, dark, mobile });
+                const screenshotBase = process.env.BEEFTV_SETTINGS_SCREENSHOT_DIR && `${process.env.BEEFTV_SETTINGS_SCREENSHOT_DIR}/delete-${reduced ? "reduced" : "normal"}-${dark ? "dark" : "light"}-${mobile ? "mobile" : "desktop"}`;
+                try {
+                    const trigger = page.getByRole("button", { name: "删除渠道 工作室渠道" });
+                    if (screenshotBase) await page.screenshot({ path: `${screenshotBase}-before.png` });
+                    await trigger.click();
+                    const ok = page.locator(".ant-popconfirm button").filter({ hasText: /^删\s?除$/ });
+                    await ok.waitFor();
+                    // The popconfirm is visible before its enter motion accepts pointer events.
+                    // Wait for hit testing, then use an actual pointer click at the button centre.
+                    const handle = await ok.elementHandle();
+                    await page.waitForFunction((button: Element) => {
+                        const box = button.getBoundingClientRect();
+                        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+                        return hit === button || button.contains(hit);
+                    }, handle, { timeout: 3000 });
+                    const viewport = page.viewportSize()!;
+                    const checkedBounds = async () => {
+                        const box = (await ok.boundingBox())!;
+                        const popupBox = (await page.locator(".ant-popconfirm").boundingBox())!;
+                        expect(popupBox.x).toBeGreaterThanOrEqual(0);
+                        expect(popupBox.y).toBeGreaterThanOrEqual(0);
+                        expect(popupBox.x + popupBox.width).toBeLessThanOrEqual(viewport.width + 1);
+                        expect(popupBox.y + popupBox.height).toBeLessThanOrEqual(viewport.height + 1);
+                        expect(box.x).toBeGreaterThanOrEqual(0);
+                        expect(box.y).toBeGreaterThanOrEqual(0);
+                        expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+                        expect(box.y + box.height).toBeLessThanOrEqual(viewport.height + 1);
+                        return box;
+                    };
+                    // Hit testing can pass before enter motion starts. Preserve the
+                    // off-screen check before trial can scroll, then wait for stability.
+                    await checkedBounds();
+                    await ok.click({ trial: true, timeout: 3000 });
+                    if (screenshotBase) await page.screenshot({ path: `${screenshotBase}-confirm.png` });
+                    const box = await checkedBounds();
+                    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                    await page.getByTestId("channel-count").filter({ hasText: /^0$/ }).waitFor({ timeout: 3000 });
+                    await page.waitForFunction(() => (window as unknown as { diagnostics: () => DiagnosticEvent[] }).diagnostics().some(event => event.code === "CHANNEL_DELETED"), undefined, { timeout: 3000 });
+                    const codes = (await events(page)).map(event => event.code);
+                    expect(codes).toContain("CHANNEL_DELETE_CONFIRM_OPEN");
+                    expect(codes).toContain("CHANNEL_DELETED");
+                    if (screenshotBase) await page.screenshot({ path: `${screenshotBase}-after.png` });
+                } catch (error) {
+                    if (screenshotBase) {
+                        await page.screenshot({ path: `${screenshotBase}-failure.png` });
+                        console.error(await page.locator(".ant-popconfirm").evaluateAll(elements => elements.map(element => {
+                            const rect = element.getBoundingClientRect();
+                            const style = getComputedStyle(element);
+                            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, opacity: style.opacity, transform: style.transform, transitionProperty: style.transitionProperty };
+                        })));
+                    }
+                    throw error;
+                } finally { await page.close(); }
+            }, 30000);
+        }
+    }
+}
 
 test("默认模型下拉展开时诊断记录点击、弹层位置与遮挡情况", async () => {
     const page = await open();

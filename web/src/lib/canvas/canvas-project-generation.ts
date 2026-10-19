@@ -229,6 +229,7 @@ export function generationTaskMetadata(task: GenerationTask): CanvasNodeMetadata
     const progress = normalizeTaskProgress(task.progress, task.status);
     return {
         taskId: task.id,
+        taskType: task.type,
         taskClientOperationId: task.clientOperationId,
         generationSubmissionState: "accepted",
         retryOf: task.retryOf,
@@ -263,6 +264,8 @@ export function resetGenerationTaskMetadata(metadata: CanvasNodeMetadata | undef
         failedInputFingerprint: undefined,
     };
     delete next.taskId;
+    delete next.taskType;
+    delete next.taskOutputIndex;
     delete next.taskClientOperationId;
     delete next.retryOf;
     delete next.attemptGroupId;
@@ -285,6 +288,7 @@ export function resetGenerationTaskMetadata(metadata: CanvasNodeMetadata | undef
 
 export function clearInPlaceMediaOutputMetadata(metadata: CanvasNodeMetadata | undefined, status: CanvasNodeMetadata["status"] = "loading"): CanvasNodeMetadata {
     const next = resetGenerationTaskMetadata(metadata, status);
+    delete next.depthSourceNodeId;
     delete next.content;
     delete next.storageKey;
     delete next.assetId;

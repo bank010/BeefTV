@@ -59,12 +59,16 @@ func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapab
 		values := make([]string, 0, len(contract.Sizes))
 		for ratio := range contract.Sizes {
 			values = append(values, ratio)
+			if contract.FixedOutputs > 0 {
+				values = append(values, contract.Sizes[ratio])
+			}
 		}
 		sort.Strings(values)
 		return &ImageCapabilityConfig{
 			References: ImageReferenceConfig{PromptMaxChars: contract.PromptMaxChars, MaxImages: contract.MaxImages, MaxImageBytes: contract.MaxImageBytes},
-			Size:       ImageSizeConfig{Parameter: "size", Values: values, Default: "1:1", AllowCustom: true},
-			Quality:    ImageQualityConfig{Default: "auto"}, MaxOutputs: 1,
+			Size:       ImageSizeConfig{Parameter: "size", Values: values, Default: "1:1", AllowCustom: contract.MinSide != contract.MaxSide},
+			Quality:    ImageQualityConfig{Default: "auto"}, MaxOutputs: max(1, contract.FixedOutputs), FixedOutputs: contract.FixedOutputs,
+			ResponseFormat: ParameterSupport{Supported: contract.FixedOutputs > 0},
 		}
 	}
 	image := &ImageCapabilityConfig{
@@ -435,6 +439,9 @@ func CapabilitySpecFromModelCapabilityConfig(config *ModelCapabilityConfig, capa
 			spec.Options["transparentBackground"] = boolValues(false)
 		}
 		spec.Options["count"] = numericRange(1, float64(image.MaxOutputs), 1)
+		if image.FixedOutputs > 0 {
+			spec.Options["count"] = numericRange(float64(image.FixedOutputs), float64(image.FixedOutputs), float64(image.FixedOutputs))
+		}
 	case "video":
 		if config.Video == nil {
 			return spec, kernel.BadAuthRequest("渠道视频模型尚未配置能力参数")
@@ -556,6 +563,9 @@ func validateImageCapabilityConfig(value *ImageCapabilityConfig) error {
 	}
 	if value.MaxOutputs < 1 || value.MaxOutputs > 100 {
 		return kernel.BadAuthRequest("单次图片数量必须在 1-100 之间")
+	}
+	if value.FixedOutputs < 0 || value.FixedOutputs > value.MaxOutputs {
+		return kernel.BadAuthRequest("固定图片数量必须在单次图片数量范围内")
 	}
 	switch value.Size.Parameter {
 	case "none":
@@ -869,6 +879,9 @@ func validateImageTask(profile *ImageCapabilityConfig, input TaskInput) error {
 		return err
 	}
 	count, err := strconv.Atoi(strings.TrimSpace(input.Config.Count))
+	if profile.FixedOutputs > 0 && (err != nil || count != profile.FixedOutputs) {
+		return kernel.BadAuthRequest(fmt.Sprintf("当前图片模型每次固定生成 %d 张", profile.FixedOutputs))
+	}
 	if err == nil && count > profile.MaxOutputs {
 		return kernel.BadAuthRequest(fmt.Sprintf("当前图片模型单次最多生成 %d 张", profile.MaxOutputs))
 	}

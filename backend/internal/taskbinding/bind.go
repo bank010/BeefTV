@@ -50,7 +50,26 @@ func Bind(ports Ports, userID string, req Request) (Receipt, error) {
 		return Receipt{}, conflict("canvas_mismatch", "任务不属于这块画布")
 	}
 	target := localtask.TargetBindingFromInput(task.InputJSON)
-	if nodeID := strings.TrimSpace(target.NodeID); nodeID != "" && nodeID != req.NodeID {
+	nodeID := strings.TrimSpace(target.NodeID)
+	// Multi-output image tasks freeze the destination for every output before
+	// submission. Never accept a new destination supplied by the bind request.
+	if task.Type == "canvas_image" {
+		var input struct {
+			Metadata struct {
+				OutputNodeIDs []string `json:"outputNodeIds"`
+			} `json:"metadata"`
+		}
+		if json.Unmarshal([]byte(task.InputJSON), &input) == nil && len(input.Metadata.OutputNodeIDs) > 0 {
+			if req.OutputIndex >= len(input.Metadata.OutputNodeIDs) {
+				return Receipt{}, conflict("node_mismatch", "产物未指定画布节点")
+			}
+			nodeID = strings.TrimSpace(input.Metadata.OutputNodeIDs[req.OutputIndex])
+			if nodeID == "" {
+				return Receipt{}, conflict("node_mismatch", "产物未指定画布节点")
+			}
+		}
+	}
+	if nodeID != "" && nodeID != req.NodeID {
 		return Receipt{}, conflict("node_mismatch", "只能绑定到任务原先指定的节点")
 	}
 	wantKey := localtask.AttachNodeEffectKey(req.TaskID, req.NodeID, req.OutputIndex)

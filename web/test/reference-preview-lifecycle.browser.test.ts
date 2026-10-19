@@ -105,13 +105,24 @@ test("mention menu decodes only visible rows and releases them when closed", asy
     await editor.pressSequentially("@menu");
     await page.locator("[data-canvas-resource-mention-menu]").waitFor({ state: "visible", timeout: 3000 });
     expect(await page.locator(".canvas-resource-mention-item").count()).toBe(40);
-    await page.waitForFunction(() => (window as any).captures.some((url: string) => url.startsWith("menu-")), undefined, { timeout: 3000 });
+    // menu-0 was captured by the held canvas lease before this menu opened.
+    // Wait for a different visible row before testing scrolling and disposal.
+    await page.waitForFunction(() => (window as any).captures.some((url: string) => url.startsWith("menu-") && url !== "menu-0"), undefined, { timeout: 3000 });
     const first = await page.evaluate(() => [...(window as any).captures] as string[]);
-    expect(first.length).toBeGreaterThan(0);
+    expect(first.length).toBeGreaterThan(1);
     expect(first.length).toBeLessThan(10);
     expect(first).not.toContain("menu-39");
     await page.locator(".canvas-resource-mention-scroll").evaluate((element) => { element.scrollTop = element.scrollHeight; });
-    await page.waitForFunction(() => (window as any).captures.includes("menu-39"));
+    try {
+        await page.waitForFunction(() => (window as any).captures.includes("menu-39"), undefined, { timeout: 5000 });
+    } catch (error) {
+        console.error("preview scroll state", await page.evaluate(() => {
+            const scroll = document.querySelector(".canvas-resource-mention-scroll");
+            return { captures: (window as any).captures, menuPresent: !!scroll, scrollTop: scroll?.scrollTop, scrollHeight: scroll?.scrollHeight, clientHeight: scroll?.clientHeight,
+                rows: [...(scroll?.querySelectorAll("button") || [])].map(row => ({ title: row.textContent, y: row.getBoundingClientRect().y, height: row.getBoundingClientRect().height })) };
+        }));
+        throw error;
+    }
     await page.locator(".canvas-resource-mention-scroll").evaluate((element) => { element.scrollTop = 0; });
     await page.waitForFunction(() => { const image = document.querySelector('.canvas-resource-mention-item img') as HTMLImageElement | null; return image && !(window as any).revoked.includes(image.src) && image.naturalWidth > 0; });
     await editor.press("Escape");

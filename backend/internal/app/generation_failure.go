@@ -95,7 +95,7 @@ func persistedFailureBlocksRetry(message string, stage string) bool {
 	if stage == "submission_unknown" {
 		return true
 	}
-	return generation.ClassifyText(message).BlocksAutomaticRetry()
+	return generation.ClassifyText(message).BlocksManualRetry()
 }
 
 func (s *Service) UserFacingProviderHTTPError(status int, statusText string, body string) string {

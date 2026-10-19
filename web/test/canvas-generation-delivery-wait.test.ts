@@ -273,3 +273,21 @@ describe("bindBackendCanvasGenerationResult waits for delivery", () => {
         expect(published).toEqual([1_000_000, 2_000_000, 3_000_000, undefined, undefined]);
     });
 });
+
+
+test("missing logical output fails immediately without aliasing a sparse output or polling", async () => {
+    const identity = captured("user-a", 1);
+    let calls = 0;
+    const task = mediaTask({ outputs: [{ outputIndex: 3, mediaType: "image", materializedAssetId: "fourth" }] });
+    const caught = await bindBackendCanvasGenerationResult({
+        canvasId: "missing-index", nodeId: "second", task, outputIndex: 0,
+        isCurrent: () => true, nodesRef: { current: [] }, setNodes: () => undefined,
+        runtime: { captureScope: () => identity, liveScope: () => identity,
+            refreshTask: async () => { calls++; return task; },
+            hydrateOutputs: async () => { calls++; },
+            bindOutput: async () => { calls++; throw new Error("must not bind another image"); },
+        },
+    }).catch((error) => error);
+    expect(caught.code).toBe("results_missing");
+    expect(calls).toBe(0);
+});

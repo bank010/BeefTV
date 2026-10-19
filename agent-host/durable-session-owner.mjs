@@ -8,12 +8,11 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from '@earendil-works/chord/conte
 import { Harness, createRegistry, defineDoc, defineExtension, defineTool, watchEvents,
   GenerationTask, hook } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { getCurrentSystemMessage } from '@earendil-works/pi-ai/utils/transcript';
 import { canvasKey } from './session-owner.mjs';
 import { newTurnAccumulator, resetTurnAccumulator, turnChange, sessionTitle } from './canvas-turn.mjs';
 import { SYSTEM_PROMPT } from './system-prompt.mjs';
 import { SKILL_LOAD_PARAMETERS, createSkillCatalogSection, expandSkillContent, loadPinnedSkills, loadedSkillRecord,
-  normalizeSkillCatalog, sameSkillPin, skillsToLoad, activeSkillProjection, createActiveSkillSection, guardSkillModelRequests } from './skill-resource.mjs';
+  normalizeSkillCatalog, sameSkillPin, skillsToLoad } from './skill-resource.mjs';
 import { budgetError, spendToolStep } from './request-budget.mjs';
 
 // On-disk format tag written into manifests and host state since 1.0.4; not the
@@ -34,7 +33,6 @@ function supplementContent(id, content) {
 }
 const idPattern = /^durable:([a-f0-9-]{36})$/;
 const fail = (reason) => Object.assign(new Error(reason), { reason });
-const requestSignature = messages => crypto.createHash('sha256').update(JSON.stringify(messages)).digest('hex');
 export const isDurableSessionId = (id) => idPattern.test(String(id || ''));
 export function durableToolReplay(tool) {
   return tool.replay === 'safe' ? 'safe' : 'unsafe';
@@ -163,56 +161,15 @@ export function createDurableSessionStore({ sessionRoot, workspaceRoot, getModel
       }
     });
   }
-  // Every fresh explicit selection expands its fixed version into the user
-  // message, as official `/skill:name` does. Request receipts own retry dedup.
+  // A selected skill not yet in this conversation is expanded once into the
+  // submitted user message (official `/skill:name` behaviour) and recorded,
+  // so later rounds keep following it from the transcript.
   async function expandSelectedSkills(entry, doc, pins, content, turnId) {
     if (!skills || !Array.isArray(pins) || !pins.length) return { content, records: [] };
     const missing = skillsToLoad(pins, doc?.loadedSkills || []);
     if (!missing.length) return { content, records: [] };
     const resources = await loadPinnedSkills({ pins: missing, readVersion: (pin, signal) => skills.readVersion(entry, pin, signal, turnId) });
     return { content: expandSkillContent(content, resources), records: resources.map((resource) => loadedSkillRecord(resource, 'selected', turnId)) };
-  }
-  async function readSkillContext(entry, turnId = entry.turn.turnId) {
-    if (typeof skills?.readContext !== 'function') throw fail('skill_context_service_unavailable');
-    const context = await skills.readContext(entry, turnId);
-    if (context.canvasId !== entry.canvasId || context.sessionId !== entry.sessionId) throw fail('skill_context_identity_mismatch');
-    return context;
-  }
-  async function resolveActiveSkills(entry, ref, signal) {
-    const context = await readSkillContext(entry);
-    const model = (await getModels(entry)).getModel(ref.provider, ref.modelId);
-    return activeSkillProjection({context,model,signal,
-      readVersion:(pin,readSignal)=>skills.readVersion(entry,pin,readSignal,entry.turn.turnId)});
-  }
-  async function resetPendingScope(entry, context) {
-    if (context.lifecycle !== 'reset_pending') return context;
-    // Repeating reset after a crash before acknowledgement is safe: no model
-    // request can pass until the same Go-owned scope has been acknowledged.
-    await entry.root.reset('用户开始一个独立任务。只使用当前明确选择的技能和本轮提供的资源。', CTX);
-    return skills.changeContext(entry,{action:'ack_reset',scopeId:context.scopeId,expectedRevision:context.revision},'');
-  }
-  async function prepareSkillContext(entry, pins, requestId, turnId, {append=false}={}) {
-    let context = await resetPendingScope(entry,await readSkillContext(entry,turnId));
-    if (pins?.length) {
-      const values=append?[...context.activePins.filter(pin=>!pins.some(next=>next.skillId===pin.skillId)),...pins]:pins;
-      context=await skills.changeContext(entry,{action:'activate',pins:values,expectedRevision:context.revision,requestId:`select:${requestId}`},turnId);
-      const current=await readSkillContext(entry,turnId);
-      if (current.scopeId!==context.scopeId || current.revision!==context.revision) throw fail('skill_context_changed');
-    }
-    return context;
-  }
-  async function skillContext(entry) {
-    return lock(entry.canvasId,()=>readSkillContext(entry,''));
-  }
-  async function changeSkillContext(entry, change) {
-    return lock(entry.canvasId,async()=>{
-      if (entry.busy || (await state(entry)).active) throw fail('session_busy');
-      await resetPendingScope(entry,await readSkillContext(entry,''));
-      await skills.changeContext(entry,change,'');
-      // A replayed new_scope receipt may predate an already acknowledged reset
-      // or later tasks. Only the live Go record can request another reset.
-      return resetPendingScope(entry,await readSkillContext(entry,''));
-    });
   }
   function hostTools(entry) {
     if (!skills) return [];
@@ -223,14 +180,11 @@ export function createDurableSessionStore({ sessionRoot, workspaceRoot, getModel
       execute: async (_toolCallId, args, signal) => {
         const id = String(args?.id || '').trim();
         const find = (items) => (items || []).find((item) => item.pin.skillId === id);
-        const active=await readSkillContext(entry);
-        const pinned=active.activePins.find(pin=>pin.skillId===id);
-        let item = pinned ? {pin:pinned} : find(entry.skillCatalog.items);
-        if (!item) item = find(normalizeSkillCatalog(await skills.readCatalog(entry, signal, entry.turn.turnId,{id})));
+        let item = find(entry.skillCatalog.items);
+        if (!item) item = find(normalizeSkillCatalog(await skills.readCatalog(entry, signal, entry.turn.turnId)));
         if (!item) throw fail('skill_not_installed: 技能目录里没有这个 id');
         const [resource] = await loadPinnedSkills({ pins: [item.pin], signal,
           readVersion: (pin, readSignal) => skills.readVersion(entry, pin, readSignal, entry.turn.turnId) });
-        await prepareSkillContext(entry,[item.pin],`tool:${_toolCallId}`,entry.turn.turnId,{append:true});
         await update(entry, (doc) => {
           const loaded = doc.loadedSkills || [];
           if (!loaded.some((record) => sameSkillPin(record, resource.pin))) doc.loadedSkills = [...loaded, loadedSkillRecord(resource, 'tool', entry.turn.turnId)];
@@ -301,10 +255,6 @@ export function createDurableSessionStore({ sessionRoot, workspaceRoot, getModel
           if (entry.generation.pendingInput?.state === 'pending') continue;
           if ((active?.intentEpoch || 0) !== entry.generation.intentEpoch) continue;
           if (entry.generation.pendingInputError) throw fail(entry.generation.pendingInputError.reason);
-          // Identify generation requests without treating the SDK's separate
-          // compaction summarizer request as a user-generation prompt.
-          entry.generation.preparedRequests ||= new Set();
-          entry.generation.preparedRequests.add(requestSignature(messages));
           if (messages !== request.messages) return { messages };
           return;
         }
@@ -376,21 +326,10 @@ export function createDurableSessionStore({ sessionRoot, workspaceRoot, getModel
       await entry.root.configure({tools:selected,instructions:`${SYSTEM_PROMPT}\n${mode==='read-only'?'只能读取工作区内容，不能修改或生成。':mode==='full-access'?'可读取和修改本工作区的所有画布。付费生成必须等待用户确认。':'仅修改当前画布；其他画布只读。'}`},CTX);
     };
     if (skills) registry.install(defineExtension({ name: 'beeftv.skills.v1', sections: [createSkillCatalogSection({
-      readCatalog: (signal) => skills.readCatalog(entry, signal, entry.turn.turnId), cache: entry.skillCatalog }),
-      createActiveSkillSection((ref,signal)=>resolveActiveSkills(entry,ref,signal))] }));
+      readCatalog: (signal) => skills.readCatalog(entry, signal, entry.turn.turnId), cache: entry.skillCatalog })] }));
     for (const extension of await extensions(entry)) registry.install(extension);
-    let models=await getModels(entry);
-    if(skills) models=guardSkillModelRequests(models,async(model,request,signal)=>{
-      await authorization(entry,entry.turn.turnId);
-      const projection=await resolveActiveSkills(entry,{provider:model.provider,modelId:model.id},signal);
-      if(entry.generation.preparedRequests?.has(requestSignature(request.messages))){
-        const shown=getCurrentSystemMessage(request.messages)?.sections?.beeftv_active_skills;
-        const expected=projection.text?`<beeftv_active_skills>\n${projection.text}\n</beeftv_active_skills>`:undefined;
-        if(shown!==expected)throw fail('skill_context_changed');
-      }
-    },error=>{entry.generation.skillContextFailure={reason:error?.reason || 'skill_context_unavailable',message:error?.message || '技能状态不可用'};});
     entry.harness = await Harness.open(await openNodeSqliteStorage(path.join(dir, `${uuid}.sqlite`)), {
-      models, registry,
+      models: await getModels(entry), registry,
       settings: { stream: { timeoutMs: 95000, maxRetries: 0 }, retry: { maxRetries: 2 },
         toolExecution: 'sequential', steeringMode: 'all', ...settings },
     }, CTX);
@@ -483,12 +422,8 @@ export function createDurableSessionStore({ sessionRoot, workspaceRoot, getModel
       if (!requestId || !input.turnId || !input.content) throw fail('invalid_request');
       if (existing.active && existing.active.requestId !== requestId) throw fail('session_busy');
       const finished = existing.turns.find((turn) => turn.requestId === requestId);
-      if (finished) {
-        if(JSON.stringify(skillsToLoad(finished.skills || []))!==JSON.stringify(skillsToLoad(input.skills || [])))throw fail('submission_request_conflict');
-        return entry.harness.submission(finished.submissionId, CTX);
-      }
-      if (existing.active && (existing.active.turnId !== input.turnId || JSON.stringify(existing.active.content) !== JSON.stringify(input.content) ||
-        JSON.stringify(skillsToLoad(existing.active.skills || []))!==JSON.stringify(skillsToLoad(input.skills || [])))) throw fail('submission_request_conflict');
+      if (finished) return entry.harness.submission(finished.submissionId, CTX);
+      if (existing.active && (existing.active.turnId !== input.turnId || JSON.stringify(existing.active.content) !== JSON.stringify(input.content))) throw fail('submission_request_conflict');
       const auth=await authorization(entry, input.turnId);
       const modelRef = await turnModel(entry, existing.active);
       input={...input,modelRef,permissionMode:auth?.permissionMode || 'canvas'};
@@ -500,8 +435,7 @@ export function createDurableSessionStore({ sessionRoot, workspaceRoot, getModel
         entry.turn.canvasId=entry.canvasId;
         entry.turn.supplements = [];
         entry.log.length = 0;
-        entry.generation = Object.assign(entry.generation, { aborted: false, intentEpoch: 0, modelEpoch: 0, pendingInput: null, pendingInputError: null,skillContextFailure:null,preparedRequests:new Set() });
-        if (skills) await prepareSkillContext(entry,input.skills,requestId,input.turnId);
+        entry.generation = Object.assign(entry.generation, { aborted: false, intentEpoch: 0, modelEpoch: 0, pendingInput: null, pendingInputError: null });
         const expansion = await expandSelectedSkills(entry, existing, input.skills, input.content, input.turnId);
         await update(entry, (doc) => {
           // content stays the client's own input (idempotency and history);
@@ -560,11 +494,8 @@ export function createDurableSessionStore({ sessionRoot, workspaceRoot, getModel
       if (entry.generation.aborted) throw fail('session_not_running');
       const previous = (active.supplementContents || []).find((input) => input.requestId === requestId);
       if (previous && JSON.stringify(previous.rawContent ?? previous.content) !== JSON.stringify(content)) throw fail('submission_request_conflict');
-      const previousInput=(active.supplementInputs || []).find(item=>item.requestId===requestId);
-      if(previous && previousInput && JSON.stringify(skillsToLoad(previousInput.skills || []))!==JSON.stringify(skillsToLoad(input.skills || [])))throw fail('submission_request_conflict');
       if (previous) return entry.root.submit({ type: 'input', requestId: `supplement:${requestId}`, content: supplementContent(requestId, previous.content), whenBusy: 'steer' }, CTX);
       const expansion = await expandSelectedSkills(entry, await state(entry), input.skills, content, active.turnId);
-      if (skills) await prepareSkillContext(entry,input.skills,`supplement:${requestId}`,active.turnId,{append:true});
       if (entry.generation.aborted) throw fail('session_not_running');
       entry.generation.intentEpoch += 1;
       await update(entry, (doc) => {
@@ -689,7 +620,7 @@ export function createDurableSessionStore({ sessionRoot, workspaceRoot, getModel
         if (partial) assistant = partial;
       }
     }
-    const preparationError = entry.generation.pendingInputError || entry.generation.skillContextFailure;
+    const preparationError = entry.generation.pendingInputError;
     const completion = preparationError ? { reply: assistant?.content?.filter(block => block.type === 'text').map(block => block.text).join('') || '', cancelled: false, error: preparationError.message, errorReason: preparationError.reason } : durableCompletion(settled, assistant, entry.budget?.failure, active.stopped);
     return { ...publicDurableTurn(active), ...completion,
       toolCalls: [...entry.log], change: turnChange(entry.turn), proposals: [...entry.turn.proposals],
@@ -751,5 +682,5 @@ export function createDurableSessionStore({ sessionRoot, workspaceRoot, getModel
     return entries.length;
   }
   return { sessions, createSession, handoffSession, activateSession, ensureSession, submit, recover, supplement, beginPendingInput, fenceStop, wait,
-    stop, history, status, listCanvasSessions, disposeAll, skillContext, changeSkillContext };
+    stop, history, status, listCanvasSessions, disposeAll };
 }

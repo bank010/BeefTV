@@ -1,4 +1,4 @@
-import { explainGenerationError, shouldBlockAutomaticRetry } from "@/lib/generation-error";
+import { explainGenerationError, shouldBlockManualRetry } from "@/lib/generation-error";
 import type { GenerationTask, TaskStatus } from "@/services/api/task-center";
 import { modelDisplayName, type AiConfig } from "@/stores/use-config-store";
 
@@ -25,7 +25,7 @@ export function taskAttentionReason(task: GenerationTask) {
 }
 
 export function taskRetryBlocked(task: GenerationTask) {
-    return shouldBlockAutomaticRetry({ code: task.errorCode, message: task.error }, task.stage);
+    return shouldBlockManualRetry({ code: task.errorCode, message: task.error }, task.stage);
 }
 
 export function providerCancelStatusLabel(task: GenerationTask) {

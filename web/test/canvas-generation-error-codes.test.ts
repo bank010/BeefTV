@@ -66,8 +66,8 @@ describe("generation result-apply error codes", () => {
         expect(shouldBlockAutomaticRetry({ code: "download_failed" })).toBe(true);
     });
 
-    test("kept-result codes are exactly the three reloadable categories", () => {
-        for (const code of ["canvas_conflict", "download_failed", "result_apply_failed"]) {
+    test("kept-result codes include both reloadable results and saved history recovery", () => {
+        for (const code of ["canvas_conflict", "download_failed", "result_apply_failed", "result_target_unavailable"]) {
             expect(isKeptGenerationResultCode(code)).toBe(true);
         }
         for (const code of [undefined, "", "throttled", "auth"]) {
@@ -75,7 +75,7 @@ describe("generation result-apply error codes", () => {
         }
     });
 
-    test("failure metadata offers resource reload for every kept-result code", () => {
+    test("failure metadata offers resource reload for reloadable kept-result codes", () => {
         for (const code of ["canvas_conflict", "download_failed", "result_apply_failed"]) {
             const failure = canvasGenerationFailureMetadata({ code }, { prompt: "猫", mode: "image" });
             expect(failure.generationErrorCode).toBe(code);

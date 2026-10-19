@@ -60,6 +60,7 @@ export type ImageCapabilityConfig = {
     responseFormat: { supported: boolean };
     outputFormat: { supported: boolean };
     maxOutputs: number;
+    fixedOutputs?: number;
 };
 
 export type VideoCapabilityConfig = {
@@ -412,10 +413,10 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
     if (contract) {
         return {
             references: { promptMaxChars: contract.promptMaxChars, maxImages: contract.maxImages, maxImageBytes: contract.maxImageBytes, maskSupported: false },
-            size: { parameter: "size", values: Object.keys(contract.sizes), default: "1:1", allowCustom: true },
+            size: { parameter: "size", values: [...Object.keys(contract.sizes), ...(contract.fixedOutputs ? Object.values(contract.sizes) : [])], default: "1:1", allowCustom: contract.minSide !== contract.maxSide },
             quality: { supported: false, values: [], default: "auto" },
             transparentBackground: { supported: false, default: false },
-            responseFormat: { supported: false }, outputFormat: { supported: false }, maxOutputs: 1,
+            responseFormat: { supported: Boolean(contract.fixedOutputs) }, outputFormat: { supported: false }, maxOutputs: contract.fixedOutputs || 1, fixedOutputs: contract.fixedOutputs,
         };
     }
     if (protocol === "grok-image") {
@@ -1404,7 +1405,7 @@ export function normalizeImageValue(profile: ImageCapabilityConfig, value: { siz
         : requestedQuality === "1k" || requestedQuality === "2k" || requestedQuality === "4k"
           ? requestedQuality
           : presetTier || profile.quality.default || "auto";
-    const count = String(Math.max(1, Math.min(profile.maxOutputs, Math.floor(Math.abs(Number(value.count)) || 1))));
+    const count = String(profile.fixedOutputs || Math.max(1, Math.min(profile.maxOutputs, Math.floor(Math.abs(Number(value.count)) || 1))));
     const transparentBackground = profile.transparentBackground.supported && value.transparentBackground === "true" ? "true" : "false";
     return { size, quality, count, transparentBackground };
 }
