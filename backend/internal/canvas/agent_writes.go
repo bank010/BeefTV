@@ -126,6 +126,18 @@ func (s *Service) CreateUserCanvasNodes(userID, canvasID string, drafts []NodeDr
 	if err != nil {
 		return UserDataSummary{}, nil, err
 	}
+	created, err := createCanvasNodes(doc, drafts)
+	if err != nil {
+		return UserDataSummary{}, nil, err
+	}
+	summary, err := s.saveCanvasDocWithRevision(userID, canvasID, doc, expectedRevision)
+	if err != nil {
+		return UserDataSummary{}, nil, err
+	}
+	return summary, created, nil
+}
+
+func createCanvasNodes(doc map[string]any, drafts []NodeDraft) ([]CreatedNode, error) {
 	nodes := canvasDocNodes(doc)
 	existingTitles := map[string]bool{}
 	cursorX := 120.0
@@ -152,17 +164,17 @@ func (s *Service) CreateUserCanvasNodes(userID, canvasID string, drafts []NodeDr
 	for _, draft := range drafts {
 		title := normalizeNodeTitle(draft.Title)
 		if title == "" {
-			return UserDataSummary{}, nil, kernel.NewAppError(http.StatusBadRequest, "每个节点都需要标题")
+			return nil, kernel.NewAppError(http.StatusBadRequest, "每个节点都需要标题")
 		}
 		if seen[title] {
-			return UserDataSummary{}, nil, kernel.NewAppError(http.StatusBadRequest, "同一批次内标题重复: "+title)
+			return nil, kernel.NewAppError(http.StatusBadRequest, "同一批次内标题重复: "+title)
 		}
 		seen[title] = true
 		if existingTitles[title] {
-			return UserDataSummary{}, nil, kernel.NewAppError(http.StatusConflict, "标题已存在: "+title)
+			return nil, kernel.NewAppError(http.StatusConflict, "标题已存在: "+title)
 		}
 		if _, ok := canvasCapabilityRegistry.Resolve(draft.Type); !ok {
-			return UserDataSummary{}, nil, kernel.NewAppError(http.StatusBadRequest,
+			return nil, kernel.NewAppError(http.StatusBadRequest,
 				"不支持的节点类型: "+draft.Type+"（可用: "+strings.Join(canvasCapabilityRegistry.Types(), "|")+"）")
 		}
 	}
@@ -191,11 +203,7 @@ func (s *Service) CreateUserCanvasNodes(userID, canvasID string, drafts []NodeDr
 		cursorX += width + nodePlacementGap
 	}
 	doc["nodes"] = nodes
-	summary, err := s.saveCanvasDocWithRevision(userID, canvasID, doc, expectedRevision)
-	if err != nil {
-		return UserDataSummary{}, nil, err
-	}
-	return summary, created, nil
+	return created, nil
 }
 
 // UpdateUserCanvasNodeFields 局部更新：只覆盖 patch 给出的字段，其余数据逐字保留。

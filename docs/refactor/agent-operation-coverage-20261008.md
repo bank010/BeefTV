@@ -13,6 +13,7 @@
 | 查询模型和参考能力 | model.catalog | 返回公开模型目录、类型与参考能力，不含密钥；实际可用性仍由节点配置校验 |
 | 配置镜头模型和参数 | canvas.node.configure | 草稿metadata类型化配置，实际model kind/可用性校验；image/video/audio字段与界面一致，真实回执/CAS/撤销；capabilities/v5、descriptor3；不生成不付费 |
 | 把创意变成镜头草稿 | canvas.nodes.create、canvas.node.update | 新建 title/type/prompt；更新 title/prompt/content，revision 校验；保存回执可恢复/撤销 |
+| 批量准备分镜制作 | canvas.script.prepare | 复用已写分镜，一次建立首帧/视频、参数、引用、行绑定与排布；整批CAS和回执，拒绝覆盖已有绑定；不生成不付费 |
 | 移动、删除镜头或移除参考线 | canvas.node.move、canvas.node.delete、canvas.edge.delete | revision 校验、原子回执和撤销；删除节点不删除素材库原件或任务 |
 | 将素材绑定成可用参考节点 | canvas.node.bind_asset | 指定已引用或当前项目授权的素材；校验同 owner、素材资源关联、READY 与媒体类型，CAS 保存真实 content/storageKey/assetId；不生成不付费 |
 | 给镜头关联参考节点 | canvas.edge.create | 当前画布节点，重复边幂等 |

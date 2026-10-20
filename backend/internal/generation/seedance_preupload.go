@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -73,16 +74,22 @@ type BeefAPISeedanceUploadRequest struct {
 	Mime   string `json:"mime"`
 }
 
-// prepareBeefAPISeedanceReferences uploads built-in BeefAPI Seedance inline
+// PrepareBeefAPIVideoReferences uploads built-in BeefAPI local/inline
 // references through the same generation key, then rewrites each item to the
 // completed HTTPS URL. PUT uses only the returned headers and known length.
-// Create/complete/read failures return before POST /videos. A 404/501 on the
-// first create may keep the previous inline JSON path when that body is still
-// under the existing 64 MiB wire limit.
-func PrepareBeefAPISeedanceReferences(ctx context.Context, config Config, input *Input, read BeefAPISeedanceMediaReader) error {
-	if input == nil || !IsBeefAPISeedancePreuploadConfig(ctx, config) {
+// Only Seedance allows recoverable PUT failures or a first-create 404/501
+// to fall back within its existing 64 MiB inline wire limit;
+// HTTP-only contracts must never fall back to inline or asset:// references.
+func PrepareBeefAPIVideoReferences(ctx context.Context, config Config, input *Input, read BeefAPISeedanceMediaReader) (err error) {
+	requiresHTTP := requiresBeefAPIHTTPReferences(ctx, config)
+	if input == nil || (!requiresHTTP && !IsBeefAPISeedancePreuploadConfig(ctx, config)) {
 		return nil
 	}
+	defer func() {
+		if requiresHTTP && err != nil {
+			err = RequestPreparationError{Cause: err}
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -97,6 +104,9 @@ func PrepareBeefAPISeedanceReferences(ctx context.Context, config Config, input 
 			}
 			media := &group.items[index]
 			if SkipBeefAPISeedanceMedia(*media) {
+				if requiresHTTP && !IsPublicMediaURL(strings.TrimSpace(media.URL)) {
+					return errors.New("当前模型需要可访问的参考图片链接，请重新导入图片。本次尚未开始生成")
+				}
 				continue
 			}
 			if media.Bytes > 0 {
@@ -109,6 +119,9 @@ func PrepareBeefAPISeedanceReferences(ctx context.Context, config Config, input 
 				return err
 			}
 			if skip {
+				if requiresHTTP {
+					return errors.New("参考素材未能读取，请重新导入图片。本次尚未开始生成")
+				}
 				continue
 			}
 			if err := ValidateBeefAPISeedanceMediaSize(group.kind, int64(len(data))); err != nil {
@@ -123,41 +136,44 @@ func PrepareBeefAPISeedanceReferences(ctx context.Context, config Config, input 
 					return err
 				}
 			}
-			if input.VideoCapability != nil {
-				verified := *media
-				verified.Bytes = int64(len(data))
-				refs := input.VideoCapability.References
-				applySeedanceDocumentedVideoPixelFloor(config, &refs)
-				switch group.kind {
-				case "image":
-					err = validateVideoReferenceImage(refs, index, verified)
-				case "video":
-					err = validateVideoReferenceVideo(refs, index, verified)
-				}
-				if err != nil {
-					return err
-				}
+			if err := validateSeedanceReferenceCapability(input, group.kind, index, *media, int64(len(data))); err != nil {
+				return err
 			}
 			digest := sha256.Sum256(data)
 			hexDigest := hex.EncodeToString(digest[:])
-			session, err := CreateBeefAPISeedanceUpload(ctx, config, BeefAPISeedanceUploadRequest{
+			uploadCtx := withReferenceUpload(ctx, ReferenceUploadMeta{Kind: group.kind, Index: index + 1})
+			if runtime, ok := RuntimeFromContext(ctx); ok && runtime.Stages != nil {
+				if err := runtime.Stages.SetStage(ctx, ReferenceUploadMeta{Kind: group.kind, Index: index + 1, Stage: "put"}.Label()); err != nil {
+					return err
+				}
+			}
+			session, err := CreateBeefAPISeedanceUpload(uploadCtx, config, BeefAPISeedanceUploadRequest{
 				Kind:   group.kind,
 				Bytes:  int64(len(data)),
 				SHA256: hexDigest,
 				Mime:   mime,
 			})
 			if !started && BeefAPISeedancePreuploadUnavailable(err) {
+				if requiresHTTP {
+					return errors.New("参考素材上传暂不可用，本次尚未开始生成。请稍后重试或使用可访问的图片链接")
+				}
 				return FallbackBeefAPISeedanceInline(ctx, input, read)
 			}
 			if err != nil {
-				return MapBeefAPISeedanceUploadError(err, false)
+				if requiresHTTP {
+					return MapBeefAPISeedanceUploadError(err, false)
+				}
+				return inlineAfterReferencePutFailure(uploadCtx, input, read, MapBeefAPISeedanceUploadError(err, false))
 			}
 			started = true
-			uploaded, err := CompleteBeefAPISeedanceUpload(ctx, config, session, data)
+			uploaded, err := CompleteBeefAPISeedanceUpload(uploadCtx, config, session, data)
 			size := int64(len(data))
 			data = nil
 			if err != nil {
-				return err
+				if requiresHTTP {
+					return err
+				}
+				return inlineAfterReferencePutFailure(uploadCtx, input, read, err)
 			}
 			if uploaded.Kind != group.kind || uploaded.Bytes != size || uploaded.SHA256 != hexDigest {
 				return errBeefAPISeedanceUploadIncomplete
@@ -266,15 +282,9 @@ func FallbackBeefAPISeedanceInline(ctx context.Context, input *Input, read BeefA
 				continue
 			}
 			if DataURL := strings.TrimSpace(firstNonEmpty(media.DataURL, media.URL)); strings.HasPrefix(DataURL, "data:") {
-				total += int64(len(DataURL))
-				if total+beefAPISeedanceJSONOverheadBytes > VideoJSONRequestLimitBytes {
+				if total+int64(len(DataURL))+beefAPISeedanceJSONOverheadBytes > VideoJSONRequestLimitBytes {
 					return ErrVideoJSONRequestTooLarge
 				}
-				if strings.TrimSpace(media.DataURL) == "" {
-					media.DataURL = DataURL
-					media.URL = ""
-				}
-				continue
 			}
 			if media.Bytes > 0 {
 				if media.Bytes > int64(^uint(0)>>1) {
@@ -304,6 +314,9 @@ func FallbackBeefAPISeedanceInline(ctx context.Context, input *Input, read BeefA
 					return err
 				}
 			}
+			if err := validateSeedanceReferenceCapability(input, group.kind, index, *media, int64(len(data))); err != nil {
+				return err
+			}
 			size := int64(len(data))
 			encoded := DataURL(mime, data)
 			data = nil
@@ -320,13 +333,30 @@ func FallbackBeefAPISeedanceInline(ctx context.Context, input *Input, read BeefA
 	return nil
 }
 
+func validateSeedanceReferenceCapability(input *Input, kind string, index int, media Media, size int64) error {
+	if input.VideoCapability == nil {
+		return nil
+	}
+	media.Bytes = size
+	refs := input.VideoCapability.References
+	applySeedanceDocumentedVideoPixelFloor(input.Config, &refs)
+	switch kind {
+	case "image":
+		return validateVideoReferenceImage(refs, index, media)
+	case "video":
+		return validateVideoReferenceVideo(refs, index, media)
+	}
+	return nil
+}
+
 func CreateBeefAPISeedanceUpload(ctx context.Context, config Config, request BeefAPISeedanceUploadRequest) (BeefAPISeedanceUploadSession, error) {
+	ctx = referenceUploadStage(ctx, "create")
 	var session BeefAPISeedanceUploadSession
 	if err := PostJSON(ctx, config, beefAPISeedanceUploadCreatePath, request, &session); err != nil {
-		return BeefAPISeedanceUploadSession{}, err
+		return BeefAPISeedanceUploadSession{}, referenceUploadError(ctx, err)
 	}
 	if err := ValidateBeefAPISeedanceSession(ctx, session); err != nil {
-		return BeefAPISeedanceUploadSession{}, err
+		return BeefAPISeedanceUploadSession{}, referenceUploadAddressError(ctx, err)
 	}
 	return session, nil
 }
@@ -336,8 +366,9 @@ func CompleteBeefAPISeedanceUpload(ctx context.Context, config Config, session B
 		return BeefAPISeedanceUploadComplete{}, MapBeefAPISeedanceUploadError(err, false)
 	}
 	var uploaded BeefAPISeedanceUploadComplete
+	ctx = referenceUploadStage(ctx, "complete")
 	if err := PostJSON(ctx, config, beefAPISeedanceUploadCompletePath, map[string]string{"ticket": session.Ticket}, &uploaded); err != nil {
-		return BeefAPISeedanceUploadComplete{}, MapBeefAPISeedanceUploadError(err, true)
+		return BeefAPISeedanceUploadComplete{}, referenceUploadError(ctx, err)
 	}
 	if strings.TrimSpace(uploaded.URL) == "" {
 		return BeefAPISeedanceUploadComplete{}, errBeefAPISeedanceUploadIncomplete
@@ -358,12 +389,13 @@ func BeefAPISeedancePutTimeout(ctx context.Context) time.Duration {
 	return timeout
 }
 
-func PutBeefAPISeedanceBytes(ctx context.Context, session BeefAPISeedanceUploadSession, data []byte) error {
+func PutBeefAPISeedanceBytes(ctx context.Context, session BeefAPISeedanceUploadSession, data []byte) (resultErr error) {
+	ctx = referenceUploadStage(ctx, "put")
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := ValidateBeefAPISeedanceSecureURL(ctx, session.UploadURL); err != nil {
-		return err
+		return referenceUploadAddressError(ctx, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, strings.TrimSpace(session.UploadURL), bytes.NewReader(data))
 	if err != nil {
@@ -383,18 +415,63 @@ func PutBeefAPISeedanceBytes(ctx context.Context, session BeefAPISeedanceUploadS
 	req.Header.Del("X-Api-Key")
 	req.Header.Del("X-Goog-Api-Key")
 	outbound.ApplyDefaultOutboundHeaders(req)
+	observation := TransportObservation{Request: req, StartedAt: time.Now(), ResponseLimitBytes: beefAPISeedanceUploadResponseLimit}
+	defer func() {
+		observation.Err = resultErr
+		// A storage error body can echo signed headers and credentials. Only the
+		// typed, allowlisted code and scrubbed summary reach persisted receipts.
+		if runtime, ok := RuntimeFromContext(ctx); ok && runtime.Receipts != nil {
+			runtime.Receipts.Observe(observation)
+		}
+	}()
 	client := outbound.OutboundHTTPClient(BeefAPISeedancePutTimeout(ctx))
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return errBeefAPISeedanceUploadRedirect
 	}
+	trace := &transportTrace{}
+	req = trace.attach(req)
+	observation.TransportRoute = "direct"
+	if transport, ok := client.Transport.(*http.Transport); ok && transport.Proxy != nil {
+		if proxy, proxyErr := transport.Proxy(req); proxyErr == nil && proxy != nil {
+			observation.TransportRoute = "proxy"
+		}
+	}
 	resp, err := client.Do(req)
+	observation.Dispatched, observation.TransportPhase = trace.result()
 	if err != nil {
-		return err
+		upload := referenceUploadError(ctx, err)
+		upload.Code = "upload_transport_error"
+		if resp != nil {
+			upload.HTTPStatus, observation.StatusCode, observation.HTTPStatus = resp.StatusCode, resp.StatusCode, resp.StatusCode
+		}
+		return upload
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, beefAPISeedanceUploadResponseLimit+1))
+	observation.StatusCode, observation.HTTPStatus = resp.StatusCode, resp.StatusCode
+	observation.DeclaredResponseBytes = resp.ContentLength
+	observation.RequestID = sanitizeDebugID(firstNonEmpty(resp.Header.Get("X-Amz-Request-Id"), resp.Header.Get("X-Request-Id"), resp.Header.Get("Cf-Ray")))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, beefAPISeedanceUploadResponseLimit+1))
+	observation.ReceivedBytes = int64(len(body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return errBeefAPISeedanceUploadUnavailable
+		upload := referenceUploadError(ctx, errBeefAPISeedanceUploadUnavailable)
+		upload.HTTPStatus, upload.RequestID = resp.StatusCode, observation.RequestID
+		upload.Detail = fmt.Sprintf("HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+		var storageError struct {
+			Code      string `xml:"Code"`
+			RequestID string `xml:"RequestId"`
+		}
+		if xml.Unmarshal(body, &storageError) == nil {
+			upload.Code = sanitizeProviderCode(storageError.Code)
+			upload.RequestID = firstNonEmpty(upload.RequestID, sanitizeDebugID(storageError.RequestID))
+		}
+		upload.Detail += " " + upload.Code
+		return upload
+	}
+	if readErr != nil {
+		upload := referenceUploadError(ctx, readErr)
+		upload.Code = "upload_transport_error"
+		upload.HTTPStatus, upload.RequestID = resp.StatusCode, observation.RequestID
+		return upload
 	}
 	return nil
 }
@@ -422,7 +499,7 @@ func ValidateBeefAPISeedanceSecureURL(ctx context.Context, raw string) error {
 		return errBeefAPISeedanceUploadUnavailable
 	}
 	if _, err := outbound.ValidateOutboundURL(parsed.String()); err != nil {
-		return errBeefAPISeedanceUploadUnavailable
+		return fmt.Errorf("%w：%s", errBeefAPISeedanceUploadUnavailable, DiagnosticSummary(err.Error()))
 	}
 	return nil
 }
@@ -451,6 +528,10 @@ func BeefAPISeedancePreuploadUnavailable(err error) bool {
 func MapBeefAPISeedanceUploadError(err error, completing bool) error {
 	if err == nil {
 		return nil
+	}
+	var upload *ReferenceUploadError
+	if errors.As(err, &upload) {
+		return err
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err

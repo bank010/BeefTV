@@ -84,7 +84,7 @@ func TestSignVerifyRoundTripAndTamper(t *testing.T) {
 		t.Fatalf("notes %q", body.Notes)
 	}
 	asset := body.Platforms[platformDarwinARM64]
-	if asset.URL != "https://updates.beefapi.com/beeftv/v1.6.0/BeefTV-v1.6.0-darwin-arm64.zip" {
+	if asset.URL != "https://beeftv-components-1481187348.cos.ap-guangzhou.myqcloud.com/beeftv/v1.6.0/BeefTV-v1.6.0-darwin-arm64.zip" {
 		t.Fatalf("url %q", asset.URL)
 	}
 	if asset.Size <= 0 || len(asset.SHA256) != 64 {

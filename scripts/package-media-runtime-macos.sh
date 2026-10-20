@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-target="${1:?usage: package-media-runtime-macos.sh darwin/arm64|darwin/amd64 destination [source-archive]}"
+target="${1:?usage: package-media-runtime-macos.sh darwin/arm64|darwin/amd64 destination [source-archive] [source-packet-output]}"
 destination="${2:?destination is required}"
 archive="${3:-}"
+source_output="${4:-}"
 [[ "$(uname -s)" == Darwin ]] || { echo "Native macOS build required" >&2; exit 1; }
 case "$target" in
   darwin/arm64) apple_arch=arm64; ffmpeg_arch=aarch64 ;;
@@ -62,4 +63,8 @@ binary_sha="$(shasum -a 256 "$stage/ffprobe" | cut -d ' ' -f 1)"
 printf '{"sourceCommit":"%s","sourceURL":"%s","sourceSHA256":"%s","probeSHA256":"%s","target":"%s","license":"LGPL-2.1-or-later"}\n' "$source_commit" "$source_url" "$source_sha" "$binary_sha" "$target" > "$stage/manifest.json"
 mkdir -p "$(dirname "$destination")"
 cp -R "$stage" "$destination"
+if [[ -n "$source_output" ]]; then
+  python3 "$(dirname "$0")/package-macos-media-source.py" \
+    --source "$archive" --runtime "$destination" --target "$target" --output "$source_output"
+fi
 echo "Packaged local ffprobe for $target: $destination"

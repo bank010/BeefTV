@@ -69,6 +69,7 @@ type Service struct {
 	projects                 *localproject.Service
 	canvas                   *canvas.Service
 	assistantTurns           *assistantturns.Service
+	continuationBackground   assistantContinuationBackground
 	assets                   *localasset.Service
 	assetsOnce               sync.Once
 	appearance               *appearance.Service

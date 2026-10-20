@@ -33,7 +33,11 @@ func TestTaskRequestEvidenceHTTPToRestoredList(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-Request-Id", "req-real-header")
+				header := "X-Request-Id"
+				if tc.name == "business_error" {
+					header = "X-Oneapi-Request-Id"
+				}
+				w.Header().Set(header, "req-real-header")
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.body))
 			}))

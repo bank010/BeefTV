@@ -23,7 +23,7 @@ test('Go descriptors drive default Pi discovery, calls and durable replay', asyn
   await bridge.loadDescriptors();
   const build = mode => bridge.buildTools('canvas-a',[],{aborted:false,...(mode ? {permissionMode:mode}: {})},newTurnAccumulator(),'session');
   const tools = build();
-  for (const id of ['canvas.script.rows.append','canvas.script.row.update','canvas.script.row.remove']) {
+  for (const id of ['canvas.script.rows.append','canvas.script.row.update','canvas.script.row.remove','canvas.script.prepare']) {
    const tool = tools.find(tool => tool.label === id);
    expect(tool).toBeDefined(); expect(durableToolReplay(tool)).toBe('safe');
    expect(build('read-only').some(tool => tool.label === id)).toBe(false);
@@ -35,6 +35,9 @@ test('Go descriptors drive default Pi discovery, calls and durable replay', asyn
   expect(tools.some(tool => tool.label === 'unknown.write')).toBe(false);
   expect(build('full-access').some(tool => tool.label === 'unknown.write')).toBe(false);
   expect(durableToolReplay({label:'canvas.script.rows.append'})).toBe('unsafe');
+  const review = build('read-only').find(tool => tool.label === 'media.review');
+  expect(review).toBeDefined();
+  expect(durableToolReplay(review)).toBe('unsafe');
   const append = tools.find(tool => tool.label === 'canvas.script.rows.append');
   await append.execute('call-1',{nodeId:'script',expectedRevision:1,rows:[{durationSeconds:6}]});
   expect(writes[0].params.canvasId).toBe('canvas-a');

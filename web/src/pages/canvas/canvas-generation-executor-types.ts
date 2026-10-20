@@ -39,5 +39,6 @@ export type CanvasGenerationExecution = CanvasGenerationExecutorDependencies & {
     taskContext?: { conversationId?: string; messageId?: string };
     retryContext?: { retryOf: string; attemptGroupId: string; clientOperationId: string };
     clientOperationId?: string;
+    onSubmissionPlan?: (manifest: import("@/services/api/assistant-continuation").AssistantSubmissionManifest) => Promise<void>;
     registerPendingNodeIds: (nodeIds: string[]) => void;
 };

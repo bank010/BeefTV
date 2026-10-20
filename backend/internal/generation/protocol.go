@@ -82,7 +82,19 @@ func RunProtocolAdapterTaskWithPolicy(ctx context.Context, input Input, adapter 
 		if result, handled, streamErr := tryStreamingDeclarativeTextCreate(ctx, input, adapter, request, spec, policy); handled {
 			return result, streamErr
 		}
-		body, err := ExecuteProtocolRequest(WithRequestKind(ctx, "create"), input.Config, spec)
+		var body []byte
+		if input.Mode == "audio" {
+			var mime string
+			body, mime, err = ExecuteProtocolBinaryRequest(WithRequestKind(ctx, "create"), input.Config, spec)
+			if err == nil && strings.Contains(strings.ToLower(mime), "text/event-stream") {
+				body, mime, err = readSpeechAudioEvents(ctx, body)
+			}
+			if err == nil && input.Config.InterfaceType == string(model.ChannelInterfaceOpenAIAudio) {
+				_, err = ValidateGeneratedAudio(mime, body, input.Config.AudioFormat)
+			}
+		} else {
+			body, err = ExecuteProtocolRequest(WithRequestKind(ctx, "create"), input.Config, spec)
+		}
 		if err != nil {
 			if input.Mode == "video" {
 				return nil, UncertainVideoSubmission(ctx, err)
@@ -301,6 +313,13 @@ func ProtocolRequestFromInput(input Input) protocol.GenerationRequest {
 			"audioSpeed":   defaultString(input.Config.AudioSpeed, "1"),
 			"count":        input.Config.Count,
 		},
+	}
+	if input.Mode == "audio" && strings.Contains(strings.ToLower(input.Config.Model), "minimax-music-") {
+		request.Extra["audioFormat"] = "mp3"
+		request.Extra["audioMetadata"] = map[string]any{"audio_setting": map[string]any{"sample_rate": 44100, "bitrate": 256000, "format": "mp3"}}
+		if isBeefAPIHostFromURL(input.Config.BaseURL) {
+			request.Extra["audioStreamFormat"] = "sse"
+		}
 	}
 	for _, message := range input.TextHistory {
 		role := strings.ToLower(strings.TrimSpace(message.Role))

@@ -151,6 +151,7 @@ func newCanvasHistoryTestService(t *testing.T) *Service {
 		&model.CanvasProject{}, &model.CanvasSnapshot{}, &model.CanvasSnapshotResource{}, &model.CanvasUnitLink{},
 		&model.Resource{}, &model.Asset{}, &model.AssetVersion{}, &model.AssetRepresentation{}, &model.AssetFolder{},
 		&model.CanvasLibraryFolder{}, &model.CanvasDrawing{},
+		&model.AgentOpRecord{},
 		&model.Task{}, &model.TaskLog{}, &model.Result{}, &model.TaskTextDelta{}, &model.ApiCallLog{},
 		&model.CreationRun{}, &model.CreationSubmission{},
 		&model.Project{}, &model.StyleProfile{}, &model.VoiceProfile{},

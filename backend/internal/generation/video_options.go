@@ -57,6 +57,11 @@ func IsBeefAPISeedancePreuploadConfig(ctx context.Context, config Config) bool {
 	return IsBeefAPIVideoConfig(ctx, config) && IsSeedanceVideoConfig(config)
 }
 
+func requiresBeefAPIHTTPReferences(ctx context.Context, config Config) bool {
+	contract, ok := providerpreset.BeefAPIVideoContract(config.Model)
+	return ok && contract.RequiresHTTPReferences && IsBeefAPIVideoConfig(ctx, config)
+}
+
 func IsGrokVideoConfig(config Config) bool {
 	return strings.Contains(strings.ToLower(strings.TrimSpace(config.Model)), "grok")
 }

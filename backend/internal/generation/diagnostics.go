@@ -45,7 +45,7 @@ func SanitizeTaskDiagnostics(input *model.TaskFailureDiagnostics) *model.TaskFai
 	}
 	for i := range d.Requests {
 		r := &d.Requests[i]
-		r.Operation = diagnosticEnum(r.Operation, "image_edit", "image_generate", "query_or_download", "submit", "other")
+		r.Operation = diagnosticEnum(r.Operation, "image_edit", "image_generate", "query_or_download", "submit", "reference_create", "reference_put", "reference_complete", "other")
 		r.Method = diagnosticEnum(r.Method, "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD")
 		r.TransportPhase = diagnosticEnum(r.TransportPhase, "connect", "tls", "request", "response_wait", "response")
 		r.TransportRoute = diagnosticEnum(r.TransportRoute, "direct", "proxy")
@@ -68,14 +68,14 @@ func SanitizeTaskDiagnostics(input *model.TaskFailureDiagnostics) *model.TaskFai
 		d.Input = &v
 	}
 	switch d.Source {
-	case "local_validation", "upstream_http", "upstream_response", "local_result", "local_response":
+	case "local_validation", "upstream_http", "upstream_response", "local_result", "local_response", "reference_upload":
 	default:
 		d.Source = "unknown"
 	}
 	d.Summary = DiagnosticSummary(d.Summary)
 	d.Stage = DiagnosticSummary(d.Stage)
 	d.ProviderCode = sanitizeProviderCode(d.ProviderCode)
-	if d.Source != "upstream_http" && d.Source != "upstream_response" {
+	if d.Source != "upstream_http" && d.Source != "upstream_response" && d.Source != "reference_upload" {
 		d.ProviderCode = ""
 	}
 	d.RequestID = sanitizeDebugID(d.RequestID)

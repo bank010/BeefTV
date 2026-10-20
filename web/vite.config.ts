@@ -2,10 +2,11 @@ import { dirname, resolve } from "node:path";
 import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 
 import { resolveHeavyMediaEnabled } from "./media-build-mode";
 import { devOwnerProxy } from "./dev-owner-proxy";
+import { distributionNotices } from "../scripts/distribution-notices.mjs";
 
 const webDir = dirname(fileURLToPath(import.meta.url));
 const appVersion = process.env.CANVAS_BUILD_VERSION?.trim() || readFileSync(resolve(webDir, "../VERSION"), "utf8").trim();
@@ -33,8 +34,34 @@ function pruneOptionalMediaPlugin() {
     };
 }
 
+function licenseNoticesPlugin(): Plugin {
+    const notices = () => distributionNotices({ version: appVersion, heavyMedia: heavyMediaEnabled, platform: process.env.BEEFTV_DIST_PLATFORM || "web" });
+    return {
+        name: "beeftv-license-notices",
+        configureServer(server) {
+            server.middlewares.use((request, response, next) => {
+                const name = request.url?.split("?")[0]?.replace(/^\/licenses\//, "");
+                if (!request.url?.startsWith("/licenses/") || !name) return next();
+                const bytes = notices().get(name);
+                if (!bytes) {
+                    response.statusCode = 404;
+                    response.end("Not found");
+                    return;
+                }
+                response.setHeader("Content-Type", name.endsWith(".html") ? "text/html; charset=utf-8" : "text/plain; charset=utf-8");
+                response.end(bytes);
+            });
+        },
+        generateBundle() {
+            for (const [name, source] of notices()) {
+                this.emitFile({ type: "asset", fileName: `licenses/${name}`, source });
+            }
+        },
+    };
+}
+
 export default defineConfig({
-    plugins: [react(), devOwnerProxy(apiProxyTarget, process.env.BEEFTV_DEV_OWNER_TOKEN_FILE), pruneOptionalMediaPlugin()],
+    plugins: [react(), devOwnerProxy(apiProxyTarget, process.env.BEEFTV_DEV_OWNER_TOKEN_FILE), pruneOptionalMediaPlugin(), licenseNoticesPlugin()],
     define: {
         __APP_VERSION__: JSON.stringify(appVersion),
         __BEEFTV_HEAVY_MEDIA_ENABLED__: JSON.stringify(heavyMediaEnabled),

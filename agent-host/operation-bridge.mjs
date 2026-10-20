@@ -6,14 +6,26 @@
 import { collectTurnEffects, extendWriteChain, rebaseOntoWriteChain } from './canvas-turn.mjs';
 import { toolOperationId } from './session-identity.mjs';
 import { budgetError, spendToolStep } from './request-budget.mjs';
-import { mediaToolResult } from './media-content.mjs';
+import { mediaToolResult, mediaFacts, mediaEvidence } from './media-content.mjs';
 import { canvasReadView, CANVAS_READ_VIEW_SCHEMA } from './canvas-read-view.mjs';
+import { canvasWriteView, canvasWriteViewDescription } from './canvas-write-view.mjs';
+import { awaitBusinessTasks } from './await-business-tasks.mjs';
+import { timelineDeliveryTool } from './timeline-delivery.mjs';
 
 const CANVAS_NODE_UPDATE = 'canvas.node.update';
 
 // 局部写入：模型从同一份旧版本并行发出的几次写入，可以接到本轮自己的最新版本上。
 // canvas.document.commit 提交的是整份文档，旧版本的整份文档会覆盖本轮刚写的内容，所以不改写。
-const REBASABLE_WRITES = new Set(['canvas.nodes.create', 'canvas.edge.create', CANVAS_NODE_UPDATE]);
+const REBASABLE_WRITES = new Set([
+  'canvas.nodes.create',
+  'canvas.edge.create',
+  CANVAS_NODE_UPDATE,
+  'canvas.node.configure',
+  'canvas.node.move',
+  'canvas.script.rows.append',
+  'canvas.script.row.update',
+  'canvas.script.row.remove',
+]);
 
 function assertToolGeneration(generation, descriptor, signal) {
   if (generation.aborted || signal?.aborted) throw new Error('aborted');
@@ -81,14 +93,14 @@ export function createOperationBridge({
 
   function buildTools(canvasId, log, generation, turn, identityPrefix) {
     const mode = generation.permissionMode || 'canvas';
-    return [...descriptors.entries()].filter(([,d]) => Array.isArray(d.assistantModes) && d.assistantModes.includes(mode)).map(([toolName, descriptor]) => ({
+    const tools = [...descriptors.entries()].filter(([,d]) => Array.isArray(d.assistantModes) && d.assistantModes.includes(mode)).map(([toolName, descriptor]) => ({
       name: toolName,
       label: descriptor.id,
       readOnly: descriptor.readOnly === true,
       replay: descriptor.replay === 'safe' ? 'safe' : 'unsafe',
       description: descriptor.summary + (descriptor.id === 'canvas.get'
         ? '。返回有界只读视图：revision 与真实节点/连线；readView 标明完整或部分。沿 nextOffset 分页，长字段按 nodeId/fieldPath/textOffset 读取，不把 preview 当完整原文；后续读取带 expectedRevision。'
-        : ''),
+        : canvasWriteViewDescription(descriptor.id)),
       parameters: scopedSchema(descriptor.params, mode !== 'canvas' || descriptor.id === 'canvas.get', descriptor.id),
       ...(descriptor.readOnly ? {} : { executionMode: 'sequential' }),
       execute: async (toolCallId, args, signal) => {
@@ -160,8 +172,10 @@ export function createOperationBridge({
           // tool must reuse that revision, even after this turn's chain advances.
           if (chainWrite && generation.persistEffects) await generation.persistEffects();
           assertToolGeneration(generation, descriptor, signal);
-          const data = await opsRequest('POST', `/ops/${descriptor.id}`, { opId, params }, signal, turn.turnId);
-          log.push({ toolCallId: toolCallId || null, tool: descriptor.id, args: params, isError: false, ms: Date.now() - started, replayed: !!data?.replayed, ...rebaseNote });
+          let data = await opsRequest('POST', `/ops/${descriptor.id}`, { opId, params }, signal, turn.turnId);
+          if (descriptor.id === 'canvas.generation.submit' || descriptor.id === 'canvas.timeline.render') {
+            data = await awaitBusinessTasks(data, { opsRequest, turnId: turn.turnId, signal, canvasId: params.canvasId });
+          }
           // A replay can recover the receipt lost between business commit and
           // the durable checkpoint. Only our persisted request may advance
           // its own canvas chain by exactly one; older replays never reset it.
@@ -182,14 +196,21 @@ export function createOperationBridge({
           if (descriptor.id !== 'canvas.task.bind' || !data?.replayed) {
             collectTurnEffects(turn, descriptor.id, data?.result, opId);
           }
-          return mediaToolResult(descriptor.id === 'canvas.get' ? canvasReadView(data, readView) : data, descriptor.id, { ...mediaModel, originTurnId:turn.turnId,
+          const converted = mediaToolResult(descriptor.id === 'canvas.get' ? canvasReadView(data, readView) : canvasWriteView(data, descriptor.id, params), descriptor.id, { ...mediaModel, originTurnId:turn.turnId,
             ...(generation.durable ? {nativePartStore} : {}) });
+          const evidence = mediaEvidence(data?.result, descriptor.id);
+          const facts = evidence ? undefined : mediaFacts(data?.result, descriptor.id);
+          log.push({ toolCallId: toolCallId || null, tool: descriptor.id, args: params, isError: false, ms: Date.now() - started, replayed: !!data?.replayed, ...rebaseNote,
+            ...(facts ? { mediaFacts: facts } : {}), ...(evidence ? { mediaEvidence: evidence } : {}) });
+          return converted;
         } catch (error) {
           log.push({ toolCallId: toolCallId || null, tool: descriptor.id, args: params, isError: true, error: error.message, ms: Date.now() - started, ...rebaseNote });
           throw error;
         }
       },
     }));
+    const delivery = timelineDeliveryTool(tools);
+    return delivery ? [...tools, delivery] : tools;
   }
 
   return { descriptors, opsRequest, loadDescriptors, buildTools };

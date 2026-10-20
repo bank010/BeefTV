@@ -42,6 +42,7 @@ function stubController(open: boolean, setOpen: (next: boolean) => void, width: 
     const noop = () => {};
     const asyncNoop = async () => {};
     return {
+        plan: null,
         canvasId: "lab",
         open,
         setOpen,
@@ -61,6 +62,7 @@ function stubController(open: boolean, setOpen: (next: boolean) => void, width: 
         sessionBusy: false,
         reloadHistory: async () => true,
         pendingUserText: null,
+        pendingContinuationId: null,
         pendingSelectedNodeIds: [],
         pendingAttachments: [],
         pendingSkills: [],

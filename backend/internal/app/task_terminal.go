@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"time"
 
+	"infinite-canvas/backend/internal/generation"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/repository"
 )
+
+const taskStageRequestNotSent = "请求尚未提交"
 
 // taskTerminalCoordinator 收敛任务进入终态后的业务策略。
 //
@@ -147,6 +150,11 @@ func (c *taskTerminalCoordinator) handleExecutionFailure(task *model.Task, err e
 	var unknown providerSubmissionUnknownError
 	if errors.As(err, &imageRecovery) || errors.As(err, &unknown) {
 		task.Stage = "submission_unknown"
+	} else {
+		var preparation generation.ProtocolPreparationError
+		if task.ProviderRequestID == "" && errors.As(err, &preparation) {
+			task.Stage = taskStageRequestNotSent
+		}
 	}
 	task.Error = c.userFacingMessage(err)
 	if terminalErr := c.markTerminalState(task); terminalErr != nil {

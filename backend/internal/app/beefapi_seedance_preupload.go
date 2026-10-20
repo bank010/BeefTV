@@ -16,13 +16,6 @@ func (s *Service) prepareBeefAPISeedanceReferences(ctx context.Context, userID s
 	})
 }
 
-// prepareBeefAPISeedanceReferences uploads built-in BeefAPI Seedance inline
-// references through the same generation key, then rewrites each item to the
-// completed HTTPS URL. PUT uses only the returned headers and known length.
-// Create/complete/read failures return before POST /videos. A 404/501 on the
-// first create may keep the previous inline JSON path when that body is still
-// under the existing 64 MiB wire limit.
-
 func (s *Service) readBeefAPISeedanceMedia(userID string, kind string, media providerMedia) ([]byte, string, bool, error) {
 	if skipBeefAPISeedanceMedia(media) {
 		return nil, "", true, nil

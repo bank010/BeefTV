@@ -10,11 +10,17 @@ import {
     assistantTurnCanContinue,
     assistantFailedActionText,
     assistantProposalText,
+    assistantProposalProgress,
+    appendAssistantDraft,
     assistantStatusNotice,
     assistantUndoFailureText,
 } from "@/pages/canvas/canvas-assistant-copy";
 import { ASSISTANT_DEFAULT_WIDTH, ASSISTANT_MAX_WIDTH, ASSISTANT_MIN_WIDTH, clampAssistantWidth, dismissedProposalKey, resolveCanvasRightPanel } from "@/pages/canvas/use-canvas-assistant";
 import type { AssistantTurnChange } from "@/services/api/agent-assistant";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
+import { removeCanvasNodes } from "@/lib/canvas/canvas-project-domain";
+import { generationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
+import type { GenerationTask } from "@/services/api/task-center";
 
 describe("助手不可用原因映射成一句用户语加一个出路", () => {
     test("缺模型和协议不支持都指向模型配置", () => {
@@ -138,14 +144,20 @@ describe("撤销失败原因映射", () => {
 describe("付费生成确认", () => {
     test("说清数量、用哪个模型、谁扣款", () => {
         const text = assistantProposalText({ proposalId: "p1", kind: "image", nodeIds: ["a", "b"], model: "seedream-4", modelKey: "ch::seedream-4", note: "" });
-        expect(text).toBe("生成 2 张参考图片 · seedream-4\n确认后开始，按所选渠道计费。");
+        expect(text).toBe("为 2 个节点生成图片 · seedream-4\n确认后开始，按所选渠道计费。");
         // 不能把带渠道前缀的内部值显示出来。
         expect(text).not.toContain("ch::");
     });
 
     test("视频提议说的是视频", () => {
         const text = assistantProposalText({ proposalId: "p2", kind: "video", nodeIds: ["a"], model: "seedance-1", modelKey: "ch::seedance-1" });
-        expect(text).toContain("生成 1 段视频");
+        expect(text).toContain("为 1 个节点生成视频");
+    });
+    test("已提交或已结束的卡片不再提示确认生成和计费", () => {
+        const text = assistantProposalText({ proposalId: "p2", kind: "video", nodeIds: ["a"], model: "image", modelKey: "ch::image" }, ["报价"], false);
+        expect(text).not.toContain("确认后开始");
+        expect(text).not.toContain("计费");
+        expect(text).not.toContain("报价");
     });
 
     test("旧真人模型提议显示统一名称与当前渠道报价", () => {
@@ -155,6 +167,75 @@ describe("付费生成确认", () => {
         expect(text).toContain("¥69");
         expect(text).toContain("¥42");
         expect(text).not.toContain("byok::");
+    });
+});
+
+describe("生成结果只使用这项提议的真实回执", () => {
+    const proposal = { proposalId: "p1", kind: "image" as const, nodeIds: ["source"], model: "image", modelKey: "channel::image" };
+    const node = (id: string, metadata: CanvasNodeMetadata = {}): CanvasNodeData => ({ id, type: CanvasNodeType.Image, title: id, position: { x: 0, y: 0 }, width: 100, height: 100, metadata });
+    const ready = (id: string, patch: CanvasNodeMetadata = {}) => node(id, { taskClientOperationId: "proposal:p1:source", taskId: "task-1", taskStatus: "succeeded", status: "success", storageKey: "resource:ready", ...patch });
+
+    test("已有结果不冒充本次结果，真正的新目标可供检查", () => {
+        expect(assistantProposalProgress(proposal, [ready("source", { taskClientOperationId: "older" })]).ready).toBe(false);
+        const progress = assistantProposalProgress(proposal, [ready("source", { taskClientOperationId: "older" }), ready("new-result")]);
+        expect(progress.ready).toBe(true);
+        expect(progress.nodeIds).toEqual(["new-result"]);
+    });
+    test("上游成功但还没取回不能检查，失败与取消可以主动分析", () => {
+        expect(assistantProposalProgress(proposal, [ready("a", { status: "loading", storageKey: undefined })]).ready).toBe(false);
+        expect(assistantProposalProgress(proposal, [ready("a", { resourceReloadAvailable: true })]).ready).toBe(false);
+        for (const taskStatus of ["failed", "cancelled"]) expect(assistantProposalProgress(proposal, [ready("a", { taskStatus, status: "error", storageKey: undefined })]).ready).toBe(true);
+    });
+    test("批量等待原始输出全部终态，缺项与未提交不能被成功结果掩盖", () => {
+        const root = node("batch", { isBatchRoot: true, batchChildIds: ["a", "b"], generationOutputNodeIds: ["a", "b"] });
+        const a = ready("a", { batchRootId: "batch", taskClientOperationId: "proposal:p1:source:0" });
+        const b = ready("b", { batchRootId: "batch", taskClientOperationId: "proposal:p1:source:1" });
+        expect(assistantProposalProgress(proposal, [root, a]).ready).toBe(false);
+        expect(assistantProposalProgress(proposal, [root, a, node("b", { batchRootId: "batch", status: "loading" })]).ready).toBe(false);
+        expect(assistantProposalProgress(proposal, [root, a, { ...b, metadata: { ...b.metadata, taskStatus: "running" } }]).ready).toBe(false);
+        expect(assistantProposalProgress(proposal, [root, a, b]).nodeIds).toEqual(["a", "b"]);
+        expect(assistantProposalProgress(proposal, [root, a, b]).ready).toBe(true);
+        const legacyRoot = { ...root, metadata: { ...root.metadata, generationOutputNodeIds: undefined } };
+        expect(assistantProposalProgress(proposal, [legacyRoot, a, b]).ready).toBe(false);
+        expect(assistantProposalProgress(proposal, [a, b]).ready).toBe(false);
+    });
+    test("原生多图根节点不重复计数；部分失败保留成功产物", () => {
+        const root = ready("batch", { isBatchRoot: true, batchChildIds: ["a", "b"], generationOutputNodeIds: ["a", "b"] });
+        const a = ready("a", { batchRootId: "batch" });
+        const b = ready("b", { batchRootId: "batch", taskStatus: "failed", status: "error", storageKey: undefined });
+        const progress = assistantProposalProgress(proposal, [root, a, b]);
+        expect(progress.ready).toBe(true);
+        expect(progress.nodeIds).toEqual(["a", "b"]);
+        expect(progress.text).toContain("1 个结果已就绪，1 个结果因任务失败");
+    });
+    test("删除运行子项会缩短当前列表，但不会把尚在运行的原批次说成完成", () => {
+        const root = node("batch", { isBatchRoot: true, batchChildIds: ["a", "b"], generationOutputNodeIds: ["a", "b"], count: 2 });
+        const a = ready("a", { batchRootId: "batch", count: 2, taskClientOperationId: "proposal:p1:source:0" });
+        const b = ready("b", { batchRootId: "batch", count: 2, taskStatus: "running", taskClientOperationId: "proposal:p1:source:1" });
+        const after = removeCanvasNodes([root, a, b], new Set(["b"])).nodes;
+        expect(after.find(item => item.id === "batch")?.metadata?.batchChildIds).toEqual(["a"]);
+        expect(after.find(item => item.id === "batch")?.metadata?.generationOutputNodeIds).toEqual(["a", "b"]);
+        expect(assistantProposalProgress(proposal, after).ready).toBe(false);
+        const editedCount = after.map(item => ({ ...item, metadata: { ...item.metadata, count: 1 } }));
+        expect(assistantProposalProgress(proposal, editedCount).ready).toBe(false);
+        expect(assistantProposalProgress(proposal, editedCount).text).toContain("无法确认这批结果是否完整");
+    });
+    test("一个原生任务的三个失败产物按结果计数，不冒称三个任务", () => {
+        const metadata = generationTaskMetadata({ id: "one-native-task", clientOperationId: "proposal:p1:source", status: "failed" } as GenerationTask);
+        const root = node("batch", { ...metadata, isBatchRoot: true, batchChildIds: ["a", "b", "c"], generationOutputNodeIds: ["a", "b", "c"], count: 3 });
+        const children = ["a", "b", "c"].map(id => node(id, { ...metadata, batchRootId: "batch", count: 3, status: "error" }));
+        const progress = assistantProposalProgress(proposal, [root, ...children]);
+        expect(progress.ready).toBe(true);
+        expect(progress.text).toContain("3 个结果因任务失败");
+        expect(progress.text).not.toContain("3 个任务");
+    });
+    test("不串到相似操作编号，不从遗漏的第二个源节点推断全部完成", () => {
+        expect(assistantProposalProgress(proposal, [ready("a", { taskClientOperationId: "proposal:p1:source:other" })]).ready).toBe(false);
+        expect(assistantProposalProgress({ ...proposal, nodeIds: ["source", "missing"] }, [ready("a")]).ready).toBe(false);
+    });
+    test("检查要求保留原草稿，连点不重复追加", () => {
+        expect(appendAssistantDraft("保留我的结尾\n", "检查生成结果")).toBe("保留我的结尾\n\n\n检查生成结果");
+        expect(appendAssistantDraft("保留我的结尾\n\n检查生成结果", "检查生成结果")).toBe("保留我的结尾\n\n检查生成结果");
     });
 });
 
@@ -172,11 +253,19 @@ describe("右侧栏位互斥", () => {
 
 describe("官方生命周期进度", () => {
     test("媒体工具显示真实进行中的工作，结束不伪造已成功", () => {
-        expect(assistantLifecycleText({ phase: "tool", toolName: "media_overview" })).toBe("正在浏览素材，确认画面和声音。");
-        expect(assistantLifecycleText({ phase: "tool", toolName: "media_inspect" })).toBe("正在查看和听取选定片段。");
+        expect(assistantLifecycleText({ phase: "tool", toolName: "media_overview" })).toBe("正在读取素材概要。");
+        expect(assistantLifecycleText({ phase: "tool", toolName: "media_inspect" })).toBe("正在检查选定素材。");
         expect(assistantLifecycleText({ phase: "tool", toolName: "media_check" })).toBe("正在检查黑屏、音轨和文件信息。");
         expect(assistantLifecycleText({ phase: "tool", toolName: "unknown_tool" })).toBeNull();
-        expect(assistantLifecycleText({ phase: "tool_end", toolName: "media_check" })).toBeNull();
+        expect(assistantLifecycleText({ phase: "tool_end", toolName: "media_check" })).not.toContain("已检查");
+        expect(assistantLifecycleText({ phase: "tool_end", toolName: "media_check", success: false })).not.toContain("已检查");
+        expect(assistantLifecycleText({ phase: "tool_end", toolName: "media_check", success: true })).toBe("已检查媒体文件信息，正在继续制作。");
+    });
+    test("制作操作显示进行中和已确认的完成状态，不暴露工具名", () => {
+        expect(assistantLifecycleText({ phase: "tool", toolName: "canvas_node_configure" })).toBe("正在配置生成参数。");
+        expect(assistantLifecycleText({ phase: "tool_end", toolName: "canvas.node.configure", success: true })).toBe("已配置生成参数，正在继续制作。");
+        expect(assistantLifecycleText({ phase: "tool_end", toolName: "canvas_timeline_render", success: true })).toBe("已提交成片合成，正在继续制作。");
+        expect(assistantLifecycleText({ phase: "tool_end", toolName: "unknown_tool", success: true })).toBeNull();
     });
     test("压缩和重试各用一句完整的话，结束事件不再显示进度", () => {
         expect(assistantLifecycleText({ phase: "compaction" })).toBe("正在整理对话内容，方便继续。");

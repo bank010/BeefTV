@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CanvasAssistantTurnView } from "@/pages/canvas/canvas-assistant-turn";
+import { CanvasAssistantTurnView, CanvasAssistantUserMessage } from "@/pages/canvas/canvas-assistant-turn";
 import { CanvasAssistantComposer } from "@/pages/canvas/canvas-assistant-composer";
 import type { AssistantTurn } from "@/services/api/agent-assistant";
 
@@ -16,6 +16,27 @@ function render(turn = interrupted, options: { undone?: boolean; continue?: bool
         onLocate={() => {}} onUndo={() => {}} onRunProposal={() => {}} onDismissProposal={() => {}}
         onContinue={options.continue === false ? undefined : () => {}} />);
 }
+
+describe("自动继续消息只按已确认身份简短展示", () => {
+    const internal = "【自动继续】这次生成已结束。不要改动或发送我的未发送草稿。";
+    test("运行中与恢复后的回合显示自动标记，保留原始提示词数据", () => {
+        const turn: AssistantTurn = { ...interrupted, continuationId: "trusted-receipt", userText: internal };
+        const pending = renderToStaticMarkup(<CanvasAssistantUserMessage text={internal} selectedCount={2} continuationId={turn.continuationId} />);
+        const recovered = render(JSON.parse(JSON.stringify(turn)));
+        for (const html of [pending, recovered]) {
+            expect(html).toContain("自动继续");
+            expect(html).toContain("生成已结束，继续检查结果和制作。");
+            expect(html).not.toContain("未发送草稿");
+        }
+        expect(turn.userText).toBe(internal);
+    });
+    test("普通用户发送同样文字仍原样显示，补充消息也不被折叠", () => {
+        expect(render({ ...interrupted, userText: internal })).toContain(internal);
+        const supplement = render({ ...interrupted, continuationId: "trusted-receipt", userText: internal, supplements: [internal] });
+        expect(supplement).toContain(internal);
+        expect(supplement).toContain("生成已结束，继续检查结果和制作。");
+    });
+});
 
 describe("处理未完成仍保留可检查的结果", () => {
     test("超时保留回复、实际改动与撤销，并提供中性状态和继续入口", () => {
@@ -55,6 +76,30 @@ describe("处理未完成仍保留可检查的结果", () => {
         const html = render({ ...interrupted, supplements: ["结尾改成蛋糕"] });
         expect(html).toContain("只创建草案");
         expect(html).toContain("结尾改成蛋糕");
+    });
+});
+
+describe("停下的回合按实际结果给出下一步", () => {
+    const stopped: AssistantTurn = { ...interrupted, turnId: "stopped", error: null, errorReason: null, cancelled: true };
+    const continueButtons = (html: string) => (html.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) || []).filter(button => button.includes("继续处理"));
+    test("停下前已经改动画布：保留改动和撤销，并提供继续入口", () => {
+        const html = render(stopped);
+        expect(html).toContain("这一条已经停下了");
+        expect(html).toContain("新建 2 个节点");
+        expect(html).toContain("撤销这一轮");
+        expect(continueButtons(html)).toHaveLength(1);
+        expect(html).toContain("在输入框里确认或补充要求后发送。");
+    });
+    test("停下时还没有任何改动：只说明已停下，不提供继续，也不显示为完成", () => {
+        const html = render({ ...stopped, reply: "", change: null });
+        expect(html).toContain("这一条已经停下了。");
+        expect(continueButtons(html)).toHaveLength(0);
+        expect(html).not.toContain("canvas-assistant-change");
+        expect(html).not.toContain("已完成");
+    });
+    test("已撤销、旧回合或只读时，停下的回合不提供继续", () => {
+        expect(continueButtons(render(stopped, { undone: true }))).toHaveLength(0);
+        expect(continueButtons(render(stopped, { continue: false }))).toHaveLength(0);
     });
 });
 

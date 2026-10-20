@@ -2,6 +2,7 @@
 // 翻译成用户语。组件只负责排版，不自己拼文案，避免同一种状态在两处写出两句话。
 import type { AgentLifecycleEvent, AgentToolCall, AssistantGenerationProposal, AssistantSkillSelection, AssistantTurnChange, AssistantUndoFailure } from "@/services/api/agent-assistant";
 import { seedancePortraitLabel } from "@/lib/seedance-portrait";
+import type { CanvasNodeData } from "@/types/canvas";
 
 export type AssistantStatusAction = "model-settings" | "retry";
 
@@ -60,6 +61,10 @@ export function assistantActionLabel(tool: string | undefined): string {
             return "读取画布";
         case "canvas.generation.propose":
             return "准备生成";
+        case "canvas.generation.submit":
+            return "生成素材";
+        case "canvas.project.export":
+            return "导出工程";
         default:
             return "改动画布";
     }
@@ -119,10 +124,86 @@ export function assistantUndoFailureText(failure: AssistantUndoFailure): string 
 }
 
 /** 提议可能来自自建渠道，不能把所有费用都归到 BeefAPI。 */
-export function assistantProposalText(proposal: AssistantGenerationProposal, priceLines: string[] = []): string {
+export function assistantProposalText(proposal: AssistantGenerationProposal, priceLines: string[] = [], awaitingConfirmation = true): string {
     const count = proposal.nodeIds?.length ?? 0;
-    const target = proposal.kind === "video" ? "视频" : "图片";
-    return `生成 ${count} ${target === "视频" ? "段视频" : "张参考图片"} · ${seedancePortraitLabel(proposal.model) || proposal.model}\n${priceLines.length ? priceLines.join("\n") + "\n" : ""}确认后开始，按所选渠道计费。`;
+    if (proposal.production) {
+        const targets = proposal.production.targets;
+        const images = targets.filter(t => t.kind === "image").length;
+        const videos = targets.filter(t => t.kind === "video");
+        const audio = targets.filter(t => t.kind === "audio");
+        const labels: Record<string,string> = {size:"画幅",quality:"质量",vquality:"分辨率",seconds:"时长（秒）",generateAudio:"生成声音",audioVoice:"音色",audioSpeed:"语速",audioFormat:"音频格式",audioInstructions:"朗读指令",transparentBackground:"透明背景",watermark:"水印"};
+        const lines = [`整片制作方案：${images} 张图片、${videos.length} 段视频、${audio.length} 段配音`, ...targets.map(t => {
+            const params = Object.entries(t.parameters).filter(([key]) => labels[key]).map(([key,value]) => `${labels[key]}：${value}`).join(" · ");
+            const refs = t.referenceNodeIds.map(id => targets.find(item => item.nodeId === id)?.title || "已有参考素材");
+            return `${t.title} · ${t.modelKey.split("::").pop()} · ${t.parameters.count || "1"} 个\n${params}${refs.length ? `\n参考：${refs.join("、")}` : ""}\n${t.kind === "audio" ? "台词" : "提示词"}：${t.prompt}`;
+        })];
+        return lines.join("\n\n") + (awaitingConfirmation ? "\n\n确认后按此方案生成素材，并自动完成声音、字幕和剪辑。素材按所选渠道计费；失败后确认新方案重新生成也会重新计费，新增或修改生成内容时会重新确认。" : "");
+    }
+    const target = proposal.kind === "video" ? "视频" : proposal.kind === "audio" ? "音频" : "图片";
+    const title = `为 ${count} 个节点生成${target} · ${seedancePortraitLabel(proposal.model) || proposal.model}`;
+    return awaitingConfirmation ? `${title}\n${priceLines.length ? priceLines.join("\n") + "\n" : ""}确认后开始，按所选渠道计费。` : title;
+}
+
+/** Match the submitted proposal, including fan-out images; old results on the source node are not receipts. */
+export function assistantProposalProgress(proposal: AssistantGenerationProposal, nodes: CanvasNodeData[]) {
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    const outputs = new Map<string, CanvasNodeData>();
+    let unknown = false, batchUnverified = false, planned = 0;
+    for (const sourceId of new Set(proposal.production?.targets.map(t => t.nodeId) || proposal.nodeIds)) {
+        const operationId = `proposal:${proposal.proposalId}:${sourceId}`;
+        const matches = (node: CanvasNodeData) => {
+            const actual = node.metadata?.taskClientOperationId || "";
+            return actual === operationId || (actual.startsWith(`${operationId}:`) && /^\d+$/.test(actual.slice(operationId.length + 1)));
+        };
+        const matched = nodes.filter(matches);
+        if (!matched.length) { if (proposal.production) planned++; else unknown = true; continue; }
+        const roots = new Set(matched.flatMap(node => node.metadata?.isBatchRoot ? [node.id] : node.metadata?.batchRootId ? [node.metadata.batchRootId] : []));
+        if (roots.size) {
+            for (const rootId of roots) {
+                const root = byId.get(rootId);
+                // Layout children and count are editable; only the original submission
+                // targets can establish that every output has reached a terminal state.
+                const expected = root?.metadata?.generationOutputNodeIds;
+                const children = expected?.length ? expected : root?.metadata?.batchChildIds;
+                if (!expected?.length) { unknown = true; batchUnverified = true; }
+                if (!children?.length) { unknown = true; batchUnverified = true; continue; }
+                for (const childId of children) {
+                    const child = byId.get(childId);
+                    if (!child || !matches(child)) { unknown = true; batchUnverified = true; continue; }
+                    outputs.set(child.id, child);
+                }
+            }
+        } else {
+            // Indexed submissions without their batch root cannot tell us the expected count.
+            if (matched.length !== 1 || matched[0].metadata?.taskClientOperationId !== operationId) unknown = true;
+            for (const node of matched) outputs.set(node.id, node);
+        }
+    }
+    let complete = 0, failed = 0, pending = planned, retrieving = 0;
+    for (const node of outputs.values()) {
+        const meta = node.metadata || {};
+        if (meta.taskStatus === "failed" || meta.taskStatus === "cancelled") failed++;
+        else if (meta.taskStatus === "succeeded") {
+            if (meta.status === "success" && (meta.content || meta.storageKey) && !meta.resourceReloadAvailable) complete++;
+            else retrieving++;
+        } else if (meta.taskStatus === "queued" || meta.taskStatus === "running" || meta.generationSubmissionState === "submitting") pending++;
+        else unknown = true;
+    }
+    const ready = !unknown && outputs.size > 0 && pending === 0 && retrieving === 0;
+    const visibleResults = failed ? `${complete} 个结果已就绪，${failed} 个结果因任务失败或取消而未生成。` : `${complete}/${outputs.size} 个可见结果已就绪。`;
+    const text = unknown ? batchUnverified ? `${visibleResults} 无法确认这批结果是否完整。可在画布选择已就绪结果发给助手检查。` : "部分生成状态待确认，请查看任务列表。"
+        : pending ? `生成中，${complete}/${outputs.size + planned} 个结果已就绪。`
+        : retrieving ? `${complete}/${outputs.size} 个结果已就绪，其余结果还不可用。请查看节点上的取回提示。`
+        : failed ? `${complete} 个结果已就绪，${failed} 个结果因任务失败或取消而未生成。`
+        : proposal.production ? `${complete} 个素材已保存，后续制作与交付进度见助手消息。` : `${complete} 个结果已就绪，可以请助手检查。`;
+    return { ready, text, nodeIds: [...outputs.keys()] };
+}
+
+export const ASSISTANT_CHECK_RESULTS_PROMPT = "检查这次生成的结果是否符合对应分镜要求，再继续不需要我确认的步骤。先查看已有产物，保留成功结果；如果有失败，说明原因和调整建议，不要重复提交已开始的生成任务。";
+
+export function appendAssistantDraft(draft: string, prompt: string) {
+    if (draft.includes(prompt)) return draft;
+    return draft.trim() ? `${draft}\n\n${prompt}` : prompt;
 }
 
 export const ASSISTANT_STARTER_PROMPTS = [
@@ -132,16 +213,35 @@ export const ASSISTANT_STARTER_PROMPTS = [
     "检查哪些镜头还缺参考图",
 ];
 
-/** 官方压缩/重试进度：只说现在在做什么，不提内部事件名。 */
-export function assistantLifecycleText(event: { phase: AgentLifecycleEvent["phase"] | "tool" | "tool_end"; toolName?: string } | string | null | undefined): string | null {
+const ASSISTANT_TOOL_ACTIVITY: Record<string, [string, string]> = {
+    media_overview: ["正在读取素材概要。", "已读取素材概要"],
+    media_inspect: ["正在检查选定素材。", "已读取选定素材"],
+    media_check: ["正在检查黑屏、音轨和文件信息。", "已检查媒体文件信息"],
+    canvas_get: ["正在读取画布。", "已读取画布"],
+    model_catalog: ["正在查看可用模型和报价。", "已读取模型目录"],
+    canvas_nodes_create: ["正在创建画布节点。", "已创建画布节点"],
+    canvas_node_configure: ["正在配置生成参数。", "已配置生成参数"],
+    canvas_node_update: ["正在更新画布内容。", "已更新画布内容"],
+    canvas_edge_create: ["正在连接参考素材。", "已连接参考素材"],
+    canvas_script_rows_append: ["正在编排分镜。", "已编排分镜"],
+    canvas_script_row_update: ["正在更新分镜。", "已更新分镜"],
+    canvas_timeline_update: ["正在安排剪辑时间线。", "已保存剪辑时间线"],
+    canvas_timeline_render: ["正在提交成片合成。", "已提交成片合成"],
+    canvas_timeline_deliver: ["正在合成视频并保存可编辑工程。", "已完成交付操作"],
+    canvas_generation_propose: ["正在准备生成方案。", "已准备生成方案"],
+};
+
+/** 只显示官方活动和已核对的操作回执，不把工具完成等同于创作质量验收。 */
+export function assistantLifecycleText(event: Pick<AgentLifecycleEvent, "phase" | "toolName" | "success"> | string | null | undefined): string | null {
     const phase = typeof event === "string" ? event : event?.phase;
     switch (phase) {
-        case "tool": {
-            const tool = typeof event === "string" ? undefined : event?.toolName;
-            if (tool === "media_overview" || tool === "media.overview") return "正在浏览素材，确认画面和声音。";
-            if (tool === "media_inspect" || tool === "media.inspect") return "正在查看和听取选定片段。";
-            if (tool === "media_check" || tool === "media.check") return "正在检查黑屏、音轨和文件信息。";
-            return null;
+        case "tool": case "tool_end": {
+            const tool = typeof event === "string" ? "" : event?.toolName?.replaceAll(".", "_") || "";
+            const activity = ASSISTANT_TOOL_ACTIVITY[tool];
+            if (!activity) return null;
+            if (phase === "tool") return activity[0];
+            return typeof event !== "string" && event?.success === true
+                ? `${activity[1]}，正在继续制作。` : "正在核对操作结果，继续处理。";
         }
         case "compaction":
             return "正在整理对话内容，方便继续。";

@@ -120,7 +120,7 @@ func Execute(ctx context.Context, input Input) (map[string]any, error) {
 				return nil, err
 			}
 		}
-		if err := PrepareBeefAPISeedanceReferences(ctx, input.Config, &input, ownedSeedanceMediaReader(ctx, userID)); err != nil {
+		if err := PrepareBeefAPIVideoReferences(ctx, input.Config, &input, ownedSeedanceMediaReader(ctx, userID)); err != nil {
 			return nil, err
 		}
 		if err := prepareFullVideoReferences(ctx, &input, ownedFullVideoMediaReader(ctx, userID)); err != nil {
@@ -241,6 +241,11 @@ func validatePreparedInput(ctx context.Context, input Input) error {
 		return errors.New("后端生成任务缺少 Base URL、API Key 或模型名")
 	}
 	if err := validateInterfaceForContext(ctx, input.Mode, input.Config.InterfaceType); err != nil {
+		// This local check precedes the create request. A resumed provider task,
+		// however, already has submission evidence that must not be erased.
+		if ResumedProviderRequestID(ctx) == "" {
+			return ProtocolPreparationError{Cause: err}
+		}
 		return err
 	}
 	if IsVolcengineJiMengProtocol(input.Config.InterfaceType) && strings.TrimSpace(input.Config.SecretKey) == "" {

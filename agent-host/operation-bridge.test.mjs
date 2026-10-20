@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
+import descriptors from './operation-descriptors.fixture.json';
 import { createTurnBudget } from './request-budget.mjs';
 import { ASSISTANT_CANVAS_NODE_UPDATE_PATCH, createOperationBridge, scopedSchema } from './operation-bridge.mjs';
 import { newTurnAccumulator, resetTurnAccumulator } from './canvas-turn.mjs';
@@ -315,14 +315,10 @@ describe('内置助手节点更新投影', () => {
 });
 
 
-test('media discovery descriptions reach actual model-facing bridge tools without changing modes', async () => {
-  // The Go registry test checks these real descriptors. Reuse their source schema
-  // over HTTP here so a fixture cannot silently retain an outdated mode contract.
-  const source = readFileSync(new URL('../backend/internal/operations/media.go', import.meta.url), 'utf8');
-  const params = JSON.parse(source.match(/Params:\s*json.RawMessage\(`([^`]+)`\)/)[1]);
-  const ops = [...source.matchAll(/"(media\.(?:overview|inspect|check))":\s*("[^"\n]+")/g)].map(match => ({
-    id: match[1], summary: JSON.parse(match[2]), assistantModes: ['canvas', 'full-access', 'read-only'], replay: 'safe', readOnly: true, scope: 'canvas', params,
-  }));
+test('media discovery preserves descriptions, required versions and modes in model-facing bridge tools', async () => {
+  // TestHostPolicyContract compares this shared fixture with the Go registry.
+  // Exercise those descriptors over HTTP without parsing Go source syntax.
+  const ops = descriptors.filter(op => ['media.overview', 'media.inspect', 'media.check'].includes(op.id));
   expect(ops).toHaveLength(3);
   const server = createServer((_req, res) => {
     res.setHeader('content-type', 'application/json');
@@ -337,9 +333,12 @@ test('media discovery descriptions reach actual model-facing bridge tools withou
     for (const tool of tools) {
       const original = ops.find(op => op.id === tool.label);
       expect(tool.description).toBe(original.summary);
-      expect(tool.parameters.properties.mode).toEqual(params.properties.mode);
+      expect(tool.parameters.properties.mode).toEqual(original.params.properties.mode);
       expect(tool.parameters.properties.mode.description).toContain('不能判断连续运动或声音');
       expect(tool.parameters.properties.mode.enum).toEqual(['frames', 'video', 'audio']);
+      expect(tool.parameters.properties.expectedVersion).toEqual(original.params.properties.expectedVersion);
+      expect(tool.parameters.properties.expectedVersion.minLength).toBe(1);
+      expect(tool.parameters.required.includes('expectedVersion')).toBe(tool.label !== 'media.overview');
       expect(tool.parameters.properties.canvasId).toBeUndefined();
     }
     expect(tools.find(tool => tool.name === 'media_inspect').description).toContain('15 秒');

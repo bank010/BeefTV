@@ -6,6 +6,15 @@
 
 export const SUPPORTED_APIS = ['openai-completions', 'openai-responses', 'anthropic-messages'];
 
+// This compatibility route has returned concatenated arguments for distinct
+// calls, including when parallel_tool_calls=false. Never guess missing names
+// or IDs from that payload. Business tools retain their own batch parameters.
+export function toolCallCapabilityContext({ api, modelId }) {
+  return api === 'openai-completions' && modelId === 'gemini-3.8-flash'
+    ? '[本轮工具通路限制，优先于多工具合并建议：每条模型响应只调用一个工具，等结果再决定下一步；不能同一响应发出多个不同工具调用。优先用单个业务工具的批量参数：model_catalog capabilities、canvas_script_prepare script、混合 canvas_generation_submit、批量时间线更新。计划更新与其他工具也分开。这是兼容通路限制，不需要用户逐步确认或人工续做。]'
+    : '';
+}
+
 export function newTurnAccumulator() {
   return { turnId: '', seq: 0, toolSeq: 0, revisionBefore: 0, revisionAfter: 0,
     createdNodeIds: [], updatedNodeIds: [], createdEdgeIds: [], operationIds: [], proposals: [],
@@ -85,8 +94,13 @@ export function collectTurnEffects(turn, opID, result, operationId) {
       if (result.timelineUpdated === true) turn.timelineUpdated = true;
       break;
     case 'canvas.nodes.create':
+    case 'canvas.script.prepare':
       for (const node of Array.isArray(result.created) ? result.created : []) {
         if (node && node.id) turn.createdNodeIds.push(String(node.id));
+      }
+      if (opID === 'canvas.script.prepare') {
+        if (result.nodeId) turn.updatedNodeIds.push(String(result.nodeId));
+        turn.createdEdgeIds.push(...asStringList(result.createdEdgeIds));
       }
       break;
     case 'canvas.node.update':
@@ -101,6 +115,14 @@ export function collectTurnEffects(turn, opID, result, operationId) {
       turn.deletedNodeIds=[...new Set([...(turn.deletedNodeIds || []),...asStringList(result.deletedNodeIds)])];
       turn.deletedEdgeIds=[...new Set([...(turn.deletedEdgeIds || []),...asStringList(result.deletedEdgeIds)])];
       break;
+    case 'canvas.script.rows.append':
+    case 'canvas.script.row.update':
+    case 'canvas.script.row.remove':
+      // 行绑定会改写产出连线；回执里的连线增删与 Go 撤销用的变更摘要保持一致。
+      if (result.nodeId) turn.updatedNodeIds.push(String(result.nodeId));
+      turn.createdEdgeIds.push(...asStringList(result.createdEdgeIds));
+      turn.deletedEdgeIds=[...new Set([...(turn.deletedEdgeIds || []),...asStringList(result.deletedEdgeIds)])];
+      break;
     case 'canvas.document.commit': turn.documentUpdated=true; break;
     case 'canvas.edge.create':
       // 重复连线会幂等返回（没有新增），这时不能算作本轮新建了连线。
@@ -111,6 +133,7 @@ export function collectTurnEffects(turn, opID, result, operationId) {
         turn.proposals.push({ proposalId: String(result.proposalId), kind: String(result.kind || ''),
           nodeIds: asStringList(result.nodeIds), model: String(result.model || ''),
           modelKey: String(result.modelKey || ''), note: String(result.note || ''),
+          ...(result.production ? { production: result.production } : {}),
           ...(result.source ? { source: { canvasId: result.source.canvasId,
             canvasRevision: result.source.canvasRevision, modelConfigRevision: result.source.modelConfigRevision } } : {}) });
       }

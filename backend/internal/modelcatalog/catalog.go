@@ -34,6 +34,7 @@ func SanitizeChannelModel(cm *model.ChannelModel) (PublicChannelModel, error) {
 		Capability:       cm.Capability,
 		Protocol:         cm.Protocol,
 		CapabilityConfig: capabilityConfig,
+		AudioOptions:     audioGenerationOptions(cm),
 		Available:        cm.Enabled,
 	}, nil
 }

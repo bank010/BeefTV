@@ -67,6 +67,8 @@
 
 同步 /v1/audio/speech 返回原始音频流，由 binaryPayload 包装为统一音频结果。
 
+MiniMax Music 通过企业接口生成时，输出固定为 MP3，默认 44.1 kHz、256 kbps。较慢的生成请求使用 SSE 心跳等待结果；只有收到完成事件并取得有效音频后，任务才成功。中断、错误事件或非音频响应均按失败处理，不自动重发生成。
+
 <!-- BEEFTV_PLUGIN_MANIFEST_START -->
 ## Manifest 完整接口定义
 
@@ -210,6 +212,16 @@
                     "$ref": "request.providerOptions.openai-audio.instructions"
                   }
                 ]
+              }
+            },
+            "metadata": {
+              "$omitEmpty": {
+                "$ref": "request.extra.audioMetadata"
+              }
+            },
+            "stream_format": {
+              "$omitEmpty": {
+                "$ref": "request.extra.audioStreamFormat"
               }
             }
           }

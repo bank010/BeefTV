@@ -164,9 +164,9 @@ func TestMissingProbeRejectsReferencedVideo(t *testing.T) {
 			Bytes:    int64(len(payload)),
 		}},
 	}
-	err = PrepareBeefAPISeedanceReferences(ctx, input.Config, &input, nil)
+	err = PrepareBeefAPIVideoReferences(ctx, input.Config, &input, nil)
 	if err == nil || !strings.Contains(err.Error(), "参考视频无法校验") {
-		t.Fatalf("PrepareBeefAPISeedanceReferences() error = %v, want missing probe", err)
+		t.Fatalf("PrepareBeefAPIVideoReferences() error = %v, want missing probe", err)
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("preupload HTTP dispatched without probe: %d", hits.Load())

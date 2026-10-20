@@ -19,6 +19,7 @@ const (
 // Context 是一次操作执行时可用的上下文。Domain 已经绑在当前事务上。
 type Context struct {
 	OperationID string
+	TurnID      string
 	Context     context.Context
 	UserID      string
 	Caller      Caller
@@ -43,6 +44,7 @@ type Op struct {
 	AssistantCanvas   bool
 	AssistantProposal bool
 	ReplaySafe        bool
+	ReplayUnsafe      bool // A read can still incur an external model charge.
 }
 
 // Descriptor 是给客户端做能力发现用的稳定描述。
@@ -112,7 +114,7 @@ func (r *Registry) Descriptor(id string) (Descriptor, bool) {
 
 func (op *Op) Descriptor() Descriptor {
 	replay := "unsafe"
-	if op.ReadOnly || op.ReplaySafe {
+	if (op.ReadOnly || op.ReplaySafe) && !op.ReplayUnsafe {
 		replay = "safe"
 	}
 	return Descriptor{ID: op.ID, Summary: op.Summary, ReadOnly: op.ReadOnly, Scope: op.Scope, Params: op.writeAwareParams(), AssistantModes: op.assistantModes(), Replay: replay}
@@ -264,7 +266,7 @@ func (r *Registry) Execute(req Request) (Result, error) {
 	}
 	outcome, err := r.store.RunDomain(runCtx, RunRequest{UserID: req.UserID, OpID: opID, Op: op.ID,
 		PayloadHash: canonicalHash, AlternatePayloadHash: alternateHash, TurnID: req.TurnID, CanvasID: target.CanvasID}, r.binder, func(domain Domain) ([]byte, error) {
-		execCtx := &Context{Context: runCtx, UserID: req.UserID, Caller: caller, Domain: domain, OperationID: opID}
+		execCtx := &Context{Context: runCtx, UserID: req.UserID, Caller: caller, Domain: domain, OperationID: opID, TurnID: req.TurnID}
 		value, runErr := op.Handler(execCtx, params)
 		if runErr != nil {
 			return nil, AsError(runErr)

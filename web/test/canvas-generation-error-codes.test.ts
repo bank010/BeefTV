@@ -6,6 +6,8 @@ import { ApiError } from "@/services/api/request";
 import { canvasGenerationFailureMetadata, canvasGenerationRetryBlocked, canvasImageGenerationHasPendingResult, canvasGenerationTaskNodes, isKeptGenerationResultCode } from "@/pages/canvas/canvas-generation-failure";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import type { GenerationTask } from "@/services/api/task-center";
+import { assistantProposalProgress } from "@/pages/canvas/canvas-assistant-copy";
+import { applyGeneratedMediaResultMetadata, videoMetadata } from "@/lib/canvas/canvas-generation-task-sync";
 
 function node(metadata: CanvasNodeData["metadata"]): CanvasNodeData {
     return { id: "n1", type: CanvasNodeType.Image, title: "镜头", position: { x: 0, y: 0 }, width: 100, height: 100, metadata };
@@ -22,6 +24,22 @@ const succeededTask: GenerationTask = {
 };
 
 describe("generation result-apply error codes", () => {
+    test("a retained video is not a newly succeeded task output until its own binding arrives", () => {
+        const proposal = { proposalId: "new", kind: "video" as const, nodeIds: ["n1"], model: "fixture", modelKey: "fixture" };
+        const original = { ...node({ taskId: "new-task", taskClientOperationId: "proposal:new:n1", status: "loading", content: "old-video.mp4", storageKey: "resource:old", assetId: "old-asset", generationEffectKeys: ["attach-node:old-task:n1:0"] }), type: CanvasNodeType.Video };
+        const completed: GenerationTask = { ...succeededTask, id: "new-task", type: "canvas_video", clientOperationId: "proposal:new:n1", outputs: [{ outputIndex: 0, mediaType: "video", materializedAssetId: "new-asset" }] };
+        for (const task of [completed, { ...completed, outputs: undefined }]) {
+            const [pending] = canvasGenerationTaskNodes([original], "n1", task);
+            expect(pending.metadata).toMatchObject({ status: "loading", content: "old-video.mp4", storageKey: "resource:old", assetId: "old-asset" });
+            expect(assistantProposalProgress(proposal, [pending]).ready).toBe(false);
+        }
+        const delivered = { ...original, metadata: applyGeneratedMediaResultMetadata(original, videoMetadata({ url: "new-video.mp4", storageKey: "resource:new", mimeType: "video/mp4", bytes: 100 }), { assetId: "new-asset", generationEffectKeys: ["attach-node:new-task:n1:0"] }) };
+        // The canonical binding owns the new asset, after the media helper has cleared the old one.
+        delivered.metadata.assetId = "new-asset";
+        const [ready] = canvasGenerationTaskNodes([delivered], "n1", completed);
+        expect(ready.metadata).toMatchObject({ status: "success", content: "new-video.mp4", storageKey: "resource:new", assetId: "new-asset" });
+        expect(assistantProposalProgress(proposal, [ready]).ready).toBe(true);
+    });
     test("paused delivery keeps a recovery action even when the node retains old media", () => {
         for (const stage of ["delivery_paused", "delivery_timed_out"]) {
             for (const content of [undefined, "old-video.mp4"]) {

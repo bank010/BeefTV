@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { isolateCopiedNodeMetadata, nextCopiedNodeTitle } from "@/lib/canvas/canvas-node-copy";
 import { rebaseCanvasDocumentThreeWay, settleInFlightGenerationOverlay } from "@/lib/canvas/canvas-document-rebase";
-import { clearInPlaceMediaOutputMetadata } from "@/lib/canvas/canvas-project-generation";
+import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { buildNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import { canvasGenerationTaskNodes } from "@/pages/canvas/canvas-generation-failure";
 import type { GenerationTask } from "@/services/api/task-center";
@@ -99,7 +99,7 @@ describe("canvas generation copy metadata", () => {
         expect(context.referenceImages.map((image) => image.id)).toEqual([reference.id]);
     });
 
-    test("复制视频节点原地生成时清理旧媒体字段，确保绑定新任务结果不会冲突保留原视频", () => {
+    test("复制视频保留旧媒体等待新结果，新任务绑定后仍采用新视频", () => {
         const source: CanvasNodeData = {
             id: "video-source",
             type: CanvasNodeType.Video,
@@ -132,11 +132,12 @@ describe("canvas generation copy metadata", () => {
             metadata: copiedMetadata,
         };
 
-        const inPlaceLoadingMetadata = clearInPlaceMediaOutputMetadata(copiedNode.metadata, "loading");
-        expect(Object.prototype.hasOwnProperty.call(inPlaceLoadingMetadata, "content")).toBe(false);
-        expect(Object.prototype.hasOwnProperty.call(inPlaceLoadingMetadata, "storageKey")).toBe(false);
-        expect(Object.prototype.hasOwnProperty.call(inPlaceLoadingMetadata, "assetId")).toBe(false);
-        expect(Object.prototype.hasOwnProperty.call(inPlaceLoadingMetadata, "videoPreview")).toBe(false);
+        const inPlaceLoadingMetadata = resetGenerationTaskMetadata(copiedNode.metadata, "loading");
+        expect(inPlaceLoadingMetadata.content).toBe(source.metadata!.content);
+        expect(inPlaceLoadingMetadata.storageKey).toBe(source.metadata!.storageKey);
+        expect(inPlaceLoadingMetadata.assetId).toBe(source.metadata!.assetId);
+        expect(inPlaceLoadingMetadata.videoPreview).toEqual(source.metadata!.videoPreview);
+        expect(inPlaceLoadingMetadata.taskId).toBeUndefined();
         expect(inPlaceLoadingMetadata.copiedFromNodeId).toBe("video-source");
         expect(inPlaceLoadingMetadata.generationResultPlacement).toBe("replace-node");
         expect(inPlaceLoadingMetadata.videoStartFrameNodeId).toBe("ref-start");
@@ -199,6 +200,7 @@ describe("canvas generation copy metadata", () => {
                     naturalWidth: 720,
                     naturalHeight: 1280,
                     durationMs: 5000,
+                    videoPreview: undefined,
                 },
             },
         ], 152);

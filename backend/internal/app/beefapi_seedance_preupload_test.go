@@ -124,6 +124,39 @@ func TestBeefAPISeedancePreuploadConvertsInlineRefsAndPreservesOrder(t *testing.
 	}
 }
 
+// The shared upload stage preserves order; model reference counts are checked
+// separately, and this does not enable multiple references for Wan.
+func TestBeefAPIWanPreuploadPreservesMixedReferenceOrder(t *testing.T) {
+	harness := newBeefAPISeedanceUploadHarness(t)
+	input := harness.testInput(providerMedia{}, providerMedia{}, providerMedia{})
+	input.Config.Model, input.Config.InterfaceType = "wan3.0-video", "newapi-channel-2"
+	input.ReferenceImages = []providerMedia{
+		{ID: "first", DataURL: dataURL("image/png", []byte("first")), Width: 720, Height: 1280},
+		{ID: "remote", URL: "https://media.example/remote.png"},
+		{ID: "last", DataURL: dataURL("image/png", []byte("last")), Width: 1280, Height: 720},
+	}
+	if err := prepareBeefAPISeedanceReferences(harness.ctx(), input.Config, &input, nil); err != nil {
+		t.Fatal(err)
+	}
+	if harness.creates != 2 || harness.puts != 2 || harness.completes != 2 {
+		t.Fatalf("unexpected upload count: %d/%d/%d", harness.creates, harness.puts, harness.completes)
+	}
+	for i, id := range []string{"first", "remote", "last"} {
+		if input.ReferenceImages[i].ID != id {
+			t.Fatalf("reference %d changed identity", i)
+		}
+	}
+	if input.ReferenceImages[1].URL != "https://media.example/remote.png" || input.ReferenceImages[0].Width != 720 || input.ReferenceImages[2].Width != 1280 || input.ReferenceImages[0].DataURL != "" || input.ReferenceImages[2].DataURL != "" {
+		t.Fatal("reference metadata or existing URL changed")
+	}
+	for i, payload := range []string{"first", "last"} {
+		sum := sha256.Sum256([]byte(payload))
+		if harness.createBodies[i].SHA256 != hex.EncodeToString(sum[:]) {
+			t.Fatalf("upload %d changed reference order", i)
+		}
+	}
+}
+
 func TestBeefAPISeedancePreuploadSkipsPublicAndAssetURLs(t *testing.T) {
 	harness := newBeefAPISeedanceUploadHarness(t)
 	input := harness.testInput(
@@ -237,7 +270,7 @@ func TestBeefAPISeedancePreuploadCompleteErrorPreventsGenerate(t *testing.T) {
 		providerMedia{},
 	)
 	err := prepareBeefAPISeedanceReferences(harness.ctx(), input.Config, &input, nil)
-	if err == nil || err.Error() != "还没有收到文件，请先把文件传完再确认" {
+	if err == nil || !strings.Contains(err.Error(), "参考图 1 确认上传失败：还没有收到文件，请先把文件传完再确认") {
 		t.Fatalf("error = %v, want user-facing complete message", err)
 	}
 	if harness.generates != 0 {
@@ -248,7 +281,7 @@ func TestBeefAPISeedancePreuploadCompleteErrorPreventsGenerate(t *testing.T) {
 	}
 }
 
-func TestBeefAPISeedancePreuploadCompleteUnknown400UsesGeneric(t *testing.T) {
+func TestBeefAPISeedancePreuploadCompleteUnknown400KeepsDiagnostic(t *testing.T) {
 	harness := newBeefAPISeedanceUploadHarness(t)
 	harness.completeStatus = http.StatusBadRequest
 	harness.completeBody = []byte(`{"error":{"message":"ticket sha256 mismatch on r2 upload_url"}}`)
@@ -258,8 +291,9 @@ func TestBeefAPISeedancePreuploadCompleteUnknown400UsesGeneric(t *testing.T) {
 		providerMedia{},
 	)
 	err := prepareBeefAPISeedanceReferences(harness.ctx(), input.Config, &input, nil)
-	if !errors.Is(err, errBeefAPISeedanceUploadIncomplete) {
-		t.Fatalf("error = %v, want generic incomplete", err)
+	var upload *generation.ReferenceUploadError
+	if !errors.As(err, &upload) || upload.HTTPStatus != 400 || upload.Meta.Stage != "complete" || !strings.Contains(upload.Detail, "sha256 mismatch") {
+		t.Fatalf("error = %v, want structured confirmation error", err)
 	}
 	if harness.generates != 0 {
 		t.Fatal("generation posted after unknown complete 400")

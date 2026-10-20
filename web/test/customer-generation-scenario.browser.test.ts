@@ -123,6 +123,26 @@ test("customer edits during preparation stay on canvas while submitted prompt re
     } finally { release(); await close(); }
 }, 15000);
 
+test("a newer video output arriving during preparation remains visible after submission", async () => {
+    const { page, state, errors, close } = await open("character");
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let held = false;
+    await page.route("**/api/projects/synthetic-domain/characters/character-asset", async route => { held = true; await gate; await route.continue(); });
+    try {
+        await start(page);
+        await until(() => held);
+        await page.evaluate(() => (window as any).__customer.replaceOutput());
+        release();
+        await until(() => state.posts.length === 1);
+        await page.waitForFunction(() => (window as any).__customer.nodes.find((node: any) => node.id === "target").metadata.taskId === "original-customer-task");
+        const target = await page.evaluate(() => (window as any).__customer.nodes.find((node: any) => node.id === "target"));
+        expect(target.metadata).toMatchObject({ content: "/api/resources/newer-result/file", storageKey: "resource:newer-result", assetId: "newer-asset", durationMs: 7000, taskStatus: "running" });
+        expect(state.posts).toHaveLength(1);
+        expect(errors).toEqual([]);
+    } finally { release(); await close(); }
+}, 15000);
+
 test("customer creation accepted then HTTP response lost refreshes by operation lookup without a second POST", async () => {
     const { page, state, errors, close } = await open("five-images");
     let lostReceipt = false;

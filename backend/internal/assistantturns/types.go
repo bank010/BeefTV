@@ -89,12 +89,13 @@ type Input struct {
 
 // Scope is the backend-verified read/write range for an open round.
 type Scope struct {
-	PermissionMode string
-	CanvasID       string
-	AssetIDs       []string
-	CanvasIDs      []string
-	TaskIDs        []string
-	SkillPins      []skills.Pin
+	PermissionMode  string
+	CanvasID        string
+	AssetIDs        []string
+	CanvasIDs       []string
+	TaskIDs         []string
+	SkillPins       []skills.Pin
+	ActiveSkillPins []skills.Pin
 	// SessionSkillPins are pins of earlier rounds of the same Durable
 	// conversation and owner. Their bodies are already in that transcript.
 	SessionSkillPins []skills.Pin
@@ -103,15 +104,19 @@ type Scope struct {
 // HistoryState supplements pi conversation history with business receipts.
 // Reading it never settles or cancels an active round.
 type HistoryState struct {
-	PermissionMode string
-	Change         *Change
-	Undone         bool
-	SkillPins      []skills.Pin
+	ContinuationInvalidated bool
+	PermissionMode          string
+	Change                  *Change
+	Undone                  bool
+	SkillPins               []skills.Pin
 }
 
 // Record is the in-memory business round. Document is the pre-turn canvas
 // snapshot, not a chat transcript.
 type Record struct {
+	ContinuationInvalidated     bool
+	GenerationAuthorizationJSON string
+
 	DurableNativeSources string
 	DurableSessionID     string
 	PermissionMode       string

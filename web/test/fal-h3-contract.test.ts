@@ -7,6 +7,8 @@ import { createVideoTransport } from "../src/services/api/video-transport";
 import { videoResponseTools } from "../src/services/api/video-response";
 import { mergeFetchedChannelModelProfiles } from "../src/lib/channel-model-catalog";
 import { modelCapabilityConfigFor } from "../src/lib/model-capabilities";
+import { h3VideoOperation } from "../src/lib/h3-video";
+import { SYSTEM_PROMPT } from "../../agent-host/system-prompt.mjs";
 
 test("H3 preserves CNY seconds and 768p without accepting unverified model aliases", () => {
     expect(beefAPIVideoContract("minimax-h3-max-turbo")?.protocol).toBe("newapi-channel-2");
@@ -78,4 +80,39 @@ test("H3 direct transport keeps end-only roles, 768p and local media", async () 
     expect(calls).toHaveLength(1);
     await createVideoGenerationsTask(deps,{...config,size:"9:16"},model,"Text.",[],[],[]);
     expect(calls[1]).toMatchObject({body:{aspect_ratio:"9:16"}});
+});
+
+test("assistant H3 guidance matches canvas frame selection and transport aspect inheritance", async () => {
+    for (const instruction of ["一张图作为首帧", "两张图作为首尾帧", "画幅随图片", "为各镜头生成", "不用于多素材参考模式"]) {
+        expect(SYSTEM_PROMPT).toContain(instruction);
+    }
+    const images = ["first", "last"].map(id => ({ id, name: `${id}.png`, type: "image/png", dataUrl: `data:image/png;base64,${btoa(id)}` }));
+    for (const model of ["minimax-h3", "minimax-h3-max", "minimax-h3-max-turbo"]) {
+        const channel = createModelChannel({ id: "beefapi", baseUrl: "https://beeftv.app", models: [model] });
+        channel.modelProfiles = mergeFetchedChannelModelProfiles(channel, [{ id: model, supportedEndpointTypes: ["openai-video"], videoCapabilitiesVersion: "fixture-frames", videoCapabilities: {
+            references: { promptMaxChars: 50000, minImages: 0, maxImages: 2, maxImageBytes: 31457280, maxVideos: 0, maxAudios: 0 },
+            duration: { selection: "range", min: 5, max: 15, step: 1, default: 5 },
+            ratios: ["16:9", "9:16"], defaultRatio: "16:9", resolutions: ["768p"], defaultResolution: "768p",
+            generateAudio: { supported: false, default: true }, watermark: { supported: false, default: false },
+            operations: model === "minimax-h3" ? ["text_to_video", "image_to_video", "reference_to_video"] : ["text_to_video", "image_to_video"], defaultOperation: "text_to_video",
+        }}]);
+        const snapshot = normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [channel], size: "9:16", vquality: "768", videoSeconds: "6" } }).config;
+        const config = resolveModelRequestConfig(snapshot, `beefapi::${model}`);
+        const calls: Record<string, unknown>[] = [];
+        const deps = { response: videoResponseTools, transport: { ...createVideoTransport(config), post: async <T>(_url: string, body: unknown) => { calls.push(body as Record<string, unknown>); return { id: "fixture-task" } as T; } } };
+        for (const count of [1, 2]) {
+            const operation = h3VideoOperation(model, { imageCount: count, videoCount: 0, audioCount: 0 });
+            await createVideoGenerationsTask(deps, config, model, "Fixture shot", images.slice(0, count), [], [], { videoEditOperation: operation });
+            const payload = calls.at(-1)!;
+            expect(operation).toBe("image_to_video");
+            expect(payload.first_frame_url).toBe(images[0]!.dataUrl);
+            expect(payload.last_frame_url).toBe(count === 2 ? images[1]!.dataUrl : undefined);
+            expect(payload.aspect_ratio).toBeUndefined();
+        }
+        if (model === "minimax-h3") {
+            await createVideoGenerationsTask(deps, config, model, "Existing reference mode", images.slice(0, 1), [], [], { videoEditOperation: "reference_to_video" });
+            expect(calls.at(-1)).toMatchObject({ operation: "reference_to_video", aspect_ratio: "9:16", reference_image_urls: [images[0]!.dataUrl] });
+            expect(calls.at(-1)!.first_frame_url).toBeUndefined();
+        }
+    }
 });

@@ -21,6 +21,7 @@ function snapshotMetadata(metadata: CanvasNodeMetadata | undefined, rootId: stri
     delete snapshot.isBatchRoot;
     delete snapshot.batchRootId;
     delete snapshot.batchChildIds;
+    delete snapshot.generationOutputNodeIds;
     delete snapshot.batchFailedCount;
     delete snapshot.primaryImageId;
     delete snapshot.imageBatchExpanded;

@@ -1,6 +1,7 @@
 import { Grid } from "antd";
 import { useCallback, useEffect, useRef, useState, useMemo, useSyncExternalStore } from "react";
 
+import { createClientId } from "@/lib/client-id";
 import { ApiError } from "@/services/api/request";
 import { scopedLocalStorage, getActiveUserScope, getActiveUserScopeEpoch, subscribeUserScope } from "@/lib/user-scope";
 import { captureUserScope, userScopeMatches, assertUserScope } from "@/lib/user-scope-guard";
@@ -12,6 +13,7 @@ import {
     assistantPermissionMode,
     AgentTurnFailedError,
     AgentChatNotAdmittedError,
+    AgentStreamDetachedError,
     cancelAgentChat,
     createAssistantSession,
     getAgentHostStatus,
@@ -28,6 +30,7 @@ import {
     type AgentHostStatus,
     type AssistantSessionSummary,
     type AssistantTurn,
+    type AssistantPlan,
     type AssistantUndoFailure,
 } from "@/services/api/agent-assistant";
 import { assistantChangedNodeIds, assistantLifecycleText } from "./canvas-assistant-copy";
@@ -75,8 +78,11 @@ export type AssistantTurnStatus = {
 
 type CanvasRun = {
     sessionId: string | null;
+    /** 当前这次发送的标识：停止只指向它。 */
+    requestId: string | null;
     sessions: AssistantSessionSummary[];
     turns: AssistantTurn[];
+    plan: AssistantPlan | null;
     historyLoaded: boolean;
     historyError: string | null;
     historyHostUnavailable: boolean;
@@ -86,6 +92,7 @@ type CanvasRun = {
     backgroundActive: boolean;
     recovery: PendingAssistantRecovery | null;
     pendingUserText: string | null;
+    pendingContinuationId: string | null;
     pendingSelectedNodeIds: string[];
     pendingAttachments: AssistantAttachment[];
     pendingSkills: AssistantSkillSelection[];
@@ -101,10 +108,29 @@ type CanvasRun = {
     turnStatus: Record<string, AssistantTurnStatus>;
 };
 
+const ASSISTANT_STOPPED_BEFORE_SEND_TEXT = "已停下，这条消息没有发出。";
+const ASSISTANT_STOPPED_UNPROCESSED_TEXT = "已停下，这条消息没有被处理。";
+
+/** 消息还没发出、或助手还没开始处理就停下：不会执行，不留待发送内容；「重试」仍可原样再发。 */
+function markStoppedBeforeSend(run: CanvasRun, text = ASSISTANT_STOPPED_BEFORE_SEND_TEXT) {
+    run.pendingUserText = null;
+    run.pendingContinuationId = null;
+    run.pendingSelectedNodeIds = [];
+    run.pendingAttachments = [];
+    run.pendingSkills = [];
+    run.pendingPermissionMode = null;
+    run.streamed = "";
+    run.lifecycleNotice = null;
+    run.recovery = null;
+    run.error = text;
+}
+
 const createRun = (): CanvasRun => ({
     sessionId: null,
+    requestId: null,
     sessions: [],
     turns: [],
+    plan: null,
     historyLoaded: false,
     historyError: null,
     historyHostUnavailable: false,
@@ -114,6 +140,7 @@ const createRun = (): CanvasRun => ({
     backgroundActive: false,
     recovery: null,
     pendingUserText: null,
+    pendingContinuationId: null,
     pendingSelectedNodeIds: [],
     pendingAttachments: [],
     pendingSkills: [],
@@ -241,6 +268,7 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
         if (!userScopeMatches(expectedScope)) return false;
         const run = runFor(targetCanvas);
         const request = ++run.historyRequest;
+        const planAtRequest = run.plan;
         try {
             const [sessionList, history] = await Promise.all([
                 listAssistantSessions(targetCanvas),
@@ -252,6 +280,7 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
             const recent = nextSession === run.sessionId ? run.turns.filter((turn) => !known.has(turn.turnId)) : [];
             if (findRecoveredAssistantTurn(run.recovery, history)) {
                 run.pendingUserText = null;
+                run.pendingContinuationId = null;
                 run.pendingSelectedNodeIds = [];
                 run.pendingAttachments = [];
                 run.pendingSkills = [];
@@ -270,18 +299,23 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
                 run.streaming = true;
                 run.dispatched = true;
                 run.pendingUserText = active.userText;
+                run.pendingContinuationId = active.continuationId ?? null;
                 run.pendingSelectedNodeIds = active.selectedNodeIds || [];
                 run.pendingAttachments = active.attachments || [];
                 run.pendingSkills = active.skills || [];
                 run.pendingPermissionMode = assistantPermissionMode(active.permissionMode);
+                if (!run.controller && typeof active.streamed === "string") run.streamed = active.streamed;
                 run.supplements = active.supplementInputs?.length ? active.supplementInputs.map(input => ({ text: input.message, attachments: input.attachments, skills: input.skills, status: "accepted" })) : (active.supplements || []).map(text => ({ text, status: "accepted" }));
                 run.recovery = { sessionId: nextSession, turnId: active.turnId, knownTurnIds: history.turns.map(turn => turn.turnId), text: active.userText, selectedNodeIds: active.selectedNodeIds || [] };
-                run.lifecycleNotice = "这次创作仍在继续，正在读取最新结果。";
+                run.requestId = active.requestId ?? null;
+                run.lifecycleNotice = assistantLifecycleText(active.lifecycle) || "这次创作仍在继续，正在读取最新结果。";
                 run.error = null;
             }
             run.sessions = sessionList.sessions;
             run.sessionId = nextSession;
             run.turns = [...history.turns, ...recent];
+            // A history read started before turn_end may omit that newer turn and its plan.
+            if (run.plan === planAtRequest) run.plan = recent.length ? recent.at(-1)!.plan ?? null : history.plan ?? null;
             for (const turn of history.turns) {
                 if (turn.undone) run.turnStatus[turn.turnId] = { undone: true };
             }
@@ -321,7 +355,7 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
         void loadHistory(canvasId);
     }, [canvasId, loadHistory, open, runFor, status?.available]);
 
-    const send = useCallback(async (text: string, selectedNodeIds: string[], references: AgentChatReference[] = [], input: { attachments?: AssistantAttachment[]; skills?: AssistantSkillSelection[]; permissionMode?: AssistantPermissionMode } = {}) => {
+    const send = useCallback(async (text: string, selectedNodeIds: string[], references: AgentChatReference[] = [], input: { attachments?: AssistantAttachment[]; skills?: AssistantSkillSelection[]; permissionMode?: AssistantPermissionMode; continuation?: { id: string; sessionId: string; requestId: string } } = {}) => {
         if (!userScopeMatches(expectedScope)) return;
         const message = text.trim();
         if (!message && !input.attachments?.length) return;
@@ -332,6 +366,7 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
         const attachments = (input.attachments || []).map(item => ({ ...item }));
         const skills = (input.skills || []).map(item => ({ ...item }));
         const run = runFor(targetCanvas);
+        if (input.continuation && (run.sessionId !== input.continuation.sessionId || run.streaming || !run.historyLoaded)) return;
         if (run.streaming) {
             if (!run.dispatched || !run.sessionId || run.supplementBusy) return;
             const supplement = { text: message, attachments, skills, status: "sending" as "sending" | "accepted" | "unconfirmed" };
@@ -354,6 +389,7 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
         const permissionMode = assistantPermissionMode(input.permissionMode ?? preferredPermissionMode);
         const controller = new AbortController();
         run.pendingUserText = message;
+        run.pendingContinuationId = input.continuation?.id ?? null;
         run.pendingSelectedNodeIds = selectedSnapshot;
         run.pendingAttachments = attachments;
         run.pendingSkills = skills;
@@ -367,7 +403,10 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
         run.dispatched = false;
         run.backgroundActive = false;
         run.recovery = null;
-        run.lastSent = { text: message, selectedNodeIds: selectedSnapshot, references: referenceSnapshot, attachments, skills, permissionMode };
+        run.lastSent = input.continuation ? null : { text: message, selectedNodeIds: selectedSnapshot, references: referenceSnapshot, attachments, skills, permissionMode };
+        // A new identity per send: Stop names exactly this one, and a retry is a new request.
+        const requestId = input.continuation?.requestId || createClientId();
+        run.requestId = requestId;
         rerenderIfActive(targetCanvas);
         try {
             if (workspaceCapabilities().local) {
@@ -400,6 +439,16 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
                     current.streamed += delta;
                     rerenderIfActive(targetCanvas);
                 },
+                onText: (text) => {
+                    if (!userScopeMatches(expectedScope)) return;
+                    runFor(targetCanvas).streamed = text;
+                    rerenderIfActive(targetCanvas);
+                },
+                onPlan: (plan) => {
+                    if (!userScopeMatches(expectedScope)) return;
+                    runFor(targetCanvas).plan = plan;
+                    rerenderIfActive(targetCanvas);
+                },
                 onLifecycle: (event) => {
                     if (!userScopeMatches(expectedScope)) return;
                     const current = runFor(targetCanvas);
@@ -411,6 +460,7 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
                     const current = runFor(targetCanvas);
                     const turn: AssistantTurn = {
                         turnId: end.turnId || `${targetCanvas}:${Date.now()}`,
+                        continuationId: end.continuationId,
                         permissionMode: assistantPermissionMode(end.permissionMode),
                         userText: message,
                         selectedNodeIds: selectedSnapshot,
@@ -418,7 +468,9 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
                         toolCalls: end.toolCalls || [],
                         change: end.change ?? null,
                         proposals: end.proposals || [],
+                        proposalsInvalidated: end.proposalsInvalidated,
                         outputs: end.outputs || [],
+                        plan: end.plan ?? null,
                         error: end.error ? agentAssistantFailureText(end.errorReason ?? undefined, "这一轮没有全部完成，请核对已经落地的改动。") : null,
                         errorReason: end.errorReason,
                         cancelled: Boolean(end.cancelled),
@@ -429,12 +481,14 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
                         createdAt: new Date().toISOString(),
                     };
                     current.turns = [...current.turns, turn];
+                    current.plan = end.plan ?? null;
                     current.recovery = null;
                     // 旧 JSONL 会话首次发消息会交接给新的 Durable 会话：后续回合都走它。
                     if (end.sessionId && end.sessionId !== current.sessionId) current.sessionId = end.sessionId;
                     current.backgroundActive = false;
                     current.historyError = null;
                     current.pendingUserText = null;
+                    current.pendingContinuationId = null;
                     current.pendingSelectedNodeIds = [];
                     current.pendingAttachments = [];
                     current.pendingSkills = [];
@@ -446,9 +500,15 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
                     } else onCanvasChangedRef.current?.(targetCanvas, assistantChangedNodeIds(turn.change));
                     rerenderIfActive(targetCanvas);
                 },
-            }, { signal: controller.signal, selectedNodeIds: selectedSnapshot, references: referenceSnapshot, sessionId: run.sessionId ?? undefined, attachments, skills, permissionMode });
+            }, { signal: controller.signal, selectedNodeIds: selectedSnapshot, references: referenceSnapshot, sessionId: run.sessionId ?? undefined, requestId, attachments, skills, permissionMode, continuationId: input.continuation?.id });
         } catch (streamError) {
             if (!userScopeMatches(expectedScope)) return;
+            if (controller.signal.aborted && !runFor(targetCanvas).dispatched) {
+                // 发出前点了停止：不论停在哪一步（就绪检查、读取对话），都按「没有发出」收尾。
+                markStoppedBeforeSend(runFor(targetCanvas));
+                rerenderIfActive(targetCanvas);
+                return;
+            }
             if (streamError instanceof AgentTurnFailedError) {
                 // onTurnEnd 已保存真实失败及画布变化，不再额外显示「结果未知」或触发重放。
                 runFor(targetCanvas).error = null;
@@ -458,6 +518,14 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
             // 用户点「停止」会以 AbortError 结束这次请求：这是预期结果，不当成失败。
             const aborted = streamError instanceof DOMException && streamError.name === "AbortError";
             const current = runFor(targetCanvas);
+            if (streamError instanceof AgentStreamDetachedError) {
+                // 只是观察断开，这一轮仍在宿主上：保留已显示内容，改为读取结果，轮询接着读进度或最终回执。
+                current.error = null;
+                onCanvasChangedRef.current?.(targetCanvas, []);
+                void loadHistory(targetCanvas);
+                rerenderIfActive(targetCanvas);
+                return;
+            }
             if (streamError instanceof AgentChatNotAdmittedError) {
                 current.dispatched = false;
                 current.recovery = null;
@@ -474,18 +542,17 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
             rerenderIfActive(targetCanvas);
         } finally {
             if (!userScopeMatches(expectedScope)) return;
+            // A new message invalidates older source turns on the server, even
+            // if admission later fails. Keep generation disabled until that
+            // authoritative readback arrives; steer returns before this path.
+            runFor(targetCanvas).historyLoaded = false;
+            await loadHistory(targetCanvas, runFor(targetCanvas).sessionId ?? undefined);
+            if (!userScopeMatches(expectedScope)) return;
             const current = runFor(targetCanvas);
             current.streaming = current.backgroundActive;
             current.lifecycleNotice = null;
             current.controller = null;
             rerenderIfActive(targetCanvas);
-            void listAssistantSessions(targetCanvas).then((list) => {
-                if (!userScopeMatches(expectedScope)) return;
-                const latest = runFor(targetCanvas);
-                latest.sessions = list.sessions;
-                if (!latest.sessionId) latest.sessionId = list.currentSessionId;
-                rerenderIfActive(targetCanvas);
-            }).catch(() => { /* 会话列表读取失败不覆盖本轮结果；重新读取入口仍可用。 */ });
         }
     }, [loadHistory, rerenderIfActive, runFor, expectedScope, preferredPermissionMode]);
 
@@ -494,12 +561,27 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
         if (!userScopeMatches(expectedScope)) return;
         const targetCanvas = activeCanvasRef.current;
         const run = runFor(targetCanvas);
+        const sending = Boolean(run.controller);
         run.controller?.abort();
-        if (!run.dispatched) return;
+        if (!run.dispatched) {
+            // 还没发出：没有要取消的回合，立刻清掉待发送内容，不等发送流程退出。
+            if (sending) { markStoppedBeforeSend(run); rerenderIfActive(targetCanvas); }
+            return;
+        }
         try {
-            await cancelAgentChat(targetCanvas);
+            const target = run.sessionId && run.requestId ? { sessionId: run.sessionId, requestId: run.requestId } : undefined;
+            const state = await cancelAgentChat(targetCanvas, target);
             if (!userScopeMatches(expectedScope)) return;
             await loadHistory(targetCanvas);
+            if (!userScopeMatches(expectedScope)) return;
+            const current = runFor(targetCanvas);
+            // The assistant had not started on it and history holds no receipt for it:
+            // it will not run, so end the wait here instead of polling for a receipt.
+            if (state === "pending" && current.recovery && !current.backgroundActive && current.requestId === target?.requestId) {
+                markStoppedBeforeSend(current, ASSISTANT_STOPPED_UNPROCESSED_TEXT);
+                current.dispatched = false;
+                rerenderIfActive(targetCanvas);
+            }
         } catch (cancelError) {
             if (!userScopeMatches(expectedScope)) return;
             run.error = cancelError instanceof Error ? cancelError.message : String(cancelError);
@@ -517,6 +599,7 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
         const run = runFor(activeCanvasRef.current);
         run.error = null;
         run.pendingUserText = null;
+        run.pendingContinuationId = null;
         run.pendingSelectedNodeIds = [];
         rerenderIfActive(activeCanvasRef.current);
     }, [rerenderIfActive, runFor, expectedScope]);
@@ -535,8 +618,10 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
             run.sessionId = sessionId;
             run.recovery = null;
             run.turns = [];
+            run.plan = null;
             run.error = null;
             run.pendingUserText = null;
+            run.pendingContinuationId = null;
             run.lastSent = null;
             run.turnStatus = {};
             run.historyLoaded = true;
@@ -563,12 +648,14 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
             if (!activated || !userScopeMatches(expectedScope)) return;
             // 激活成功但读取失败时阻止把旧显示当作新对话继续发送。
             run.historyLoaded = false;
+            run.plan = null;
             if (await loadHistory(targetCanvas, activated)) {
                 run.recovery = null;
                 run.turnStatus = {};
                 run.error = null;
                 run.lastSent = null;
                 run.pendingUserText = null;
+                run.pendingContinuationId = null;
             }
         } catch {
             run.error = "没能切换对话，当前对话仍然保留。请重试。";
@@ -639,11 +726,13 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
         sessions: run.sessions,
         sessionId: run.sessionId,
         turns: run.turns,
+        plan: run.plan,
         historyLoaded: run.historyLoaded,
         historyError: status?.reason === "model_not_configured" && run.historyHostUnavailable && !run.turns.length && !run.pendingUserText && !run.pendingAttachments.length && !run.streamed ? null : run.historyError,
         sessionBusy: run.sessionBusy,
         reloadHistory: () => loadHistory(canvasId),
         pendingUserText: run.pendingUserText,
+        pendingContinuationId: run.pendingContinuationId,
         pendingSelectedNodeIds: run.pendingSelectedNodeIds,
         pendingAttachments: run.pendingAttachments,
         pendingSkills: run.pendingSkills,

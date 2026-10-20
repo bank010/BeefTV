@@ -13,10 +13,15 @@ import (
 	"strings"
 	"time"
 
+	"infinite-canvas/backend/internal/beefapi"
 	"infinite-canvas/backend/internal/model"
 )
 
 func RunAudioTask(ctx context.Context, input Input) (map[string]interface{}, error) {
+	music := strings.Contains(strings.ToLower(input.Config.Model), "minimax-music-")
+	if music {
+		input.Config.AudioFormat = "mp3"
+	}
 	if _, ok := DeclarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
 		return RunDeclarativeProtocolTask(ctx, input)
 	}
@@ -42,18 +47,40 @@ func RunAudioTask(ctx context.Context, input Input) (map[string]interface{}, err
 	if input.Config.AudioInstructions != "" {
 		body["instructions"] = input.Config.AudioInstructions
 	}
+	if music {
+		body["metadata"] = map[string]interface{}{"audio_setting": map[string]interface{}{"sample_rate": 44100, "bitrate": 256000, "format": "mp3"}}
+	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceAsyncAudio) {
 		return RunAsyncAudioTask(ctx, input, body, format)
+	}
+	if music && isBeefAPIHostFromURL(input.Config.BaseURL) {
+		body["stream_format"] = "sse"
 	}
 	data, mimeType, err := PostBinary(ctx, input.Config, "/audio/speech", body)
 	if err != nil {
 		return nil, err
+	}
+	if strings.Contains(strings.ToLower(mimeType), "text/event-stream") {
+		data, mimeType, err = readSpeechAudioEvents(ctx, data)
+		if err != nil {
+			return nil, err
+		}
 	}
 	mimeType, err = ValidateGeneratedAudio(mimeType, data, format)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]interface{}{"mode": "audio", "audio": map[string]interface{}{"dataUrl": DataURL(mimeType, data), "mimeType": mimeType, "format": format}}, nil
+}
+
+func isBeefAPIHostFromURL(raw string) bool {
+	if beefapi.IsEnterpriseBaseURL(raw) {
+		return true
+	}
+	// Use the existing explicit loopback enterprise override in desktop acceptance.
+	// CanonicalOrigin rejects non-loopback custom origins.
+	origin, err := beefapi.CanonicalOrigin("")
+	return err == nil && strings.TrimSuffix(strings.TrimRight(raw, "/"), "/v1") == origin
 }
 
 func RunAsyncAudioTask(ctx context.Context, input Input, body map[string]interface{}, format string) (map[string]interface{}, error) {

@@ -1,5 +1,7 @@
 # BeefTV 桌面发布
 
+公开发布还须核对[媒体组件的许可与源码交付](media-source-distribution.md)。流水线会附带许可文件和 macOS ffprobe 源码包；预构建组件的完整源码材料仍需分发者落实，不能把构建成功视为已完成全部许可义务。
+
 生产桌面包使用仓库根目录的 `VERSION` 作为唯一版本源。发布脚本会把版本号、当前 Git 提交和 UTC 构建时间同时注入前端与 Go 后端，并生成不依赖 Vite 开发服务器的 Wails 应用包。
 
 带自动更新的生产包还要注入更新源地址和 Ed25519 公钥。密钥、草稿发布、签名清单和回滚语义见下方「桌面自动更新」。`v1.5.2` 及以前的安装包不含更新器，不能靠补发清单给已经装好的二进制补上自动更新。
@@ -185,7 +187,7 @@ export BEEFTV_UPDATER_PUBLIC_KEY="$(tr -d '[:space:]' < /path/to/beeftv-updater.
 
 脚本会把下面两个链接期变量写进二进制：
 
-- `infinite-canvas/backend/internal/desktopupdate.FeedURL` = `https://updates.beefapi.com/beeftv/desktop-update.json`
+- `infinite-canvas/backend/internal/desktopupdate.FeedURL` = `https://beeftv-components-1481187348.cos.ap-guangzhou.myqcloud.com/beeftv/desktop-update.json`
 - `infinite-canvas/backend/internal/desktopupdate.PublicKey` = 公钥 Base64
 
 两个都为空时，应用里的更新器保持关闭，但仍显示当前版本。
@@ -208,7 +210,7 @@ BeefTV-vX.Y.Z-linux-amd64.zip
 desktop-update.json
 ```
 
-Actions 中的 `desktop-*` 临时安装包保留 7 天，用于发布任务之间传递文件及短期排查。正式 GitHub Release 和 Cloudflare R2 下载文件不受此期限影响。清理历史临时包前，应确认对应发布任务成功，且对应版本的平台安装包和更新清单齐全；未确认发布成功的包和升级验证报告保留。
+Actions 中的 `desktop-*` 临时安装包保留 7 天，用于发布任务之间传递文件及短期排查。正式 GitHub Release 和 COS 下载文件不受此期限影响。清理历史临时包前，应确认对应发布任务成功，且对应版本的平台安装包和更新清单齐全；未确认发布成功的包和升级验证报告保留。
 
 zip 里的布局：
 
@@ -216,31 +218,73 @@ zip 里的布局：
 - Windows：根目录的 `BeefTV.exe` 和 `plugin-packages/*.beeftv-plugin`。
 - Linux x64：`BeefTV-linux/` 内包含 `BeefTV`、`cli/beeftv`、`agent-host/` 和 `plugin-packages/`。在 Ubuntu 24.04 原生构建，使用 GTK3 和 WebKitGTK 4.1；安装依赖和启动方法见 [Linux 安装说明](linux-install.md)。更新和回滚替换整个程序目录，用户数据留在配置目录。
 
-从 v1.5.7 起，更新清单和安装包托管在 Cloudflare R2：
+新版本更新清单和安装包使用广州 COS：
 
 ```text
-https://updates.beefapi.com/beeftv/desktop-update.json
+https://beeftv-components-1481187348.cos.ap-guangzhou.myqcloud.com/beeftv/desktop-update.json
 ```
 
-流水线先建 draft，四个平台构建任务把包保存为 Actions 产物。收齐后生成签名清单，先将版本包和版本清单写入 R2 不可变路径并从公开域名读回校验。之后发布 GitHub Release，最后原子替换 CF 的最新清单。失败或缺包不会激活 CF 更新源。GitHub 同时保留同一份签名清单，供旧客户端迁移。
+流水线先验证目标存储的条件写能力，再建 draft，四个平台构建任务把包保存为 Actions 产物。收齐后生成签名清单，先将版本包和版本清单写入 COS 不可变路径并从公开地址完整读回校验。之后发布 GitHub Release，最后按旧 ETag 条件替换最新清单。失败或缺包不会激活更新源。GitHub 同时保留同一份签名清单，供旧客户端迁移。
 
 Linux 发布任务会从最终 ZIP 解压执行随包 CLI，并在 Xvfb 中启动桌面程序，确认本地后端和可见窗口。PR 的 `Linux desktop package checks` 提前执行同一构建与启动检查，不发布版本，也不调用付费模型。
 
-v1.5.6 及以前的更新器仍内置 GitHub 清单地址。如果旧客户端无法连接 GitHub，需要先手动安装 v1.5.7 或更高版本；远端清单无法改写尚未更新的程序。完成这一次迁移后，检查及下载更新均使用 CF 地址。
+v1.5.6 及以前的更新器仍内置 GitHub 清单地址。如果旧客户端无法连接 GitHub，需要先手动安装新版；远端清单无法改写尚未更新的程序。后续历史客户端内置 `updates.beefapi.com` 地址，因此迁移必须保留该地址与 `beeftv/*` 路径，提供相同签名信封和不可变文件字节，不能只修改新包里的 FeedURL。旧签名清单的 payload 不应重写；它们内含的旧下载地址由兼容入口继续服务。
 
-### Cloudflare 发布配置
+### COS 发布配置
 
-使用专用 R2 bucket `beeftv-releases`，自定义域名 `updates.beefapi.com`，TLS 最低 1.2。只放公开发行文件，不混放用户素材。正式文件路径为 `beeftv/vX.Y.Z/<文件名>`，最新清单为 `beeftv/desktop-update.json`。版本对象长期缓存且不可变，最新清单使用禁止缓存的响应头。
+使用广州公开桶 `beeftv-components-1481187348` 的 `beeftv/` 前缀，不混放用户素材。正式文件路径为 `beeftv/vX.Y.Z/<文件名>`，最新清单为 `beeftv/desktop-update.json`。版本对象长期缓存且不可变，最新清单使用禁止缓存的响应头。旧更新域名迁移与官网发布分开验证，不改变更新签名密钥。
 
 仓库 Actions 需要以下配置：
 
-- Secret `BEEFTV_R2_ACCESS_KEY_ID`、`BEEFTV_R2_SECRET_ACCESS_KEY`：仅对这个 bucket 拥有对象读写权限的 S3 凭据，不使用账户管理员令牌。
-- Variable `BEEFTV_R2_ENDPOINT`：该账户的官方 HTTPS R2 S3 endpoint。
+- Secret `BEEFTV_COS_ACCESS_KEY_ID`、`BEEFTV_COS_SECRET_ACCESS_KEY`：仅对发行前缀拥有所需对象读写权限，不使用账户管理员令牌。只允许删除 `beeftv/.publication-probes/` 的测试对象和 `beeftv/.publication-locks/` 的发布锁；发行文件及 `beeftv/.publication-claims/` 不应授予删除权限。锁和 claim 不配置生命周期或自动清理，存储桶版本控制必须保持关闭；开启或暂停版本控制都会使禁止覆盖的保证失效。
+- 工作流固定 endpoint `https://cos.ap-guangzhou.myqcloud.com`、region `ap-guangzhou`、bucket `beeftv-components-1481187348`，使用虚拟主机寻址。
 - 原有 `BEEFTV_UPDATER_PRIVATE_KEY` 和 `BEEFTV_UPDATER_PUBLIC_KEY` 保持不变。
 
-`scripts/publish-desktop-r2.py` 复用 `update-release verify` 验签，使用 AWS CLI v2 上传；发布机必须支持 `put-object` 的 `IfMatch`、`IfNoneMatch` 条件写。`stage` 只准备版本对象；`activate` 确认 GitHub 最新正式版本及公开清单与本次签名清单一致、全部公开对象可校验后，备份上一份清单，再通过 ETag 条件写切换。公网检查使用该版本客户端的请求标识。重复执行同一版本是幂等的，已有对象内容不同或试图降级会失败。
+`scripts/publish-desktop-r2.py` 保留历史文件名，支持 `--provider cos|r2`，复用 `update-release verify` 验签。COS 使用 Python 标准库和 SigV4 签名的单次 HTTP 请求，原子创建依赖 `x-cos-forbid-overwrite: true`；R2 保留 AWS CLI v2 的原生 `IfMatch`、`IfNoneMatch`。COS 的 S3 兼容接口可能忽略这些 S3 条件头，不能用它们保护 COS 最新清单。每次操作先在目标桶的随机对象上验证原生禁止覆盖及原始字节不变；检测到失效立即停发。
 
-如果 GitHub 发布成功而 CF 激活失败，保留正式版本及所有不可变对象。核对失败原因后，用同一版本的原始清单重跑 `activate`；不要删除正式 tag 或重建不同内容的同版本包。切换前失败不会改变旧 CF 清单；条件写成功但最终回读失败时，新清单可能已经生效，必须先核对存储与公开入口，不能把它当作未发布。已经安装新版本的客户端不自动降级。
+COS 发布使用以下对象，公开下载文件与内部发布对象各有固定前缀：
+
+- 不可变版本文件：`beeftv/vX.Y.Z/<文件名>`，使用原生禁止覆盖创建，已有内容逐字节核验。
+- 发布锁：`beeftv/.publication-locks/<SHA256(目标key)>.json`，按目标固定命名，包含随机 nonce、GitHub 仓库/run/attempt/job 和创建时间。时间仅供排障，不是自动接管期限。创建回执丢失时只读回同一 nonce，不盲重发创建。
+- ETag 消费记录：`beeftv/.publication-claims/<SHA256(JSON([目标key,预期ETag]))>.json`，原子创建后永久保留，记录预期 ETag、下一份完整字节的大小/SHA256 和持锁者。同一预期 ETag 只能消费一次。首次清单不存在时使用 JSON `null`，不使用随机值或字符串 `"null"`；另一目标使用不同标识。
+- 测试对象及其 claim：`beeftv/.publication-probes/`，与正式 claim 隔离，成功后清理。真云双客户端探针需要显式运行 `python3 scripts/probe-desktop-cos.py --run`，不在普通本地单测中请求云端。
+
+最新清单在持锁期间读取并核对预期 ETag，再原子创建消费记录，最后上传并完整读回核验。消费记录存在即拒写，避免 COS 源站短暂读到旧 ETag 时重复执行同一替换。预期不存在时，目标 PUT 同时带原生禁止覆盖，防止历史清单的短暂 404 在尚无 null claim 时被误当成首次发布；目标已存在返回 409 时拒写并保留 claim。消费记录或目标写入的回执不确定、读回失败时保留锁与已写入的 claim，停止后续发布。解锁前只确认自己的 nonce，DELETE 只发送一次；只有 HTTP 200/204 算释放确认。非成功状态或丢失回执始终报“解锁未确认”，后续 GET 404 不能证明删除成功，也不能据此重删，以免删除下一位持锁者的锁。
+
+所有写最新清单的工具、初次迁移和人工操作都必须遵守同一锁及 claim 协议。不能用 COSCMD、通用复制脚本或另一套发布器无条件覆盖最新清单。迁移前确认旧发行作业已结束，发布凭据不得修改桶版本控制或生命周期。
+
+`stage` 只准备版本对象；`activate` 确认 GitHub 最新正式版本及公开清单与本次签名清单一致、全部公开对象可校验后，备份上一份清单，再执行上述条件更新。公网检查使用该版本客户端的请求标识。重复执行已成功的同一版本是幂等的，已有对象内容不同或试图降级会失败。历史 R2 操作必须显式指定 `--provider r2 --region auto --bucket beeftv-releases --endpoint-url <原账户端点> --public-base https://updates.beefapi.com/beeftv`。
+
+#### 遗留锁与未完成 claim 的人工恢复
+
+锁不会自动过期，也不能靠删除 claim 重试另一份清单。`resume` 只处理未解锁的同一次故障写入，执行前必须取得以下现场证据：
+
+1. 人工冻结全部最新清单 writer，包括 Actions、初次迁移和人工发布；查明没有后继发布。按原锁的仓库、run、attempt、job 保存 GitHub Actions 状态及原日志，确认整个原 attempt 已终态、进程已停止。
+2. 确认所有在途 COS PUT 已结束。作业终态本身不能证明一次丢回执的远端 PUT 已结束，必要时用 COS 请求日志核查。原发布日志还必须证明**从未发送释放锁的 DELETE**。如果 DELETE 已发送、回执未知、日志不完整或无法确认，禁止使用 `resume`；旧锁 GET 可能是陈旧值，不能代替这些证据。
+3. 从 COS 读取并保存原锁和对应 claim 的完整原始字节，不重新排版 JSON。核对固定目标 `beeftv/desktop-update.json`、原 nonce、claim 的 publisher、预期 ETag 和下一份大小/SHA256，并取回原始签名信封。claim 不存在或其回执未知时，不能根据一次 GET 404 生成另一份 claim；先查清原请求结果。
+
+在已配置发行 COS 凭据、官方更新公钥 `BEEFTV_UPDATER_PUBLIC_KEY` 和 `gh` 认证的受控环境中，从仓库根目录执行：
+
+```bash
+go -C backend build -o /tmp/beeftv-update-release ./cmd/update-release
+python3 scripts/publish-desktop-r2.py resume \
+  --provider cos --endpoint-url https://cos.ap-guangzhou.myqcloud.com \
+  --region ap-guangzhou --bucket beeftv-components-1481187348 \
+  --public-base https://beeftv-components-1481187348.cos.ap-guangzhou.myqcloud.com/beeftv \
+  --manifest /path/to/original-desktop-update.json \
+  --verifier /tmp/beeftv-update-release \
+  --lock-document /path/to/original-lock.json \
+  --claim-document /path/to/original-claim.json \
+  --confirm-writers-frozen --confirm-no-inflight-put --confirm-no-unlock-attempt
+```
+
+三个确认参数分别表示操作员已取得上述冻结、在途 PUT 结束、从未解锁的证据；不能取得时不执行。入口会自行检查官方 `glanderness/BeefTV` 原 run/attempt 的 GitHub API 状态，重新验签、检查四平台公开文件及 GitHub 最新正式版本的精确清单字节，再逐字节匹配当前锁/claim。它只接受原 claim 大小/SHA256 对应的同一信封，不新建 nonce 或 claim，也不删除 claim。目标已经是这份清单时只核验并释放原锁；目标仍为原 ETag 时才续写同一份清单，首次不存在仍使用原生禁止覆盖。其他状态、不同 nonce/目标/字节一律停发。仅在完整读回匹配后发送一次解锁 DELETE，非 HTTP 200/204 仍报未确认。
+
+已尝试 DELETE 的故障不属于这个恢复入口。先保持全部 writer 冻结，核验最终公开 feed 和原请求日志，再由操作员单独处置遗留锁；不得借恢复重发 PUT 或盲重删。记录恢复证据后才恢复正常发行。
+
+切换公开入口前，要复制并核验所有保留历史版本的包及原始签名信封，逐项记录大小和完整 SHA256，验证匿名下载、Range 续传，以及已安装旧版读取原 feed 后的真实更新。COS 当前源站若未通过条件写自检，允许准备历史副本与兼容读取，但不能激活新的最新清单。
+
+如果 GitHub 发布成功而 COS 激活失败，保留正式版本及所有不可变对象。先核查存储与公开入口；没有遗留锁和未完成 claim 时才用同一版本原始清单重跑 `activate`，否则遵守上述恢复条件。不要删除正式 tag 或重建不同内容的同版本包。条件写成功但最终回读失败时，新清单可能已经生效，不能把它当作未发布。已经安装新版本的客户端不自动降级。
 
 在 `glanderness/BeefTV` 的 `main` 上手动运行 `.github/workflows/release-desktop.yml`。输入的 `confirm_version` 必须和 `VERSION` 一致。`CHANGELOG.md` 必须有对应的 `## vX.Y.Z` 段落，这段文字会同时成为 GitHub Release 说明和清单里的 `notes`。
 

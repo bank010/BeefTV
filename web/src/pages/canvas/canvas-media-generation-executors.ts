@@ -1,14 +1,15 @@
 import { nanoid } from "nanoid";
+import { assertUserScope, captureUserScope } from "@/lib/user-scope-guard";
 
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { canGenerateMediaInPlace } from "@/lib/canvas/canvas-generation-layout";
 import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { nextCanvasVersionLabel } from "@/lib/canvas/canvas-layout";
-import { buildAudioGenerationMetadata, buildVideoGenerationMetadata, clearInPlaceMediaOutputMetadata, generationReferenceUrls, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
+import { buildAudioGenerationMetadata, buildVideoGenerationMetadata, clearInPlaceMediaOutputMetadata, generationReferenceUrls, resetGenerationTaskMetadata, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
 import { canvasGenerationPromptMetadata } from "@/lib/canvas/canvas-generation-submission";
 import { mediaResultMetadata } from "@/lib/canvas/canvas-node-semantics";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
-import { rebaseCanvasGenerationTarget } from "@/lib/canvas/canvas-generation-live-target";
+import { projectCanvasGenerationSubmission, rebaseCanvasGenerationTarget } from "@/lib/canvas/canvas-generation-live-target";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
@@ -43,11 +44,20 @@ export async function executeVideoGeneration({
     taskContext,
     retryContext,
     clientOperationId,
+    onSubmissionPlan,
 }: CanvasGenerationExecution) {
     const spec = nodeSizeFromRatio(generationConfig.size, NODE_DEFAULT_SIZE[CanvasNodeType.Video].width, NODE_DEFAULT_SIZE[CanvasNodeType.Video].height) || NODE_DEFAULT_SIZE[CanvasNodeType.Video];
     const reuseSourceNode = canGenerateMediaInPlace(sourceNode, CanvasNodeType.Video);
     const isExistingVideoNode = sourceNode?.type === CanvasNodeType.Video && Boolean(sourceNode.metadata?.content) && !reuseSourceNode;
     const videoId = reuseSourceNode ? nodeId : nanoid();
+    if (onSubmissionPlan) {
+        const scope = captureUserScope();
+        if (!clientOperationId) throw new Error("生成提交缺少确认标识");
+        await onSubmissionPlan({ sourceNodeId: nodeId, submissions: [{ operationId: clientOperationId, outputNodeIds: [videoId] }] });
+        assertUserScope(scope);
+        controller.signal.throwIfAborted();
+        if (!(nodesRef?.current || canvasNodes).some(node => node.id === nodeId)) throw new Error("原节点已删除，未开始生成");
+    }
     const versionRootId = isExistingVideoNode && sourceNode ? sourceNode.metadata?.versionOfNodeId || sourceNode.id : undefined;
     const parent = sourceNode?.position || { x: 0, y: 0 };
     const videoGenerationMetadata = buildVideoGenerationMetadata(sourceNode, generationContext, generationConfig);
@@ -59,7 +69,7 @@ export async function executeVideoGeneration({
         width: reuseSourceNode ? sourceNode!.width : spec.width,
         height: reuseSourceNode ? sourceNode!.height : spec.height,
         metadata: mediaResultMetadata("generated", {
-            ...(reuseSourceNode ? clearInPlaceMediaOutputMetadata(sourceNode?.metadata) : {}),
+            ...(reuseSourceNode ? resetGenerationTaskMetadata(sourceNode?.metadata, NODE_STATUS_LOADING) : {}),
             ...canvasGenerationPromptMetadata(prompt, effectivePrompt),
             status: NODE_STATUS_LOADING,
             errorDetails: undefined,
@@ -150,7 +160,7 @@ export async function executeVideoGeneration({
                 },
             },
             {
-                onSubmission: (metadata) => setNodes((current) => current.map((node) => node.id === videoId ? { ...node, metadata: { ...node.metadata, ...metadata } } : node)),
+                onSubmission: (metadata) => projectCanvasGenerationSubmission(nodesRef, setNodes, [videoId], metadata),
                 bindTask: (task) => bindGenerationTask(videoId, task),
                 consumeTask: (task) => applyGenerationTaskResult(videoId, task),
             },
@@ -241,7 +251,7 @@ export async function executeAudioGeneration({
                 metadata: { sourceNodeId: nodeId, ...taskContext, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, resolvedCharacterVoiceKey: generationContext.resolvedCharacterVoices[0]?.voiceKey, ...skillMetadata },
             },
             {
-                onSubmission: (metadata) => setNodes((current) => current.map((node) => node.id === audioId ? { ...node, metadata: { ...node.metadata, ...metadata } } : node)),
+                onSubmission: (metadata) => projectCanvasGenerationSubmission(nodesRef, setNodes, [audioId], metadata),
                 bindTask: (task) => bindGenerationTask(audioId, task),
                 consumeTask: (task) => applyGenerationTaskResult(audioId, task),
             },

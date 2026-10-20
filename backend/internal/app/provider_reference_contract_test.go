@@ -11,10 +11,10 @@ import (
 	"infinite-canvas/backend/internal/model"
 )
 
-func TestWanLocalReferencesUseVerifiedInlineContract(t *testing.T) {
+func TestWanLocalReferencesRemainOwnedForHTTPUpload(t *testing.T) {
 	input := canvasGenerationInput{Mode: "video", Config: providerConfig{BaseURL: "https://enterprise.beefapi.com", InterfaceType: "newapi-channel-2", Model: "wan3.0-video"}, ReferenceImages: []providerMedia{{DataURL: testGeminiReferenceImageDataURL}}}
 	policy := providerMediaHydrationPolicyFor(context.Background(), input)
-	if policy.RequireURL || !policy.PreferHTTPS {
+	if policy.RequireURL || !policy.KeepLocal {
 		t.Fatalf("Wan local media blocked: %#v", policy)
 	}
 	svc := newResourceTestService(t)
@@ -39,9 +39,10 @@ func TestWanLocalReferencesUseVerifiedInlineContract(t *testing.T) {
 	if err := svc.hydrateGenerationMedia("user-1", &input, policy); err != nil {
 		t.Fatal(err)
 	}
-	body := officialVideoCreateBody(t, input)
-	if body["image_urls"].([]any)[0] != testGeminiReferenceImageDataURL {
-		t.Fatal("inline image lost before wire request")
+	// The provider uploader reads owned bytes next; hydration must not turn
+	// this local reference into an inline value rejected by Wan's HTTP contract.
+	if media := input.ReferenceImages[0]; media.StorageKey != "resource:wan-reference" || media.DataURL != "" {
+		t.Fatalf("local reference changed before upload: %#v", media)
 	}
 	foreign := canvasGenerationInput{ReferenceImages: []providerMedia{{StorageKey: "resource:wan-reference"}}}
 	if err := svc.hydrateGenerationMedia("another-user", &foreign, policy); err == nil {
@@ -53,12 +54,12 @@ func TestWanLocalReferencesUseVerifiedInlineContract(t *testing.T) {
 	}
 	input.Config.Model = "wan4.0-video"
 	if !providerMediaHydrationPolicyFor(context.Background(), input).RequireURL {
-		t.Fatal("unknown model inherited inline support")
+		t.Fatal("unknown model inherited built-in upload support")
 	}
 	input.Config.Model = "wan3.0-video"
 	input.Config.BaseURL = "https://another.example/enterprise.beefapi.com"
 	if !providerMediaHydrationPolicyFor(context.Background(), input).RequireURL {
-		t.Fatal("untrusted endpoint inherited inline support")
+		t.Fatal("untrusted endpoint inherited built-in upload support")
 	}
 }
 

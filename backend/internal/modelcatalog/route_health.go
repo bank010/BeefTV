@@ -66,6 +66,9 @@ func RouteFailureCode(info FailureInfo) string {
 	if info.StatusCode > 0 {
 		return fmt.Sprintf("upstream_%d", info.StatusCode)
 	}
+	if info.PreparationFailed && !info.ImageRecovery {
+		return "request_not_sent"
+	}
 	return "submission_unknown"
 }
 

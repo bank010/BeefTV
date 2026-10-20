@@ -169,6 +169,16 @@ func (s *Service) FeatureEnabled(feature string) (bool, error) {
 }
 
 func (s *Service) RequireFeature(feature string) error {
+	if s.IsLocalMode() {
+		enabled, err := s.FeatureEnabled(feature)
+		if err != nil {
+			return err
+		}
+		if enabled {
+			return nil
+		}
+		return Forbidden("当前工作区未开放此功能")
+	}
 	return s.platformDomain().RequireFeature(feature)
 }
 

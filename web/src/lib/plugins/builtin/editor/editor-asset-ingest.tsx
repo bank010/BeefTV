@@ -74,7 +74,7 @@ function trackIdForKind(kind: string, project: TimelineProject): string {
     if (track) return track.id;
     if (kind === "video" || kind === "image") return project.tracks.find((t) => t.kind === "video")?.id ?? DEFAULT_VIDEO_TRACK_ID;
     if (kind === "audio") return project.tracks.find((t) => t.kind === "audio")?.id ?? DEFAULT_AUDIO_TRACK_ID;
-    return DEFAULT_SUBTITLE_TRACK_ID;
+    return project.tracks.find((t) => t.kind === "subtitle")?.id ?? DEFAULT_SUBTITLE_TRACK_ID;
 }
 
 function trackEndMs(project: TimelineProject, trackId: string): number {

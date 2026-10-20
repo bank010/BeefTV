@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { getGenerationCount, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
 import { canvasGenerationPromptMetadata } from "@/lib/canvas/canvas-generation-submission";
+import { projectCanvasGenerationSubmission } from "@/lib/canvas/canvas-generation-live-target";
 import { planTextGenerationTargets } from "@/lib/canvas/canvas-generation-layout";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
@@ -87,7 +88,7 @@ export async function executeTextGeneration({
                     metadata: { sourceNodeId: nodeId, ...taskContext, resolvedCharacterVersions: generationContext.resolvedCharacterVersions, ...skillMetadata },
                 },
                 {
-                    onSubmission: (metadata) => setNodes((current) => current.map((node) => node.id === targetNodeId ? { ...node, metadata: { ...node.metadata, ...metadata } } : node)),
+                    onSubmission: (metadata) => projectCanvasGenerationSubmission(nodesRef, setNodes, [targetNodeId], metadata),
                     bindTask: (task) => bindGenerationTask(targetNodeId, task),
                     consumeTask: (task) => applyGenerationTaskResult(targetNodeId, task),
                 },

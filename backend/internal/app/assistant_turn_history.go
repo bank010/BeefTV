@@ -5,10 +5,11 @@ import "infinite-canvas/backend/internal/skills"
 // AssistantTurnHistoryState supplements pi's conversation history with authoritative business receipts.
 // It is a read projection: reading history never settles or cancels an active turn.
 type AssistantTurnHistoryState struct {
-	PermissionMode string `json:"permissionMode"`
-	Change         *AssistantTurnChange
-	Undone         bool
-	SkillPins      []skills.Pin
+	ContinuationInvalidated bool
+	PermissionMode          string `json:"permissionMode"`
+	Change                  *AssistantTurnChange
+	Undone                  bool
+	SkillPins               []skills.Pin
 }
 
 func (s *Service) ReadAssistantTurnHistoryState(userID, canvasID, turnID string) (*AssistantTurnHistoryState, error) {
@@ -16,10 +17,10 @@ func (s *Service) ReadAssistantTurnHistoryState(userID, canvasID, turnID string)
 	if err != nil || state == nil {
 		return nil, err
 	}
-	return &AssistantTurnHistoryState{Change: state.Change, Undone: state.Undone, PermissionMode: state.PermissionMode, SkillPins: state.SkillPins}, nil
+	return &AssistantTurnHistoryState{Change: state.Change, Undone: state.Undone, ContinuationInvalidated: state.ContinuationInvalidated, PermissionMode: state.PermissionMode, SkillPins: state.SkillPins}, nil
 }
 
-// CheckAssistantProposalRunnable rejects starting a suggested generation from an undone round.
+// CheckAssistantProposalRunnable rejects undone rounds and invalidated intents.
 func (s *Service) CheckAssistantProposalRunnable(userID, canvasID, turnID string) error {
 	return s.assistantTurnsOrInit().CheckProposalRunnable(userID, canvasID, turnID)
 }

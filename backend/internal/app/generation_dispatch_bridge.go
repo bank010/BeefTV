@@ -793,7 +793,7 @@ func sleepContext(ctx context.Context, duration time.Duration) error {
 }
 
 func prepareBeefAPISeedanceReferences(ctx context.Context, config providerConfig, input *canvasGenerationInput, read beefAPISeedanceMediaReader) error {
-	return generation.PrepareBeefAPISeedanceReferences(ctx, config, input, read)
+	return generation.PrepareBeefAPIVideoReferences(ctx, config, input, read)
 }
 
 func beefAPISeedanceMediaGroups(input *canvasGenerationInput) []beefAPISeedanceMediaGroup {

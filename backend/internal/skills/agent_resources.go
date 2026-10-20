@@ -81,7 +81,7 @@ func (s *Service) agentPackage(userID string, pin Pin) (*model.Skill, *model.Ski
 	}
 	version, err := s.repo.SkillVersion(pin.VersionID)
 	if err != nil || version.SkillID != pin.SkillID {
-		return nil, nil, nil, kernel.BadAuthRequest("所选技能版本不存在")
+		return nil, nil, nil, kernel.WrapAppError(400, "所选技能版本不存在", err)
 	}
 	if version.ContentHash != pin.ContentHash {
 		return nil, nil, nil, kernel.NewAppError(409, "技能版本内容已变化，请重新选择")
@@ -139,7 +139,7 @@ func (s *Service) AgentFile(userID string, pin Pin, filePath string) (*AgentFile
 		}
 		data, err := s.readSkillArchiveEntry(version, normalized)
 		if err != nil {
-			return nil, kernel.BadAuthRequest("所选技能版本文件不可读取，请重新安装或选择可用版本")
+			return nil, kernel.WrapAppError(400, "所选技能版本文件不可读取，请重新安装或选择可用版本", err)
 		}
 		sum := sha256.Sum256(data)
 		if len(data) > 256<<10 || !utf8.Valid(data) || int64(len(data)) != file.Size || hex.EncodeToString(sum[:]) != file.SHA256 {

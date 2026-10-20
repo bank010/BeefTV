@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"infinite-canvas/backend/internal/assistant"
+	"infinite-canvas/backend/internal/desktopnet"
 )
 
 type childPin struct {
@@ -18,7 +19,7 @@ type childPin struct {
 }
 
 func (h *Host) buildEnv(provider assistant.Provider, pin childPin) []string {
-	env := filterInheritedEnv(h.environ())
+	env := desktopnet.NodeProxyEnvironment(filterInheritedEnv(h.environ()), provider.BaseURL)
 	set := func(key, value string) {
 		env = setEnvValue(env, key, value)
 	}

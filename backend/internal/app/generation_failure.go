@@ -84,6 +84,9 @@ func taskFailureErrorCode(err error) string {
 }
 
 func persistedFailureErrorCode(message string, stage string) string {
+	if stage == taskStageRequestNotSent {
+		return string(generation.CategoryRequestNotSent)
+	}
 	failure := generation.ClassifyText(message)
 	if stage == "submission_unknown" {
 		return string(generation.CategorySubmissionUncertain)
@@ -92,6 +95,9 @@ func persistedFailureErrorCode(message string, stage string) string {
 }
 
 func persistedFailureBlocksRetry(message string, stage string) bool {
+	if stage == taskStageRequestNotSent {
+		return false
+	}
 	if stage == "submission_unknown" {
 		return true
 	}

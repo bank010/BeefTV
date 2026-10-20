@@ -85,7 +85,7 @@ export type GenerationFailureContext = {
 };
 
 export type GenerationFailureDiagnostics = {
-    source: "local_validation" | "upstream_http" | "upstream_response" | "local_result" | "local_response" | "client_result" | "unknown";
+    source: "local_validation" | "upstream_http" | "upstream_response" | "local_result" | "local_response" | "reference_upload" | "client_result" | "unknown";
     version?: string;
     platform?: string;
     executionResult?: string;
@@ -199,6 +199,7 @@ const PROVIDER_CODE_CATEGORIES: Record<string, GenerationErrorCategory> = {
     upstream_unavailable: "provider_unavailable",
     image_reference_upload_failed: "provider_unavailable",
     reference_media_upload_failed: "provider_unavailable",
+    reference_preupload_failed: "provider_unavailable",
     upstream_rejected: "unknown",
     upstream_error: "unknown",
     invalid_api_key: "auth",
@@ -298,7 +299,7 @@ export function explainGenerationError(error: unknown, context: GenerationFailur
     const moderation = isModerationCategory(classified.category);
     const uncertain = classified.uncertain || classified.category === "submission_uncertain" || classified.category === "download_failed" || (classified.category === "timeout" && classified.status === 524);
     const preparation = confirmedReferencePreparation(classified);
-    const blockAutomaticRetry = uncertain || moderation || preparation || ["image_reference_upload_failed", "reference_media_upload_failed"].includes(classified.providerCode || "") || !["throttled", "concurrency", "provider_unavailable", "cancelled", "request_not_sent"].includes(classified.category);
+    const blockAutomaticRetry = uncertain || moderation || preparation || Object.hasOwn(REFERENCE_PREPARATION_COPY, classified.providerCode || "") || !["throttled", "concurrency", "provider_unavailable", "cancelled", "request_not_sent"].includes(classified.category);
     return {
         category: classified.category,
         httpStatus: classified.status,
@@ -405,9 +406,9 @@ export function formatGenerationDiagnostics(explanation: GenerationFailureExplan
         explanation.action ? `下一步：${sanitizeProviderText(explanation.action)}` : "",
         `类别：${explanation.category}`,
         explanation.category === "local_credential" ? `失败阶段：读取本地算力凭据${explanation.summary?.includes("尚未提交生成") ? "（尚未提交生成）" : ""}` : "",
-        `错误来源：${explanation.category === "canvas_save_failed" ? "生成前保存画布" : explanation.category === "local_credential" ? "本地算力连接" : explanation.category === "local_disk_full" ? "本地磁盘写入" : explanation.category === "local_storage" ? "本地任务存储" : ({ local_validation: "本地参数校验", upstream_http: "上游 HTTP 响应", upstream_response: "上游业务响应", local_result: "本地结果处理", local_response: "本地响应大小限制", client_result: "画布应用结果", unknown: "未记录" } as Record<string, string>)[evidence?.source || "unknown"] || "未记录"}`,
+        `错误来源：${explanation.category === "canvas_save_failed" ? "生成前保存画布" : explanation.category === "local_credential" ? "本地算力连接" : explanation.category === "local_disk_full" ? "本地磁盘写入" : explanation.category === "local_storage" ? "本地任务存储" : ({ local_validation: "本地参数校验", upstream_http: "上游 HTTP 响应", upstream_response: "上游业务响应", local_result: "本地结果处理", local_response: "本地响应大小限制", reference_upload: "参考素材上传", client_result: "画布应用结果", unknown: "未记录" } as Record<string, string>)[evidence?.source || "unknown"] || "未记录"}`,
         `错误摘要：${sanitizeProviderText(evidence?.summary || context.errorSummary || explanation.summary || "") || "未记录"}`,
-        evidence && ["upstream_http", "upstream_response"].includes(evidence.source) && sanitizeProviderCode(evidence.providerCode || "") ? `上游代码：${sanitizeProviderCode(evidence.providerCode || "")}` : "",
+        evidence && ["upstream_http", "upstream_response", "reference_upload"].includes(evidence.source) && sanitizeProviderCode(evidence.providerCode || "") ? `${evidence.source === "reference_upload" ? "存储返回代码" : "上游代码"}：${sanitizeProviderCode(evidence.providerCode || "")}` : "",
         evidence?.httpStatus && Number.isInteger(evidence.httpStatus) && evidence.httpStatus >= 100 && evidence.httpStatus <= 599 ? `HTTP 状态：${evidence.httpStatus}` : "",
         !evidence?.httpStatus && explanation.httpStatus ? `HTTP 状态：${explanation.httpStatus}` : "",
         sanitizeProviderCode(evidence?.param || "") ? `参数：${sanitizeProviderCode(evidence?.param || "")}` : "",
@@ -439,8 +440,9 @@ function formatExecutionEvidence(evidence?: GenerationFailureDiagnostics): strin
     const outcomes: Record<string, string> = { response_received: "收到响应（业务结果另判）", transport_error: "传输或读取失败", not_dispatched: "请求未发送", http_error: "HTTP 错误", cancelled: "取消", timeout: "超时", business_error: "业务错误", response_limit: "本地响应大小限制" };
     const phases: Record<string, string> = { connect: "建立连接", tls: "TLS 握手", request: "发送请求", response_wait: "等待响应", response: "读取响应" };
     const routes: Record<string, string> = { direct: "直连", proxy: "代理" };
+    const preparationOperations: Record<string, string> = { reference_create: "申请素材上传", reference_put: "上传素材文件", reference_complete: "确认素材上传" };
     evidence?.requests?.slice(0, 8).forEach((request, i) => {
-        lines.push(`请求 ${i + 1}：${sanitizeProviderCode(request.operation)}；${outcomes[request.outcome] || "未知"}；已发起=${request.dispatched === true ? "是" : "否"}；HTTP=${number(request.httpStatus)}；ID=${sanitizeDebugId(request.requestId) || "未记录"}；耗时=${number(request.durationMs)}ms`);
+        lines.push(`请求 ${i + 1}：${preparationOperations[request.operation] || sanitizeProviderCode(request.operation)}；${outcomes[request.outcome] || "未知"}；已发起=${request.dispatched === true ? "是" : "否"}；HTTP=${number(request.httpStatus)}；ID=${sanitizeDebugId(request.requestId) || "未记录"}；耗时=${number(request.durationMs)}ms`);
         lines.push(`请求 ${i + 1} 字节：请求体大小=${number(request.requestBytes)}（不代表已发送）；响应声明=${number(request.declaredResponseBytes)}；已读=${number(request.receivedBytes)}；响应上限=${number(request.responseLimitBytes)}`);
         if (phases[request.transportPhase || ""]) lines.push(`请求 ${i + 1} 连接：${routes[request.transportRoute || ""] || "未记录"}；阶段=${phases[request.transportPhase!]}`);
         if (/^\d{4}-\d{2}-\d{2}[T ][\d:.+Z-]{5,35}$/.test(request.startedAt)) lines.push(`请求 ${i + 1} 时间：${request.startedAt}`);
@@ -1138,6 +1140,7 @@ function providerPayloadMessage(payload: unknown): string {
 const REFERENCE_PREPARATION_COPY: Record<string, CategoryCopy> = {
     image_reference_upload_failed: { reason: "参考图片上传失败，本次尚未开始生成", action: "请稍后重试" },
     reference_media_upload_failed: { reason: "参考素材上传失败，本次尚未开始生成", action: "请检查对象存储配置和公开读取权限后重试" },
+    reference_preupload_failed: { reason: "参考素材上传失败，本次尚未开始生成", action: "请检查网络或稍后重试" },
 };
 
 function persistedReferencePreparation(raw: string): Classified | undefined {

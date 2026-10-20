@@ -9,6 +9,12 @@ All notable public changes to BeefTV are documented in this file.
 - Added reproducible local builds, automated quality checks, and multi-architecture container publishing.
 - Standardized public artifacts, runtime identifiers, documentation, and repository links on the BeefTV name.
 
+## v1.7.27
+
+- Music 3.0 默认生成 44.1 kHz、256 kbps 的 MP3；设置仅展示实际支持的格式，已有 FLAC 设置自动调整为 MP3。
+- 企业音乐生成期间持续保持连接，收到完整音频后再保存；连接中断或错误内容不会被当作生成成功，也不会自动重复生成。
+- 桌面更新清单和安装包使用广州 COS 下载源，安装前继续校验签名、文件大小和哈希。
+
 ## v1.7.26
 
 - 修复开启“减少动态效果”时，删除模型渠道的确认框无法显示的问题。

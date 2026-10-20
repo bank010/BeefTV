@@ -44,7 +44,7 @@ func TestEmptyRenderBindingRequiresTrustedFlagAndEmptyVideo(t *testing.T) {
 func TestBindTaskOutputReconcilesUnboundStoredMediaNodes(t *testing.T) {
 	svc := newCanvasHistoryTestService(t)
 	now := time.Now().UTC()
-	for _, id := range []string{"res-ref", "res-video"} {
+	for _, id := range []string{"res-ref", "res-video", "res-old-video"} {
 		resource := model.Resource{
 			ID: id, UserID: "owner", Status: model.ResourceStatusReady,
 			Provider: "local", ObjectKey: "users/owner/media/" + id,
@@ -56,6 +56,7 @@ func TestBindTaskOutputReconcilesUnboundStoredMediaNodes(t *testing.T) {
 	}
 	for _, rawAsset := range []string{
 		`{"id":"asset-ref","kind":"image","title":"参考图","coverUrl":"/api/resources/res-ref/file","tags":[],"status":"confirmed","source":"Canvas","data":{"dataUrl":"","storageKey":"resource:res-ref","width":1,"height":1,"bytes":1,"mimeType":"image/png"}}`,
+		`{"id":"asset-old-video","kind":"video","title":"旧视频","coverUrl":"","tags":[],"status":"confirmed","source":"生成任务","data":{"url":"/api/resources/res-old-video/file","storageKey":"resource:res-old-video","width":720,"height":1280,"bytes":200,"mimeType":"video/mp4"}}`,
 		`{"id":"asset-video","kind":"video","title":"生成视频","coverUrl":"","tags":[],"status":"confirmed","source":"生成任务","data":{"url":"/api/resources/res-video/file","storageKey":"resource:res-video","width":1280,"height":720,"bytes":100,"mimeType":"video/mp4"}}`,
 	} {
 		if _, err := svc.UpsertUserAsset("owner", json.RawMessage(rawAsset)); err != nil {
@@ -74,7 +75,7 @@ func TestBindTaskOutputReconcilesUnboundStoredMediaNodes(t *testing.T) {
 			"nodes":[
 				{"id":"ref-slot","type":"image","metadata":{"storageKey":"resource:res-ref","content":"/api/resources/res-ref/file"}},
 				{"id":"batch-root","type":"image","metadata":{"isBatchRoot":true,"primaryImageId":"ref-slot","storageKey":"resource:res-ref","content":"/api/resources/res-ref/file"}},
-				{"id":"video-node","type":"video","metadata":{"taskId":"task-seedance","status":"loading"}}
+				{"id":"video-node","type":"video","metadata":{"taskId":"task-seedance","status":"loading","content":"/api/resources/res-old-video/file","storageKey":"resource:res-old-video","assetId":"asset-old-video","videoPreview":{"content":"/api/resources/res-ref/file","storageKey":"resource:res-ref"},"previewContent":"/api/resources/res-ref/file","durationMs":9000,"hasAudio":true}}
 			],
 			"connections":[]
 		}`,
@@ -106,6 +107,15 @@ func TestBindTaskOutputReconcilesUnboundStoredMediaNodes(t *testing.T) {
 	}
 	if result.Revision != 2 {
 		t.Fatalf("expected revision 2, got %d", result.Revision)
+	}
+	meta := nodeMetadata(result.Node)
+	if nodeString(meta, "storageKey") != "resource:res-video" || nodeString(meta, "content") != "/api/resources/res-video/file" {
+		t.Fatalf("new video did not replace retained media: %+v", meta)
+	}
+	for _, key := range []string{"videoPreview", "previewContent", "durationMs", "hasAudio"} {
+		if _, exists := meta[key]; exists {
+			t.Fatalf("new video inherited old output %s: %+v", key, meta[key])
+		}
 	}
 	persisted, err := svc.UserCanvasProject("owner", "canvas-bind-reconcile")
 	if err != nil {

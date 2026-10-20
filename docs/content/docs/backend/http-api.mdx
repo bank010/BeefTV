@@ -33,6 +33,16 @@ Wails 和浏览器开发模式共用同一套 `127.0.0.1` HTTP 合同。路由�
 
 `canvas.generation.propose` 是只读操作，返回的 `source` 包含 `canvasId`、`canvasRevision`、`modelConfigRevision`；模型键与配置版本来自同一次配置读取。提案不创建生成任务。
 
+整片提案可用 `productionNodeIds` 列出全部 1–24 项图片、视频和音频草稿，`nodeIds` 仅列首批依赖已就绪的同类素材。返回的 `production.targets` 固定节点、模型、提示词、参数、参考节点与数量。界面 `POST /assistant/turns/:turnId/proposals/:proposalId/production` 接收 `{ canvasId, kind, nodeIds, targets }`，在一个业务事务中校验当前方案、保存原回合授权、创建首批既有任务及自动接续回执；只允许可信界面调用。重复确认复用原素材任务，不会重新付费。
+
+获得同一原回合授权的官方 Pi 接续轮可用 `canvas.generation.submit` 执行已确认素材；未授权、输入变化或旧意图已停止时拒绝。宿主工具等待真实任务终态、资源保存及画布绑定后再交给模型继续，不用模型反复轮询。未知结果保留原任务身份；不自动重生成失败素材。授权约束精确素材计划，并非人民币金额硬封顶，报价未知时不能承诺满足金额预算。
+
+共享操作 `model.catalog` 可传 `capabilities:["image","video","audio"]` 一次读取所需类型，与单个 `capability` 二选一。`canvas.script.prepare` 的 `script:{title,rows}` 可直接创建新分镜和配置好的媒体草稿，与已有 `nodeId/rowIds` 二选一，最多 8 行，整批一次保存。`canvas.generation.submit` 可省略 `kind`，在同一已确认计划内提交独立的混合素材批次；同批不能依赖尚未产出的素材。内置宿主也等待免费 `canvas.timeline.render` 的原任务与资源保存，查询失败返回原任务号和 pending，不重新渲染；停止仍中断等待。
+
+`model.catalog` 可用 `capability`（`text`、`image`、`video`、`audio`）只查询所需类型。桌面视频模型的 `videoPricing` 只投影已保存、通过格式校验的渠道目录报价，不包含连接地址或凭据；缺失表示价格未知。这不是实时计费保证，也不会自动执行预算上限。
+
+MiniMax speech 的 OpenAI 音频兼容目录通过 `audioOptions` 提供官方中文男女音色建议、默认音色及语速范围，仍允许用户的有效自定义音色 ID。当前路径未接入自由朗读指令，`instructionsSupported=false`；旁白 prompt 只放台词，不能用编造的音色名或指令承诺情绪效果。
+
 首次确认同时核对这两个持久版本、未保存的编辑和确认期间的变化。旧历史中没有 `source` 的提案需要重新提出。通过核对后，生成沿用已有模型解析规则，并使用确认时复制的提示词、节点、连线和全局参数。此版本合同不包含素材库独立更新、hydrate 时解析的动态角色版本或任意远端 URL 的内容字节变化。
 
 | 路由组 | 用途 |
@@ -69,6 +79,16 @@ ComfyUI 地址、凭据、工作流与字段映射独立保存在 ComfyUI 配置
 
 `POST /timeline/renders` 接收同一套时间线快照和输出选项（宽高、帧率、采样率、是否烧录字幕），创建本机 ffmpeg 成片任务。选项进入任务输入并在执行时编译进语义计划。
 
+时间线 v2 可在 `timeline.output` 保存 `width`、`height`、`fps`、`sampleRate` 与 `burnSubtitles`。编译、原生渲染和浏览器导出共同使用这些工程规格；单次请求显式提供的 `options` 优先，均未提供时才使用默认值。`canvas.timeline.update` 同时保留轨道的 `label`、`order`、`locked`，以及片段标题和字幕关联编号。
+
+`canvas.timeline.update` 替换传入的时间线内容，但省略 `output` 时沿用已保存的有效输出规格。显式 `output` 对象替换工程规格；显式 `output: null` 清除工程规格，后续未指定导出选项时使用默认值。
+
+局部重生成镜头、剪辑不变时，可用 `refreshNodeIds` 代替 `timeline`：只将已有片段的媒体引用更新为指定节点当前绑定的资源，保留其余字段，包括字幕正文和起止时间、旁白、裁剪、音量、轨道、输出规格及编辑器扩展字段。两个参数不能同时传入。节点未入轨、资源不属于当前画布、替换素材不足原裁剪长度或画布版本已变化时，整次操作拒绝，不自动缩短片段或重排字幕。助手的 `canvas_timeline_deliver` 同样接收 `refreshNodeIds`，沿用既有更新、渲染、绑定与工程导出回执。
+
+操作 `canvas.project.export` 接收 `canvasId`、`expectedRevision` 和稳定 `operationId`，将已保存的画布与当前工作区已就绪资源导出为 `infinite-canvas` v4 工程 ZIP。返回 `resourceId`、`storageKey`、`fileName`、`mimeType`、`bytes` 和 `sourceRevision`，可通过既有资源下载接口读取；同一操作重试返回原资源。导出不调用付费模型，不创建渲染任务，仍计入本地文件保存额度。单画布导出不携带源文件夹。仅保存在浏览器中的画板和未保存素材须通过画布现有完整备份入口导出；服务端遇到这些引用会明确失败，不生成残缺工程包。
+
+同一工作区成功的 `canvas.project.export` 回执保留其工程包资源引用，后台不会将它当作无主资源清理。引用校验同时发生在清理快照与最终删除事务中；失败回执、其他工作区和不匹配的资源编号不保留文件。
+
 `POST /timeline/transcriptions` 接收待转写素材编号和可选语言，创建字幕转写任务。只接受当前用户已上传完成的音视频。省略 `model` 使用本地 whisper.cpp；指定 `model` 使用已连接 BeefTV 账号的云端转写模型，必须由当前目录声明 `audio.transcriptions`。云端请求在服务端提取单声道 16 kHz WAV 后提交，最多 25 MiB；凭据不写入任务，排队期间连接改变会拒绝执行。云端识别按模型计费，结果以带时间的字幕返回。
 
 `POST /depth-captures` 接收待处理视频素材编号，创建本机深度动作捕捉任务。只接受当前用户已上传完成的视频。可选 `nodeId` 指定结果节点，此时必须提供 `projectId`；任务保存目标节点并在完成后使用既有画布任务绑定操作回填。节点必须仍引用该任务，已删除或已改用其他任务的节点不会被恢复或覆盖。
@@ -82,6 +102,12 @@ ComfyUI 地址、凭据、工作流与字段映射独立保存在 ComfyUI 配置
 这些任务在本机完成，提交时不用挑选模型。请求可以带 `clientOperationId`：同一确认重复提交会回到原来的任务；同一确认换成不同内容会被拒绝，不会再新建一条。
 
 ## 统一操作层与内置创作助手
+
+### MiniMax Music 3.0
+
+音乐生成默认保存 MP3（44.1 kHz、256 kbps）。音乐设置只提供 MP3，旧画布保存的 WAV/FLAC 等设置会归一为 MP3；语音合成模型仍保留各自的格式选项。
+
+通过 BeefAPI 生成音乐时，宿主使用 `/v1/audio/speech` 的 `stream_format: "sse"`，接收等待心跳、音频片段和完成事件，随后保存真实音频。心跳或提前断流不算成功。上游通过完成事件给出音频地址时，下载使用独立请求，不携带模型凭据。兼容旧网关返回的二进制音频；旧网关的长同步请求仍需升级网关后才能避免公网静默连接超时。
 
 ### 视频预览
 
@@ -128,13 +154,23 @@ ComfyUI 地址、凭据、工作流与字段映射独立保存在 ComfyUI 配置
 | --- | --- |
 | `GET /assistant/status` | 免身份的宿主状态查询（不含任何凭据）；未就绪时返回明确原因而不是空回复 |
 | `POST /assistant/ui-session` | 签发短期限 UI 会话凭据；需本机同源，并且能出示 owner 凭据（或显式本地引导开关） |
-| `POST /assistant/chat` | NDJSON 流式对话：先用 `session` 行返回实际 `sessionId`，再发 `text_delta` 增量与 `turn_end` 结算；断流或 `observer_error` 不表示结算。旧 JSONL 会话交接后重复请求复用其 Durable 接续会话，界面应立即保存 `sessionId` 用于恢复。可带 `references: [{kind,id}]` 追加已校验的素材/画布引用；宿主凭据与模型密钥由后端注入，页面不接触 |
+| `POST /assistant/chat` | NDJSON 流式对话：先用 `session` 行返回实际 `sessionId`，再发 `text_snapshot`（`text` 替换本轮已显示文字）、`plan`（`plan` 为最新制作计划，`null` 表示清空）与 `turn_end` 结算；断流或 `observer_error` 不表示结算。旧 JSONL 会话交接后重复请求复用其 Durable 接续会话，界面应立即保存 `sessionId` 用于恢复。可带 `references: [{kind,id}]` 追加已校验的素材/画布引用；宿主凭据与模型密钥由后端注入，页面不接触 |
 | `POST /assistant/cancel` | 取消指定画布正在进行的回合 |
 | `POST /assistant/mcp/probe` | 检测用户添加的 MCP 服务器可用的工具；请求体只有 `serverId`，命令、地址和密钥由后端从本机配置读取，页面不能自带 |
 | `GET/PUT /assistant/host/config`、`POST /assistant/host/start|stop` | 宿主生命周期：需 owner 凭据 + 本机同源；启动命令只取本机配置，绝不接受请求体传入的可执行命令 |
 
 按轮撤销不依赖浏览器流或宿主的最后一条消息：轮前文档由后端在转发前落盘，变更摘要由该轮自己的写入回执重建，
 因此浏览器断流（没有 `turn_end`）、用户取消或后端在回合中途重启之后，已经落地的助手写入仍然可以撤销。
+
+活跃回合的历史响应可带 `active.streamed`，用于页面刷新后恢复当前文字；计划来自顶层 `plan`。文字仅包含本轮助手可见文本，不带推理内容、工具参数或上游错误原文。重新附着观察流会先发送当前文字和计划快照，不重新执行模型调用。
+
+成功的媒体工具记录可带 `toolCalls[].mediaFacts`：`source{resourceId,version,startMs,endMs,nodeId?}`、`mode: frames|video|audio|check`、`durationMs`、`hasAudio`，以及客观检测的可选 `silenceIntervals[{startMs,endMs}]`、`meanDb`、`peakDb`。摘要仅从真实成功结果白名单投影；原生媒体转换失败时不记录成功读取，区间来自结果而非请求参数。摘要不含媒体字节、路径、URL 或自由文本，随既有回合记录保存并通过历史与 `turn_end` 返回。界面的“媒体检查记录”按资源和版本分开显示读取区间与静音事实；`nodeId` 仅用于匹配当前节点名称，不从当前节点推断历史媒体状态。不表示模型理解、全片检查或质量通过；“步骤进度”只是助手记录的步骤计数。旧记录没有摘要时不回填或推断，需要再次实际检查才产生新记录。
+`media.overview` 可选 `evidence:{startMs,endMs,modes,checks?}`，从同一份已关联素材字节取得明确区间的多种实际证据。区间必须在真实时长内且不超过 15 秒，`modes` 为不重复的 `frames`、`video`、`audio`，`checks:true` 同时返回原有客观检测。任何请求部分失败则整次失败，不返回部分成功。所有部分共享资源版本及合计 8 MiB 内容上限；连续运动和声音分别需要真实 video、audio，静态帧不代替。成功记录使用 `toolCalls[].mediaEvidence` 数组逐项保留上述摘要；单项工具的 `mediaFacts` 继续返回。`media.inspect` 与 `media.check` 仍要求 `expectedVersion`，工程导出仍为单独的成功回执。
+
+`media.review` 将已关联视频的指定区间交给独立多模态模型观察，参数为 `canvasId`、`nodeId` 或 `assetId`、`expectedVersion`、`startMs`、`endMs`、`question`。它复用 `media.inspect` 的归属、版本、15 秒区间与内容大小限制，发送真实 MP4 及原音轨；主模型只接收来源、片段哈希、观察、请求编号与用量，不接收该工具的视频字节。观察中的时间从片段起点计，需加上 `source.startMs` 才是原素材位置。观察可能遗漏，不表示成片验收通过，也不写入主模型已观看影音的检查记录。
+
+审片连接由本地模型配置的可选 `mediaReviewModel: "channelId::modelId"` 选择，复用已有渠道凭据解析；当前适配经验证的 `wand-vega-vl-1.0-flash`、`chat-completion` 协议。未配置或不支持时明确返回不可用。此操作不修改画布，但调用可能收费，因此描述符为 `readOnly: true, replay: "unsafe"`：官方 Durable 不自动重放中断的付费检查。一次操作只发起一次供应商请求；空回复、截断及请求失败不能作为通过依据。它没有工具权限或独立 Agent 循环。
+
 宿主对模型请求与工具步骤各自有单轮上限（`BEEFTV_AGENT_MAX_REQUESTS_PER_TURN`、
 `BEEFTV_AGENT_MAX_TOOL_STEPS_PER_TURN`），按轮独立计数、下一轮从零开始；总预算
 `BEEFTV_AGENT_TOTAL_REQUEST_BUDGET` 默认关闭，只有显式配置才启用。
@@ -178,9 +214,11 @@ Windows 的运行地址描述文件位于用户目录的 `.beeftv/runtime/`，�
 
 `GET /assistant/history` 的每个轮次包含 `undone`，从当前用户和画布的持久化撤销回执读取。页面重开后仍显示已撤销；回执不存在或不属于该用户/画布时不泄露其状态。
 
+`GET /assistant/history` 的轮次与流式 `turn_end` 还包含 `proposalsInvalidated: boolean`，只投影该轮既有的 `ContinuationInvalidated` 持久意图标记，不新增提案状态存储。宿主提供的同名字段会被丢弃；回执不存在或不属于当前用户/画布时省略。新用户消息、停止或切换会话等使旧意图失效；`/assistant/steer` 补充当前要求不会自行使其失效。页面据此将未开始的旧提案显示为“已失效”，保留已提交任务的进度和结果。发送期间暂停生成入口，消息结束后读取历史回执再开放有效提案；读取失败时保留内容并等待用户重新读取，不用时间或最新轮次猜测有效性。
+
 `GET /assistant/history` 与 `turn_end` 中的 `skills` 和 `supplementInputs[].skills` 由后端按该轮保存的技能选择补上 `skillName` 与 `version`（选定时记下的名称和版本号，技能卸载后仍可显示）；宿主自报的名称会被丢弃。没有记录名称的旧轮次不带这两个字段，界面显示“已移除的技能”，不显示技能或版本标识。
 
-`POST /assistant/turns/:turnId/proposals/:proposalId/run`（请求体 `{ canvasId }`）在界面开始一项生成建议之前确认所属轮次仍然有效，本身不创建任务、不扣费。轮次已撤销时返回 HTTP 409、`code=409`、`reason=turn_undone`；轮次不存在或不属于当前用户/画布时返回 HTTP 404、`reason=turn_not_found`；建议标识格式无效返回 400。界面收到拒绝后不提交生成。
+`POST /assistant/turns/:turnId/proposals/:proposalId/run`（请求体 `{ canvasId }`）在界面开始一项生成建议之前确认所属轮次仍然有效，本身不创建任务、不扣费。轮次已撤销时返回 HTTP 409、`code=409`、`reason=turn_undone`；既有持久意图已失效时返回 HTTP 409、`reason=continuation_intent_changed`，不依赖是否启用自动继续；轮次不存在或不属于当前用户/画布时返回 HTTP 404、`reason=turn_not_found`；建议标识格式无效返回 400。界面收到拒绝后不提交生成。
 
 历史轮次与流式 `turn_end` 均包含 `outputs: [{taskId, kind: "video", sourceRevision?}]`，用于展示本轮提交的免费本地渲染。Go 从成功的渲染操作回执恢复列表，重新校验任务用户、画布、类型及稳定操作编号，并覆盖宿主提供的同名字段。列表按回执创建时间排序，同时间以操作编号保持确定顺序；首版与后续修正版都保留。`sourceRevision` 来自提交渲染时记录的源画布版本，未知时省略。回执成功表示任务已接纳，不能代表成片已完成：页面继续使用已有的所属任务查询与认证资源播放接口。取消、回复失败或重开会话不会抹掉已经提交的渲染；读取列表不扩大助手工具权限。
 
@@ -220,9 +258,17 @@ NewAPI Channel 2 与 BeefAPI 视频的暂时下载断连会保留原任务 ID �
 
 `failureDiagnostics` 同时保留本轮执行证据：运行版本和平台、任务配置中的模型/尺寸/质量/数量、提示词长度、参考素材数量与图片大小、本地参考图限制，以及最多 8 次请求（首次及最近 7 次，省略数量另计）的发起状态、HTTP 状态、请求 ID、开始时间、耗时和字节数。任务配置不等于最终出站参数；协议可能转换或省略字段，核对实际发送值须凭请求 ID 关联请求日志。HTTP 200 仅表示收到响应；`executionResult=completed` 才表示生成处理完成。转后台回查时状态为 `pending`，同一次任务继续累积有界轨迹并保留首次请求。成功任务也保存这些证据，以便区分后续本地保存失败或画布应用失败（复制内容来源为 `client_result`）。请求轨迹覆盖统一 Provider HTTP 客户端；旧记录、未经过该客户端的插件请求或上游未提供的 ID 仍可能缺失，不能仅凭空轨迹推断未发送。
 
+持久化图片任务收到公开媒体地址后，先保存原结果，再由结果交付流程下载；下载失败不会重放图片生成请求。BeefAPI 的签名图片代理地址也走此流程。需要供应商鉴权的同源媒体接口与非持久化调用仍先读取字节，保持原有鉴权方式。结果交付会校验图片内容，不把 HTTP 200 返回的错误文档保存为图片。下载响应头等待和传输停滞属于超时，不归为用户取消。
+
+内置 BeefAPI Seedance 的素材预上传分为申请地址、上传文件（PUT）和确认上传，轨迹分别记录为 `reference_create`、`reference_put`、`reference_complete`。上传失败的 `source=reference_upload`；摘要包含素材类型、从 1 开始的序号和失败阶段，并保留实际采集到的 HTTP 状态、连接阶段、存储错误代码和请求 ID。存储错误正文只提取代码与请求 ID，不保存签名地址、签名头、素材内容或原始 XML。
+
+生成尚未提交时，文件上传连接失败、签名拒绝、限流或临时服务异常可改用网关已有的内嵌素材接口，合并后的 Base64 与 JSON 仍受原 64 MiB 上限约束，并重新校验剩余素材的类型、大小和模型限制。已经完成上传的素材链接保留，最终只提交一次生成。取消、地址安全校验拒绝、素材校验失败、上传确认失败以及无法满足大小限制时停止提交并保留错误；不会因上传失败重试付费生成。无法恢复的上传错误使用 `reference_preupload_failed`，禁止自动重试，允许用户检查网络后手动重试。
+
+上述内嵌恢复只适用于 Seedance；要求 HTTP 参考链接的模型在预上传失败时停止准备，不回退到内嵌素材，也不提交生成。
+
 生成结果正在取回时，任务详情与列表的 `delivery.outputs[]` 给出该任务每个输出的 `downloadedBytes`、`totalBytes`（未知为 -1）、`bytesPerSecond` 和 `state`（`downloading` / `retrying`），供页面显示进度。它只存在进程内存中，不写数据库，取回结束即消失，重启后不保留；没有取回中的下载时该字段省略。
 
-生成成功后仍在下载的结果，可用 `POST /tasks/:id/cancel` 停止取回：生成状态保持 `succeeded`，`stage=delivery_paused`；单次下载满 15 分钟则停止并记为 `delivery_timed_out`。尚未取回的输出使用相同的 `materializationErrorCode`。暂停跨应用重启保留，后台不会自动重启；`POST /tasks/:id/retry` 对这两种成功任务只解除暂停，由交付 worker 继续取回原结果，不重新生成或取消上游任务。应用关闭会停止当前下载，未手动暂停或超时的任务在下次启动后恢复。
+生成成功后仍在下载的结果，可用 `POST /tasks/:id/cancel` 停止取回：生成状态保持 `succeeded`，`stage=delivery_paused`；单次下载满 15 分钟则停止并记为 `delivery_timed_out`。尚未取回的输出使用相同的 `materializationErrorCode`。暂停跨应用重启保留，后台不会自动重启；`POST /tasks/:id/retry` 对这两种成功任务只解除暂停，由交付 worker 继续取回原结果，不重新生成或取消上游任务。应用关闭会停止当前下载，未手动暂停或超时的任务在下次启动后恢复。全部输出取回后清除下载阶段；任务详情和列表也依据已就绪输出将历史残留的下载阶段显示为“生成完成”，不修改旧任务记录或重新提交生成。成功绑定到画布时清除节点的旧任务阶段。
 
 远程下载保留临时文件用于续传；鉴权过期的 401/403 不删除已有字节。签名参数变化时，仅同源同路径且持有强 ETag 的文件尝试续传，并核对响应 ETag 与总大小；不匹配时重新下载。供应商不支持 Range、缺少可靠校验标识或更换文件路径时可能从头下载。此能力不代表自动刷新供应商的过期签名链接。
 

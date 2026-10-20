@@ -182,6 +182,14 @@
 .canvas-assistant-card strong {
     font-weight: 600;
 }
+.canvas-assistant-plan { display: block; overflow-wrap: anywhere; }
+.canvas-assistant-plan summary { cursor: pointer; font-weight: 500; }
+.canvas-assistant-plan p { margin: 8px 0; }
+.canvas-assistant-plan ol { padding-left: 20px; margin: 8px 0 0; list-style: decimal; }
+.canvas-assistant-plan li { margin-top: 6px; }
+.canvas-assistant-plan li > .canvas-assistant-meta { margin-left: 8px; }
+.canvas-assistant-plan li > .canvas-assistant-plan-note { display: block; margin-left: 0; }
+.canvas-assistant-plan summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 .canvas-assistant-change { display: flex; flex-direction: column; gap: 8px; padding: 12px 0 12px 14px; border-left: 2px solid var(--border); font-size: 13px; }
 .canvas-assistant-change strong { font-weight: 500; }
 .canvas-assistant-feedback { font-size: 13px; line-height: 1.7; }

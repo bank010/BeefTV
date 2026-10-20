@@ -57,6 +57,7 @@ type MediaResult struct {
 	MeanDB           *float64               `json:"meanDb,omitempty"`
 	PeakDB           *float64               `json:"peakDb,omitempty"`
 	Note             string                 `json:"note,omitempty"`
+	Evidence         []string               `json:"evidence,omitempty"`
 }
 
 type MediaSilenceDetection struct {
@@ -71,15 +72,25 @@ type MediaInterval struct {
 }
 
 type mediaArgs struct {
-	CanvasID        string `json:"canvasId"`
-	NodeID          string `json:"nodeId"`
-	AssetID         string `json:"assetId"`
-	ResourceID      string `json:"resourceId"`
-	ExpectedVersion string `json:"expectedVersion"`
-	StartMs         int64  `json:"startMs"`
-	EndMs           int64  `json:"endMs"`
-	Mode            string `json:"mode"`
+	CanvasID        string                `json:"canvasId"`
+	NodeID          string                `json:"nodeId"`
+	AssetID         string                `json:"assetId"`
+	ResourceID      string                `json:"resourceId"`
+	ExpectedVersion string                `json:"expectedVersion"`
+	StartMs         int64                 `json:"startMs"`
+	EndMs           int64                 `json:"endMs"`
+	Mode            string                `json:"mode"`
+	Evidence        *mediaEvidenceRequest `json:"evidence,omitempty"`
 }
+
+type mediaEvidenceRequest struct {
+	StartMs *int64   `json:"startMs"`
+	EndMs   *int64   `json:"endMs"`
+	Modes   []string `json:"modes"`
+	Checks  bool     `json:"checks"`
+}
+
+const mediaEvidenceSchema = `{"type":"object","description":"从同一份媒体字节一次读取明确区间的实际证据；每次最多15秒，不代表质量通过。静态帧不能替代连续视频或声音。","properties":{"startMs":{"type":"integer","minimum":0},"endMs":{"type":"integer","minimum":1},"modes":{"type":"array","minItems":1,"maxItems":3,"uniqueItems":true,"items":{"type":"string","enum":["frames","video","audio"]}},"checks":{"type":"boolean","description":"同时检测该区间的黑场、音量与静音；不能判断声音内容。"}},"required":["startMs","endMs","modes"],"additionalProperties":false}`
 
 // ValidateMediaReference shares the owned-node/asset linkage checks with chat
 // admission. Client-supplied resource IDs never grant access on their own.
@@ -98,15 +109,24 @@ func ValidateMediaReference(domain Domain, userID, canvasID, nodeID, assetID, re
 }
 
 func registerMediaOps(r *Registry) {
+	registerMediaReview(r)
 	summaries := map[string]string{
-		"media.overview": "获取已关联媒体的版本、时长与静态预览；用于选择检查区间，不能替代连续视频或声音内容审查。",
+		"media.overview": "获取已关联媒体的版本、时长与静态预览；概要不能替代连续视频或声音内容审查。已知15秒以内区间可用 evidence 一次读取真实 frames/video/audio 及客观检测。",
 		"media.inspect":  "实际读取指定区间，每次最多 15 秒：frames 看静态截图，video 看连续原生视频，audio 听原生音频；按问题选择，不把抽帧当作完整影音审查。",
 		"media.check":    "客观测量指定区间的黑屏、音量与静音停顿（固定 -35 dB、最少 120 ms，返回原素材坐标）；音量与停顿不能判断声音内容。停顿仅是候选切点，随后用 media.inspect audio 裁剪并实际听取确认，不能当作词时间戳或语义切点，不能替代实际查看和听取。",
 	}
 	for _, id := range []string{"media.overview", "media.inspect", "media.check"} {
 		operation := id
+		required := `["canvasId"]`
+		if operation != "media.overview" {
+			required = `["canvasId","expectedVersion"]`
+		}
+		properties := ""
+		if operation == "media.overview" {
+			properties = `,"evidence":` + mediaEvidenceSchema
+		}
 		r.Register(Op{AssistantCanvas: true, ID: operation, Summary: summaries[operation], ReadOnly: true, Scope: ScopeCanvas,
-			Params:  json.RawMessage(`{"type":"object","properties":{"canvasId":{"type":"string"},"nodeId":{"type":"string"},"assetId":{"type":"string"},"resourceId":{"type":"string"},"expectedVersion":{"type":"string"},"startMs":{"type":"integer","minimum":0},"endMs":{"type":"integer","minimum":0},"mode":{"type":"string","description":"frames：离散静态截图，用于构图与画面内容，不能判断连续运动或声音；video：连续原生视频片段，用于运镜、动作、转场与音画关系，保留可用音轨；audio：原生音频片段，用于说话、对白、音乐和声音内容。按检查目标选择；inspect 每次最多 15 秒。","enum":["frames","video","audio"]}},"required":["canvasId"]}`),
+			Params:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"canvasId":{"type":"string"},"nodeId":{"type":"string"},"assetId":{"type":"string"},"resourceId":{"type":"string"},"expectedVersion":{"type":"string","minLength":1,"description":"先调用 media.overview，使用返回的 version；inspect 和 check 必填，不猜版本。"},"startMs":{"type":"integer","minimum":0},"endMs":{"type":"integer","minimum":0},"mode":{"type":"string","description":"frames：离散静态截图，用于构图与画面内容，不能判断连续运动或声音；video：连续原生视频片段，用于运镜、动作、转场与音画关系，保留可用音轨；audio：原生音频片段，用于说话、对白、音乐和声音内容。按检查目标选择；inspect 每次最多 15 秒。","enum":["frames","video","audio"]}%s},"required":%s}`, properties, required)),
 			Handler: func(ctx *Context, raw json.RawMessage) (any, error) { return runMedia(ctx, operation, raw) }})
 	}
 }
@@ -230,6 +250,21 @@ func runMedia(opCtx *Context, operation string, raw json.RawMessage) (any, error
 	if err := decodeParams(raw, &args); err != nil {
 		return nil, err
 	}
+	if args.Evidence != nil {
+		if operation != "media.overview" || args.Evidence.StartMs == nil || args.Evidence.EndMs == nil || len(args.Evidence.Modes) == 0 || len(args.Evidence.Modes) > 3 {
+			return nil, InvalidArg("invalid_media_evidence", "仅 overview 支持 evidence，明确提供 startMs、endMs 和1至3种模式")
+		}
+		if *args.Evidence.StartMs < 0 || *args.Evidence.EndMs <= *args.Evidence.StartMs || *args.Evidence.EndMs-*args.Evidence.StartMs > 15000 {
+			return nil, InvalidArg("invalid_media_interval", "证据区间必须为明确的正区间，每次最多15秒")
+		}
+		seen := map[string]bool{}
+		for _, mode := range args.Evidence.Modes {
+			if (mode != "frames" && mode != "video" && mode != "audio") || seen[mode] {
+				return nil, InvalidArg("invalid_media_evidence", "证据模式只能为不重复的 frames、video、audio")
+			}
+			seen[mode] = true
+		}
+	}
 	resourceID, err := resolveMediaResource(opCtx, args)
 	if err != nil {
 		return nil, err
@@ -299,7 +334,59 @@ func runMedia(opCtx *Context, operation string, raw json.RawMessage) (any, error
 	if err != nil {
 		return nil, PreconditionFailed("media_probe_failed", "无法检查媒体，请确认 ffprobe 已安装且素材可读取", nil)
 	}
-	image := strings.HasPrefix(resource.MimeType, "image/")
+	prepared := preparedMedia{input: input, directory: dir, source: MediaSource{CanvasID: args.CanvasID, NodeID: args.NodeID, AssetID: args.AssetID, ResourceID: resourceID, Version: version}, facts: facts, image: strings.HasPrefix(resource.MimeType, "image/")}
+	if args.Evidence == nil {
+		return prepared.read(ctx, operation, args)
+	}
+	args.StartMs, args.EndMs = *args.Evidence.StartMs, *args.Evidence.EndMs
+	modes := append([]string{}, args.Evidence.Modes...)
+	if args.Evidence.Checks {
+		modes = append(modes, "check")
+	}
+	var result MediaResult
+	var total int64
+	for index, mode := range modes {
+		args.Mode = mode
+		op := "media.inspect"
+		if mode == "check" {
+			op = "media.check"
+		}
+		part, err := prepared.read(ctx, op, args)
+		if err != nil {
+			return nil, err
+		}
+		if index == 0 {
+			result = part
+		} else if mode == "check" {
+			result.BlackIntervals, result.MeanDB, result.PeakDB = part.BlackIntervals, part.MeanDB, part.PeakDB
+			result.SilenceIntervals, result.SilenceDetection, result.Note = part.SilenceIntervals, part.SilenceDetection, part.Note
+		} else {
+			result.Content = append(result.Content, part.Content...)
+		}
+		for _, content := range part.Content {
+			// File parts are generated and base64 encoded locally; account for
+			// the entire bundle, not each mode's independent allowance.
+			total += int64(base64.StdEncoding.DecodedLen(len(content.Data)))
+		}
+		if total > maxMediaPartBytes {
+			return nil, PreconditionFailed("media_part_too_large", "媒体证据总量过大，请缩小检查区间或减少模式", nil)
+		}
+	}
+	result.Evidence = modes
+	return result, nil
+}
+
+// Every mode reads the same owned snapshot prepared by runMedia. No mode
+// resolves mutable node references, reopens source bytes, hashes or probes.
+type preparedMedia struct {
+	input, directory string
+	source           MediaSource
+	facts            editing.SourceFacts
+	image            bool
+}
+
+func (p preparedMedia) read(ctx context.Context, operation string, args mediaArgs) (MediaResult, error) {
+	facts, image, input, dir := p.facts, p.image, p.input, p.directory
 	if operation == "media.overview" {
 		args.StartMs = 0
 		args.EndMs = facts.DurationMs
@@ -308,21 +395,23 @@ func runMedia(opCtx *Context, operation string, raw json.RawMessage) (any, error
 		args.EndMs = facts.DurationMs
 	}
 	if !image && (args.StartMs < 0 || args.EndMs <= args.StartMs || args.EndMs > facts.DurationMs) {
-		return nil, InvalidArg("invalid_media_interval", "片段区间必须位于素材时长内")
+		return MediaResult{}, InvalidArg("invalid_media_interval", "片段区间必须位于素材时长内")
 	}
 	if image && (args.StartMs != 0 || args.EndMs != 0 || args.Mode == "video" || args.Mode == "audio" || operation == "media.check") {
-		return nil, InvalidArg("invalid_media_interval", "图片仅支持 overview 或零区间的 frames 检查")
+		return MediaResult{}, InvalidArg("invalid_media_interval", "图片仅支持 overview 或零区间的 frames 检查")
 	}
 	if operation == "media.inspect" && args.EndMs-args.StartMs > 15000 {
-		return nil, InvalidArg("media_interval_too_long", "每次查看或听取最多 15 秒")
+		return MediaResult{}, InvalidArg("media_interval_too_long", "每次查看或听取最多 15 秒")
 	}
 	if operation == "media.check" && args.EndMs-args.StartMs > 300000 {
-		return nil, InvalidArg("media_interval_too_long", "每次客观检测最多 5 分钟")
+		return MediaResult{}, InvalidArg("media_interval_too_long", "每次客观检测最多 5 分钟")
 	}
-	result := MediaResult{Source: MediaSource{CanvasID: args.CanvasID, NodeID: args.NodeID, AssetID: args.AssetID, ResourceID: resourceID, Version: version, StartMs: args.StartMs, EndMs: args.EndMs}, DurationMs: facts.DurationMs, HasVideo: facts.HasVideo, HasAudio: facts.HasAudio, Content: []MediaPart{}}
+	source := p.source
+	source.StartMs, source.EndMs = args.StartMs, args.EndMs
+	result := MediaResult{Source: source, DurationMs: facts.DurationMs, HasVideo: facts.HasVideo, HasAudio: facts.HasAudio, Content: []MediaPart{}}
 	bin, err := editing.ResolveFFmpegBinary()
 	if err != nil {
-		return nil, PreconditionFailed("media_ffmpeg_unavailable", "媒体检查需要 ffmpeg", nil)
+		return MediaResult{}, PreconditionFailed("media_ffmpeg_unavailable", "媒体检查需要 ffmpeg", nil)
 	}
 	if operation == "media.check" {
 		command := []string{"-nostdin", "-hide_banner", "-ss", mediaSeconds(args.StartMs), "-i", input, "-t", mediaSeconds(args.EndMs - args.StartMs)}
@@ -334,7 +423,7 @@ func runMedia(opCtx *Context, operation string, raw json.RawMessage) (any, error
 		}
 		output, err := mediaCommand(ctx, bin, append(command, "-f", "null", "-")...)
 		if err != nil {
-			return nil, err
+			return MediaResult{}, err
 		}
 		result.BlackIntervals, result.MeanDB, result.PeakDB = parseMediaChecks(string(output), args.StartMs)
 		if facts.HasAudio {
@@ -353,7 +442,7 @@ func runMedia(opCtx *Context, operation string, raw json.RawMessage) (any, error
 	}
 	if mode == "frames" {
 		if !facts.HasVideo {
-			return nil, InvalidArg("media_no_video", "这个素材没有画面")
+			return MediaResult{}, InvalidArg("media_no_video", "这个素材没有画面")
 		}
 		count := 4
 		if operation == "media.overview" {
@@ -371,11 +460,11 @@ func runMedia(opCtx *Context, operation string, raw json.RawMessage) (any, error
 			}
 			command = append(command, "-frames:v", "1", "-vf", "scale=640:640:force_original_aspect_ratio=decrease", "-y", output)
 			if _, err := mediaCommand(ctx, bin, command...); err != nil {
-				return nil, err
+				return MediaResult{}, err
 			}
 			part, err := mediaFilePart(output, "image", "image/jpeg", result.Source)
 			if err != nil {
-				return nil, err
+				return MediaResult{}, err
 			}
 			part.Source.StartMs = at
 			part.Source.EndMs = at
@@ -386,19 +475,19 @@ func runMedia(opCtx *Context, operation string, raw json.RawMessage) (any, error
 				total += base64.StdEncoding.DecodedLen(len(item.Data))
 			}
 			if int64(total) > maxMediaPartBytes {
-				return nil, PreconditionFailed("media_part_too_large", "媒体预览过大，请缩小检查区间", nil)
+				return MediaResult{}, PreconditionFailed("media_part_too_large", "媒体预览过大，请缩小检查区间", nil)
 			}
 		}
 		return result, nil
 	}
 	if mode != "video" && mode != "audio" {
-		return nil, InvalidArg("invalid_media_mode", "mode 必须是 frames、video 或 audio")
+		return MediaResult{}, InvalidArg("invalid_media_mode", "mode 必须是 frames、video 或 audio")
 	}
 	if mode == "audio" && !facts.HasAudio {
-		return nil, InvalidArg("media_no_audio", "这个素材没有音轨")
+		return MediaResult{}, InvalidArg("media_no_audio", "这个素材没有音轨")
 	}
 	if mode == "video" && !facts.HasVideo {
-		return nil, InvalidArg("media_no_video", "这个素材没有画面")
+		return MediaResult{}, InvalidArg("media_no_video", "这个素材没有画面")
 	}
 	mime, output := "video/mp4", filepath.Join(dir, "clip.mp4")
 	command := []string{"-nostdin", "-v", "error", "-i", input, "-ss", mediaSeconds(args.StartMs), "-t", mediaSeconds(args.EndMs - args.StartMs)}
@@ -409,11 +498,11 @@ func runMedia(opCtx *Context, operation string, raw json.RawMessage) (any, error
 		command = append(command, "-vf", "scale=640:-2", "-c:v", "libx264", "-preset", "fast", "-crf", "27", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart")
 	}
 	if _, err := mediaCommand(ctx, bin, append(command, "-fs", strconv.FormatInt(maxMediaPartBytes+1, 10), "-y", output)...); err != nil {
-		return nil, err
+		return MediaResult{}, err
 	}
 	part, err := mediaFilePart(output, "media", mime, result.Source)
 	if err != nil {
-		return nil, err
+		return MediaResult{}, err
 	}
 	result.Content = append(result.Content, part)
 	return result, nil

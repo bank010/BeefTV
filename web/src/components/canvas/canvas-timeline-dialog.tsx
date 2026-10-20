@@ -6,7 +6,7 @@ import { Tooltip } from "@/components/ui/base/tooltip";
 // 数据源是项目级 TimelineProject：视频/音频节点自动入轨，字幕条目转字幕片段。
 // 交互：拖拽移动片段（吸附播放头/片段边缘）、左右边缘裁剪、删除、播放头跳转。
 
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from "react";
 
 import { Captions, Clapperboard, FolderOpen, Library, Lock, LockOpen, Maximize2, MoreHorizontal, Music2, Plus, Scissors, Trash2, Upload, Video, Wand2, ZoomIn, ZoomOut } from "lucide-react";
 import { saveOwnedOrBrowserVideoBlob } from "@/services/desktop-media-save";
@@ -354,7 +354,7 @@ export function CanvasTimelineDialog({
     const addNodeToTimeline = (targetNode: CanvasNodeData) => {
         const kind = targetNode.type === "video" ? "video" : targetNode.type === "audio" ? "audio" : null;
         if (!kind) return;
-        const trackId = kind === "video" ? DEFAULT_VIDEO_TRACK_ID : DEFAULT_AUDIO_TRACK_ID;
+        const trackId = draft.tracks.find((track) => track.kind === kind)?.id ?? (kind === "video" ? DEFAULT_VIDEO_TRACK_ID : DEFAULT_AUDIO_TRACK_ID);
         const targetTrack = draft.tracks.find((track) => track.id === trackId);
         if (!targetTrack || targetTrack.locked) {
             message.warning(kind === "video" ? "视频轨已锁定或不存在" : "音频轨已锁定或不存在");
@@ -402,7 +402,7 @@ export function CanvasTimelineDialog({
             message.info("图片/文本素材暂不支持直接入轨，请先在画布中添加节点");
             return;
         }
-        const trackId = kind === "video" ? DEFAULT_VIDEO_TRACK_ID : DEFAULT_AUDIO_TRACK_ID;
+        const trackId = draft.tracks.find((track) => track.kind === kind)?.id ?? (kind === "video" ? DEFAULT_VIDEO_TRACK_ID : DEFAULT_AUDIO_TRACK_ID);
         const targetTrack = draft.tracks.find((track) => track.id === trackId);
         if (!targetTrack || targetTrack.locked) {
             message.warning(kind === "video" ? "视频轨已锁定或不存在" : "音频轨已锁定或不存在");
@@ -689,6 +689,16 @@ export function CanvasTimelineDialog({
     return (
         <AppModal
             className="canvas-timeline-dialog"
+            style={{
+                "--editor-bg": theme.node.panel,
+                "--editor-panel": theme.node.fill,
+                "--editor-line": theme.toolbar.border,
+                "--editor-text": theme.node.text,
+                "--editor-muted": theme.node.muted,
+                "--editor-button-bg": theme.node.fill,
+                "--editor-button-line": theme.toolbar.border,
+                "--editor-clip-text": canvasThemes.dark.node.text,
+            } as CSSProperties}
             title={title}
             open={open}
             centered
@@ -825,7 +835,7 @@ export function CanvasTimelineDialog({
                     </Button>
                 </div>
 
-                <CanvasTimelinePreview clips={draft.clips} nodes={nodes} playheadMs={playheadMs} playing={previewPlaying} theme={theme} onTogglePlay={() => setPreviewPlaying((value) => !value)} onPlayheadChange={setPlayheadMs} />
+                <CanvasTimelinePreview clips={draft.clips} tracks={draft.tracks} output={draft.output} nodes={nodes} playheadMs={playheadMs} playing={previewPlaying} theme={theme} onTogglePlay={() => setPreviewPlaying((value) => !value)} onRequestPause={() => setPreviewPlaying(false)} onPlayheadChange={setPlayheadMs} />
 
                 <div className="timeline-editor-tracks flex min-h-0 flex-1">
                     <div className="flex w-44 shrink-0 flex-col border-r" style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}>
@@ -886,8 +896,8 @@ export function CanvasTimelineDialog({
                             <span className="font-semibold" style={{ color: theme.accent.primary }}>
                                 字幕编辑
                             </span>
-                            <span className="opacity-45">修改后保存将同步写回对应视频节点的字幕数据</span>
-                            {onOpenSubtitleDialog ? (
+                            <span className="opacity-45">保存后更新工程字幕</span>
+                            {onOpenSubtitleDialog && selectedSubtitleClip.nodeId ? (
                                 <Button size="small" className="ml-auto" icon={<Captions className="size-3.5" />} onClick={() => onOpenSubtitleDialog(selectedSubtitleClip.nodeId)}>
                                     精细编辑（SRT/高亮/样式）
                                 </Button>

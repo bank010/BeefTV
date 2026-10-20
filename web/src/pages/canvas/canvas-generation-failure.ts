@@ -1,8 +1,9 @@
 import { explainGenerationError, generationFailureMetadata, generationPromptFingerprint, shouldBlockManualRetry, unchangedModeratedPrompt } from "@/lib/generation-error";
-import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 import type { GenerationTask } from "@/services/api/task-center";
 import { CanvasGenerationTargetSaveError } from "@/services/canvas-generation-errors";
 import { generationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
+import { attachNodeEffectKey } from "@/services/generation-task-materializer";
 
 type GenerationReference = { id?: string; storageKey?: string; url?: string; dataUrl?: string };
 export type CanvasGenerationFailureInput = {
@@ -118,7 +119,12 @@ export function canvasGenerationTaskNodes(nodes: CanvasNodeData[], targetNodeId:
         const outputIndex = node.metadata?.taskOutputIndex ?? 0;
         const output = task.outputs?.find((item) => item.outputIndex === outputIndex);
         const paused = task.status === "succeeded" && !output?.materializedAssetId && [task.stage, output?.materializationErrorCode].some((code) => code === "delivery_paused" || code === "delivery_timed_out");
-        const hasCompletedContent = task.status === "succeeded" && !paused && (!output || Boolean(output.materializedAssetId)) && Boolean(node.metadata?.content || node.metadata?.storageKey);
+        // Videos keep their previous media while the next task runs. A task's
+        // success alone cannot identify that retained media as its new output.
+        const hasCurrentVideoOutput = node.type !== CanvasNodeType.Video
+            || node.metadata?.generationEffectKeys?.includes(attachNodeEffectKey(task.id, node.id, outputIndex))
+            || Boolean(output?.materializedAssetId && output.materializedAssetId === node.metadata?.assetId);
+        const hasCompletedContent = task.status === "succeeded" && !paused && hasCurrentVideoOutput && (!output || Boolean(output.materializedAssetId)) && Boolean(node.metadata?.content || node.metadata?.storageKey);
         const retainRecovery = task.status === "succeeded" && !hasCompletedContent && Boolean(node.metadata?.resourceReloadAvailable || isKeptGenerationResultCode(node.metadata?.generationErrorCode));
         const targetUnavailable = node.metadata?.generationErrorCode === "result_target_unavailable";
         const failure = paused ? { resourceReloadAvailable: true, generationErrorCode: "download_failed", errorDetails: task.stage === "delivery_timed_out" ? "取回结果已超时，可以继续取回" : "已停止取回，可以继续取回" } : failed ? canvasTaskFailureMetadata(task, node.metadata) : undefined;

@@ -18,6 +18,31 @@ export function assistantOutputResource(task: GenerationTask | undefined): strin
 }
 
 export function CanvasAssistantOutputs({ outputs }: { outputs: AssistantTurnOutput[] }) {
+    const videos = outputs.filter((output): output is Extract<AssistantTurnOutput, {kind:"video"}> => output.kind === "video");
+    const projects = outputs.filter((output): output is Extract<AssistantTurnOutput, {kind:"project"}> => output.kind === "project");
+    return <><CanvasAssistantVideoOutputs outputs={videos} />{projects.map(output => <AssistantProjectDownload key={output.resourceId} output={output} />)}</>;
+}
+
+function AssistantProjectDownload({output}: {output: Extract<AssistantTurnOutput,{kind:"project"}>}) {
+    const [feedback,setFeedback] = useState("");
+    const [loading,setLoading] = useState(false);
+    async function download() {
+        const scope = captureUserScope(); let url = "";
+        setLoading(true);setFeedback("");
+        try {
+            if (!isWailsNativeShell()) {
+                const blob = await getResourceBlob(resourceStorageKey(output.resourceId)); assertUserScope(scope);
+                if (!blob) throw Error("missing project"); url=URL.createObjectURL(blob);
+            }
+            const result = await downloadOwnedOrBrowserMedia({fileName:output.fileName,resourceId:output.resourceId,browserUrl:url || undefined});
+            assertUserScope(scope);if(result === "saved")setFeedback("工程已保存，可在 BeefTV 导入后继续编辑");
+        } catch { if(userScopeMatches(scope))setFeedback("工程下载未完成，请重试"); }
+        finally { setLoading(false);if(url)setTimeout(()=>URL.revokeObjectURL(url),1000); }
+    }
+    return <div className="canvas-assistant-card"><strong>可编辑工程</strong><span>{output.fileName}</span><div className="canvas-assistant-card-actions"><Button size="small" loading={loading} onClick={()=>void download()}>下载工程</Button></div>{feedback?<span role="status">{feedback}</span>:null}</div>;
+}
+
+function CanvasAssistantVideoOutputs({ outputs }: { outputs: Extract<AssistantTurnOutput,{kind:"video"}>[] }) {
     const account = useSyncExternalStore(subscribeUserScope, () => JSON.stringify([getActiveUserScope(), getActiveUserScopeEpoch()]), () => "");
     const expected = useMemo(() => captureUserScope(), [account]);
     const signature = JSON.stringify(outputs.map(output => [output.taskId, output.kind, output.sourceRevision]));

@@ -15,12 +15,14 @@ func assistantOutputsLine(line []byte, svc *app.Service, userID, canvasID, turnI
 		return line
 	}
 	outputs := []app.AssistantOutput{}
+	delete(event, "proposalsInvalidated")
 	var pins []skills.Pin
 	if event["turnId"] == turnID {
 		if verified, err := svc.AssistantTurnOutputs(userID, canvasID, turnID); err == nil {
 			outputs = verified
 		}
 		if state, err := svc.ReadAssistantTurnHistoryState(userID, canvasID, turnID); err == nil && state != nil {
+			event["proposalsInvalidated"] = state.ContinuationInvalidated
 			pins = state.SkillPins
 		}
 	}

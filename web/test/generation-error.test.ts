@@ -470,6 +470,20 @@ describe("generation error classification", () => {
         expect(text).not.toContain("上游代码");
     });
 
+    test("reference upload diagnostics identify storage and the failing asset", () => {
+        const failure = explainGenerationError("参考素材上传失败，本次尚未开始生成。请检查网络或稍后重试。");
+        expect(failure.blockAutomaticRetry).toBe(true);
+        expect(failure.blockManualRetry).toBe(false);
+        const text = formatGenerationDiagnostics(failure, { failureDiagnostics: {
+            source: "reference_upload", summary: "参考图 2 上传文件失败：HTTP 403 SignatureDoesNotMatch", providerCode: "SignatureDoesNotMatch", httpStatus: 403,
+            requests: [{ operation: "reference_put", method: "PUT", dispatched: true, outcome: "http_error", httpStatus: 403, startedAt: "2026-10-19T03:00:00Z", durationMs: 123, summary: "参考图 2 上传文件失败" }],
+        } });
+        expect(text).toContain("错误来源：参考素材上传");
+        expect(text).toContain("存储返回代码：SignatureDoesNotMatch");
+        expect(text).toContain("请求 1：上传素材文件");
+        expect(text).toContain("参考图 2");
+    });
+
     test("content moderation helper recognizes new categories", () => {
         expect(isContentModerationError("提示词未通过内容安全审核")).toBe(true);
         expect(isContentModerationError("上游 HTTP 400")).toBe(false);

@@ -12,6 +12,9 @@ RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lock
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY README.md /app/README.md
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /app/
+COPY licenses /app/licenses
+COPY scripts/distribution-notices.mjs /app/scripts/distribution-notices.mjs
 COPY assets /app/assets
 COPY backend/internal/providerpreset/image_contracts.json /app/backend/internal/providerpreset/image_contracts.json
 COPY backend/internal/providerpreset/video_contracts.json /app/backend/internal/providerpreset/video_contracts.json

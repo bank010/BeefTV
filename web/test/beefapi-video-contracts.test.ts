@@ -5,6 +5,27 @@ import { defaultModelCapabilityConfig, modelCapabilityConfigFor } from "../src/l
 import { createVideoGenerationsTask } from "../src/services/api/video-provider-newapi";
 import { createVideoTransport } from "../src/services/api/video-transport";
 import { videoResponseTools } from "../src/services/api/video-response";
+import { buildGenerationConfig } from "../src/lib/canvas/canvas-generation-config";
+import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
+import { backendProviderConfig } from "../src/services/api/generation-task";
+
+test("Kling capability repair preserves profile defaults and explicit canvas audio choices through task config", () => {
+    const model = "kling-video-v3";
+    for (const audioDefault of [false, true]) {
+        const capabilityConfig = defaultModelCapabilityConfig("newapi", model);
+        capabilityConfig.video!.generateAudio = { supported: false, default: audioDefault };
+        const channel = createModelChannel({ id: "beefapi", baseUrl: "https://beeftv.app", models: [model], modelProfiles: [{ model, capability: "video", protocol: "newapi", capabilityConfig }] });
+        const snapshot = normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [channel], videoModel: `beefapi::${model}`, videoGenerateAudio: String(!audioDefault) } }).config;
+        expect(modelCapabilityConfigFor(snapshot, `beefapi::${model}`).video!.generateAudio).toEqual({ supported: true, default: audioDefault });
+        for (const selected of [undefined, "false", "true"] as const) {
+            const node: CanvasNodeData = { id: "video", type: CanvasNodeType.Video, title: "fixture", position: { x: 0, y: 0 }, width: 320, height: 180, metadata: { model: `beefapi::${model}`, generateAudio: selected } };
+            const config = resolveModelRequestConfig(buildGenerationConfig(snapshot, node, "video"), `beefapi::${model}`);
+            const expected = selected === undefined ? audioDefault : selected === "true";
+            expect(config.videoGenerateAudio).toBe(String(expected));
+            expect(backendProviderConfig(config, "video")).toMatchObject({ videoGenerateAudio: String(expected), videoSeconds: "5", model });
+        }
+    }
+});
 
 test("Seedance repaired catalog exposes audio control and sends explicit false", async () => {
     const model = "seedance-2.0-fast";
@@ -109,7 +130,7 @@ test("partial reference contracts preserve the limits of unspecified media kinds
     } finally { contract.maxReferences = original; }
 });
 
-test("direct video transport sends Wan inline media and rejects unsupported references before sending", async () => {
+test("direct Wan transport requires HTTP references and rejects inline media before sending", async () => {
     const model = "wan3.0-video";
     const channel = createModelChannel({id: "beefapi", baseUrl: "https://enterprise.beefapi.com", models: [model]});
     const snapshot = normalizeConfigSnapshot({config: {...defaultConfig, channels: [channel]}}).config;
@@ -117,9 +138,12 @@ test("direct video transport sends Wan inline media and rejects unsupported refe
     const calls: unknown[] = [];
     const deps = {response: videoResponseTools, transport: {...createVideoTransport(config), post: async <T>(url: string, body: unknown) => { calls.push({url, body}); return {id: "test-wan", status: "queued"} as T; }}};
     const image = {id: "image-1", name: "test.png", type: "image/png", dataUrl: "data:image/png;base64,dGVzdA=="};
-    const task = await createVideoGenerationsTask(deps, config, model, "test", [image], [], []);
+    expect(beefAPIVideoContract(model)).toMatchObject({inlineMedia: false, requiresHTTPReferences: true});
+    await expect(createVideoGenerationsTask(deps, config, model, "test", [image], [], [])).rejects.toThrow("公网 URL");
+    expect(calls).toHaveLength(0);
+    const task = await createVideoGenerationsTask(deps, config, model, "test", [{...image, url: "https://media.example/uploaded.png"}], [], []);
     expect(task.id).toBe("test-wan");
-    expect(calls[0]).toMatchObject({body: {image_urls: [image.dataUrl]}});
+    expect(calls[0]).toMatchObject({body: {image_urls: ["https://media.example/uploaded.png"]}});
     await expect(createVideoGenerationsTask(deps, config, model, "test", [image, image], [], [])).rejects.toThrow("最多支持 1");
     expect(calls).toHaveLength(1);
     await expect(createVideoGenerationsTask(deps, {...config, baseUrl: "https://other.example"}, model, "test", [image], [], [])).rejects.toThrow("公网 URL");

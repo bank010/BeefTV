@@ -13,7 +13,7 @@ import threading
 import unittest
 import io
 from contextlib import redirect_stderr
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import urllib.request
 from urllib.parse import urlsplit
 
@@ -276,8 +276,173 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.store.objects[release.LATEST], manifest.read_bytes())
         self.assertIn(("/" + key, "BeefTV-Desktop-Updater/v1.5.7"), self.public_requests)
 
+    def recovery_documents(self, manifest):
+        lock = json.dumps({"schema": 1, "nonce": "a" * 32, "target": release.LATEST,
+                           "owner": {"GITHUB_REPOSITORY": "glanderness/BeefTV", "GITHUB_RUN_ID": "42",
+                                     "GITHUB_RUN_ATTEMPT": "2", "GITHUB_JOB": "publish"}}).encode()
+        claim = json.dumps({"schema": 1, "target": release.LATEST, "expectedETag": None,
+                            "nextSize": manifest.stat().st_size,
+                            "nextSHA256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                            "publisher": json.loads(lock)}).encode()
+        self.store.provider = "cos"
+
+        def resumed(target, source, *documents):
+            self.store.objects[target] = Path(source).read_bytes()
+
+        self.store.resume = Mock(side_effect=resumed)
+        self.recovery_confirmations = dict(confirm_no_inflight=True, confirm_writers_frozen=True, confirm_no_unlock_attempt=True)
+        return lock, claim
+
+    def test_resume_requires_explicit_inflight_confirmation_before_any_check_or_write(self):
+        manifest = self.manifest()
+        lock, claim = self.recovery_documents(manifest)
+        cases = [("r2", self.recovery_confirmations)]
+        cases += [("cos", dict(self.recovery_confirmations, **{flag: False})) for flag in self.recovery_confirmations]
+        for provider, confirmations in cases:
+            self.store.provider = provider
+            with self.subTest(provider=provider), self.assertRaisesRegex(release.PublishError, "explicit confirmation"):
+                self.publisher.resume(manifest, lock, claim, **confirmations)
+        self.verify_command.assert_not_called()
+        self.store.resume.assert_not_called()
+        self.assertEqual(self.public_requests, [])
+
+    def test_resume_keeps_signature_terminal_release_and_public_checks_before_mutation(self):
+        manifest = self.manifest()
+        self.publisher.stage(manifest, self.root)
+        lock, claim = self.recovery_documents(manifest)
+        key = "beeftv/v1.5.7/BeefTV-v1.5.7-windows-amd64.zip"
+        original = self.store.objects[key]
+        with patch.object(release, "require_terminal_publisher") as terminal:
+            self.verify_command.return_value = subprocess.CompletedProcess([], 1, "", "private diagnostic")
+            with self.assertRaisesRegex(release.PublishError, "signature"):
+                self.publisher.resume(manifest, lock, claim, **self.recovery_confirmations)
+            terminal.assert_not_called()
+            self.verify_command.return_value = subprocess.CompletedProcess([], 0, "", "")
+            terminal.side_effect = release.PublishError("not terminal")
+            with self.assertRaisesRegex(release.PublishError, "not terminal"):
+                self.publisher.resume(manifest, lock, claim, **self.recovery_confirmations)
+            terminal.side_effect = None
+            self.publisher.release_check = Mock(side_effect=release.PublishError("release mismatch"))
+            with self.assertRaisesRegex(release.PublishError, "release mismatch"):
+                self.publisher.resume(manifest, lock, claim, **self.recovery_confirmations)
+            self.publisher.release_check = Mock()
+            self.store.objects[key] = b"x" * len(original)
+            with self.assertRaisesRegex(release.PublishError, "hash"):
+                self.publisher.resume(manifest, lock, claim, **self.recovery_confirmations)
+        self.store.resume.assert_not_called()
+        self.assertNotIn(release.LATEST, self.store.objects)
+
+    def test_resume_passes_exact_original_documents_and_checks_public_latest(self):
+        manifest = self.manifest()
+        self.publisher.stage(manifest, self.root)
+        lock, claim = self.recovery_documents(manifest)
+        metadata = {"id": 42, "run_attempt": 2, "status": "completed", "repository": {"full_name": "glanderness/BeefTV"}}
+
+        def response(command):
+            return subprocess.CompletedProcess(command, 0, json.dumps(metadata) if command[0] == "gh" else "", "")
+
+        self.verify_command.side_effect = response
+        self.publisher.release_check = Mock()
+        self.public_requests.clear()
+        self.assertEqual(self.publisher.resume(manifest, lock, claim, **self.recovery_confirmations), "v1.5.7")
+        self.store.resume.assert_called_once_with(release.LATEST, manifest, lock, claim)
+        self.assertIn(["gh", "api", "repos/glanderness/BeefTV/actions/runs/42/attempts/2"],
+                      [call.args[0] for call in self.verify_command.call_args_list])
+        self.publisher.release_check.assert_called_once()
+        self.assertEqual(self.public_requests[-1], ("/beeftv/desktop-update.json", "BeefTV-Desktop-Updater/v1.5.7"))
+
+
+class TerminalPublisherTests(unittest.TestCase):
+    def lock(self, owner=None):
+        owner = owner if owner is not None else {"GITHUB_REPOSITORY": "glanderness/BeefTV", "GITHUB_RUN_ID": "42",
+                                                "GITHUB_RUN_ATTEMPT": "2", "GITHUB_JOB": "publish"}
+        return json.dumps({"owner": owner}).encode()
+
+    def test_missing_or_unofficial_identity_never_calls_github(self):
+        for owner in [{}, {"GITHUB_REPOSITORY": "another/repo", "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_JOB": "publish"},
+                      {"GITHUB_REPOSITORY": "glanderness/BeefTV", "GITHUB_RUN_ID": "42/attempts/1", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_JOB": "publish"}]:
+            with self.subTest(owner=owner), patch.object(release, "run") as runner, self.assertRaises(release.PublishError):
+                release.require_terminal_publisher(self.lock(owner))
+            runner.assert_not_called()
+
+    def test_only_the_exact_completed_run_attempt_is_accepted(self):
+        metadata = {"id": 42, "run_attempt": 2, "status": "completed", "repository": {"full_name": "glanderness/BeefTV"}}
+        invalid = [dict(metadata, status="in_progress"), dict(metadata, id=43), dict(metadata, run_attempt=1),
+                   dict(metadata, repository={"full_name": "another/repo"}), [], None]
+        for value in invalid:
+            with self.subTest(metadata=value), patch.object(release, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(value), "")):
+                with self.assertRaises(release.PublishError):
+                    release.require_terminal_publisher(self.lock())
+        with patch.object(release, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(metadata), "")) as runner:
+            release.require_terminal_publisher(self.lock())
+            runner.assert_called_once_with(["gh", "api", "repos/glanderness/BeefTV/actions/runs/42/attempts/2"])
+        for status, output in [(1, ""), (0, "not json")]:
+            with patch.object(release, "run", return_value=subprocess.CompletedProcess([], status, output, "private diagnostic")):
+                with self.assertRaises(release.PublishError):
+                    release.require_terminal_publisher(self.lock())
+
 
 class S3AdapterTests(unittest.TestCase):
+    def test_cli_resume_snapshots_manifest_and_preserves_original_recovery_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, lock, claim = (root / name for name in ("manifest", "lock", "claim"))
+            manifest.write_bytes(b"original signed envelope")
+            lock.write_bytes(b'{ "original": "lock" }\n')
+            claim.write_bytes(b'{ "original": "claim" }\n')
+            args = ["publish", "resume", "--manifest", str(manifest), "--verifier", "/tmp/update-release",
+                    "--endpoint-url", "https://cos.ap-guangzhou.myqcloud.com", "--lock-document", str(lock),
+                    "--claim-document", str(claim), "--confirm-no-inflight-put", "--confirm-writers-frozen", "--confirm-no-unlock-attempt"]
+            with patch.object(release.sys, "argv", args), patch.object(release, "storage_config") as factory, patch.object(release, "Publisher") as publisher, patch("builtins.print"):
+                def resume(snapshot, lock_bytes, claim_bytes, **confirmations):
+                    self.assertNotEqual(snapshot, manifest)
+                    self.assertEqual(snapshot.read_bytes(), manifest.read_bytes())
+                    self.assertEqual(lock_bytes, lock.read_bytes())
+                    self.assertEqual(claim_bytes, claim.read_bytes())
+                    self.assertEqual(confirmations, dict(confirm_no_inflight=True, confirm_writers_frozen=True,
+                                                         confirm_no_unlock_attempt=True, installer_dir=None))
+                    return "v1.5.7"
+                publisher.return_value.resume.side_effect = resume
+                self.assertEqual(release.main(), 0)
+                factory.return_value.check_conditions.assert_called_once()
+                publisher.return_value.resume.assert_called_once()
+
+    def test_cli_resume_requires_original_documents_and_confirmation_before_cloud_probe(self):
+        base = ["publish", "resume", "--manifest", "/tmp/not-read", "--verifier", "/tmp/not-called",
+                "--endpoint-url", "https://cos.ap-guangzhou.myqcloud.com"]
+        documents = ["--lock-document", "/tmp/lock", "--claim-document", "/tmp/claim"]
+        confirmations = ["--confirm-no-inflight-put", "--confirm-writers-frozen", "--confirm-no-unlock-attempt"]
+        invalid = [[], documents, documents[:2] + confirmations, ["--provider", "r2"] + documents + confirmations]
+        invalid += [documents + [flag for flag in confirmations if flag != missing] for missing in confirmations]
+        for flags in invalid:
+            with self.subTest(flags=flags), patch.object(release.sys, "argv", base + flags), patch.object(release, "storage_config") as factory, redirect_stderr(io.StringIO()):
+                self.assertEqual(release.main(), 1)
+                factory.return_value.check_conditions.assert_not_called()
+
+    def test_cos_credentials_are_restricted_to_matching_regional_service_and_public_bucket(self):
+        bucket, region = "beeftv-components-1481187348", "ap-guangzhou"
+        endpoint = f"https://cos.{region}.myqcloud.com"
+        public = f"https://{bucket}.cos.{region}.myqcloud.com/beeftv"
+        for changes in [{"endpoint": "https://cos.ap-guangzhou.myqcloud.com.evil.example"},
+                        {"endpoint": endpoint + "/path"}, {"region": "auto"},
+                        {"bucket": "without-appid"}, {"public_base": "https://evil.example/beeftv"}]:
+            with self.subTest(changes=changes), self.assertRaises(release.PublishError), patch.object(release, "run") as runner:
+                values = dict(provider="cos", endpoint=endpoint, region=region, bucket=bucket, public_base=public)
+                values.update(changes)
+                release.storage_config(**values)
+                runner.assert_not_called()
+        store = release.storage_config("cos", endpoint, region, bucket, public)
+        self.assertEqual(store.http.host, f"{bucket}.cos.{region}.myqcloud.com")
+        self.assertEqual(store.http.region, region)
+
+    def test_legacy_r2_configuration_still_requires_account_endpoint_and_auto_region(self):
+        store = release.storage_config("r2", "https://" + "a" * 32 + ".r2.cloudflarestorage.com",
+                                       "auto", "beeftv-releases", "https://updates.beefapi.com/beeftv")
+        self.assertEqual(store.provider, "r2")
+        with self.assertRaises(release.PublishError):
+            release.storage_config("r2", "https://" + "a" * 32 + ".r2.cloudflarestorage.com",
+                                   "ap-guangzhou", "beeftv-releases", "https://updates.beefapi.com/beeftv")
+
     def test_cli_rejects_credential_destination_before_any_command(self):
         for endpoint in ["https://attacker.example", "https://" + "a" * 32 + ".r2.cloudflarestorage.com.evil.example", "https://user@" + "a" * 32 + ".r2.cloudflarestorage.com"]:
             with patch.object(release.sys, "argv", ["publish", "stage", "--manifest", "/tmp/not-read", "--verifier", "/tmp/not-called", "--endpoint-url", endpoint]), patch.object(release, "run") as runner, redirect_stderr(io.StringIO()):
@@ -296,6 +461,55 @@ class S3AdapterTests(unittest.TestCase):
         with patch.object(release, "run", return_value=subprocess.CompletedProcess([], 1, "", "(AccessDenied) credential")):
             with self.assertRaisesRegex(release.PublishError, "Cannot inspect"):
                 release.S3("https://r2.example", "beeftv-releases").get(release.LATEST, "/tmp/unused")
+
+
+class ConditionalCapabilityTests(unittest.TestCase):
+    def store(self, ignore_create=False, ignore_replace=False, ignore_stale=False):
+        store = release.S3("https://r2.example", "beeftv-releases")
+        fake = FakeS3()
+        normal_put = fake.put
+        writes = 0
+
+        def put(key, source, cache_control, etag=None):
+            nonlocal writes
+            writes += 1
+            if ((ignore_create and etag is None) or (ignore_replace and etag is not None)
+                    or (ignore_stale and writes == 5)):
+                fake.objects[key] = Path(source).read_bytes()
+                return True
+            return normal_put(key, source, cache_control, etag)
+
+        store.put = put
+        store.get = fake.get
+        store.delete_probe = lambda key: fake.objects.pop(key, None)
+        return store, fake
+
+    def test_real_conditional_semantics_pass_and_probe_is_removed(self):
+        store, fake = self.store()
+        store.check_conditions()
+        self.assertEqual(fake.objects, {})
+        self.assertTrue(all(key.startswith("beeftv/.publication-probes/") for key, _ in fake.writes))
+
+    def test_ignored_create_and_replacement_conditions_block_and_cleanup(self):
+        for flags, error in [(dict(ignore_create=True), "If-None-Match"),
+                             (dict(ignore_replace=True), "If-Match"),
+                             (dict(ignore_stale=True), "stale")]:
+            with self.subTest(flags=flags):
+                store, fake = self.store(**flags)
+                with self.assertRaisesRegex(release.PublishError, error):
+                    store.check_conditions()
+                self.assertEqual(fake.objects, {})
+
+    def test_probe_cleanup_cannot_delete_release_assets(self):
+        with patch.object(release, "run") as runner, self.assertRaises(release.PublishError):
+            release.S3("https://unused", "unused").delete_probe(release.LATEST)
+        runner.assert_not_called()
+
+    def test_cleanup_failure_preserves_original_condition_failure(self):
+        store, _ = self.store(ignore_create=True)
+        store.delete_probe = lambda _: (_ for _ in ()).throw(release.PublishError("cleanup"))
+        with self.assertRaisesRegex(release.PublishError, "If-None-Match.*cleanup also failed"):
+            store.check_conditions()
 
 
 if __name__ == "__main__":

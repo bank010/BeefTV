@@ -27,6 +27,13 @@ func (e RequestPreparationError) Error() string {
 }
 func (e RequestPreparationError) Unwrap() error { return e.Cause }
 
+// ProtocolPreparationError is emitted only by local interface validation before
+// a new create request; provider messages cannot attest this failure phase.
+type ProtocolPreparationError struct{ Cause error }
+
+func (e ProtocolPreparationError) Error() string { return e.Cause.Error() }
+func (e ProtocolPreparationError) Unwrap() error { return RequestPreparationError{Cause: e.Cause} }
+
 // ReferenceStoragePreparationError is local object-storage work that failed
 // before model dispatch, even if that work acquired its own HTTP connection.
 type ReferenceStoragePreparationError struct{ Cause error }

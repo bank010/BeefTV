@@ -40,6 +40,12 @@ func TestAssistantScopeAllowsOnlyVerifiedResources(t *testing.T) {
 		{"关联素材媒体可检查", "media.check", `{"canvasId":"canvas-a","assetId":"asset-ref"}`, false},
 		{"未引用媒体不可检查", "media.inspect", `{"canvasId":"canvas-a","assetId":"asset-other"}`, true},
 		{"额外画布媒体不可检查", "media.overview", `{"canvasId":"canvas-b","nodeId":"node-b"}`, true},
+		{"当前节点可委托审片", "media.review", `{"canvasId":"canvas-a","nodeId":"node-a"}`, false},
+		{"关联素材可委托审片", "media.review", `{"canvasId":"canvas-a","assetId":"asset-ref"}`, false},
+		{"未引用素材不可委托审片", "media.review", `{"canvasId":"canvas-a","assetId":"asset-other"}`, true},
+		{"额外画布不可委托审片", "media.review", `{"canvasId":"canvas-b","nodeId":"node-b"}`, true},
+		{"审片来源不可歧义", "media.review", `{"canvasId":"canvas-a","nodeId":"node-a","assetId":"asset-ref"}`, true},
+		{"审片来源不可缺失", "media.review", `{"canvasId":"canvas-a"}`, true},
 		{"关联任务可读", "task.get", `{"taskId":"task-1"}`, false},
 		{"无关任务不可读", "task.get", `{"taskId":"task-2"}`, true},
 		{"工作区级列举不可用", "asset.list", `{}`, true},
@@ -120,11 +126,11 @@ func TestNilAssistantScopeDoesNotFilterCatalog(t *testing.T) {
 	agentops.RegisterDefaultOps(registry)
 	var typedNil *agentops.AssistantScope
 	listed := registry.List(agentops.Caller{Kind: agentops.CallerManual, Scope: typedNil})
-	if len(listed) != 31 {
+	if len(listed) != 35 {
 		t.Fatalf("空指针范围不应收窄目录，得到 %d", len(listed))
 	}
 	empty := registry.List(agentops.AssistantCaller(&agentops.AssistantScope{}, false))
-	if len(empty) != 27 {
+	if len(empty) != 31 {
 		t.Fatalf("空助手范围应只露出助手集合，得到 %d", len(empty))
 	}
 	if got := registry.List(agentops.AssistantCaller(nil, false)); len(got) != 0 {
@@ -135,7 +141,7 @@ func TestNilAssistantScopeDoesNotFilterCatalog(t *testing.T) {
 func TestReferenceBindingCatalogPermissionModes(t *testing.T) {
 	registry := agentops.NewRegistry(nil, nil)
 	agentops.RegisterDefaultOps(registry)
-	for mode, want := range map[string]int{"read-only": 14, "canvas": 27, "full-access": 30} {
+	for mode, want := range map[string]int{"read-only": 15, "canvas": 31, "full-access": 34} {
 		descriptors := registry.List(agentops.AssistantCaller(&agentops.AssistantScope{PermissionMode: mode}, false))
 		if len(descriptors) != want {
 			t.Fatalf("%s catalog=%d want=%d", mode, len(descriptors), want)

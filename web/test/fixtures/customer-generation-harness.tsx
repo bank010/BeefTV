@@ -58,6 +58,7 @@ function Harness() {
         finally { harness.settled = true; }
     };
     harness.edit = () => setNodes(current => current.map(node => node.id === "target" ? { ...node, title: "准备期间改过的标题", metadata: { ...node.metadata, composerContent: "准备期间修改的新提示词" } } : node));
+    (harness as any).replaceOutput = () => setNodes(current => current.map(node => node.id === "target" ? { ...node, metadata: { ...node.metadata, content: "/api/resources/newer-result/file", storageKey: "resource:newer-result", assetId: "newer-asset", durationMs: 7000 } } : node));
     harness.cancel = () => harness.controller?.abort();
     return <>
         <button onClick={() => void harness.generate()}>生成视频</button>

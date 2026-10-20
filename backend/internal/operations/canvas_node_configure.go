@@ -71,9 +71,23 @@ func opCanvasNodeConfigure(ctx *Context, raw json.RawMessage) (any, error) {
 	if node["type"] != args.Kind {
 		return nil, InvalidArg("node_kind_mismatch", "参数类型与目标节点不一致")
 	}
-	descriptor, _ := capability.BuiltinRegistry().Resolve(args.Kind)
+	patch, err := resolveGenerationDraft(ctx, args.Kind, args.Patch)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ctx.Domain.UpdateUserCanvasNodeFields(ctx.UserID, args.CanvasID, args.NodeID, patch, args.ExpectedRevision); err != nil {
+		return nil, mapDomainError(err)
+	}
+	return canvasWriteResult(ctx, args.CanvasID, func(doc map[string]any) map[string]any {
+		return map[string]any{"canvasId": args.CanvasID, "nodeId": args.NodeID, "node": findDocNode(doc, args.NodeID), "draftConfigured": true}
+	})
+}
+
+// Single draft validator for a node edit and storyboard production preparation.
+func resolveGenerationDraft(ctx *Context, kind string, raw map[string]json.RawMessage) (map[string]any, error) {
+	descriptor, _ := capability.BuiltinRegistry().Resolve(kind)
 	patch := map[string]any{}
-	for name, value := range args.Patch {
+	for name, value := range raw {
 		field, ok := descriptor.PatchFields[name]
 		if !ok || name == "title" || name == "content" {
 			return nil, InvalidArg("unsupported_field", "该类型不支持参数 "+name)
@@ -96,7 +110,7 @@ func opCanvasNodeConfigure(ctx *Context, raw json.RawMessage) (any, error) {
 		patch[name] = text
 	}
 	if selected, exists := patch["model"]; exists {
-		choice, err := ctx.Domain.ResolveAssistantGenerationModel(args.Kind, selected.(string))
+		choice, err := ctx.Domain.ResolveAssistantGenerationModel(kind, selected.(string))
 		if err != nil {
 			return nil, mapDomainError(err)
 		}
@@ -108,12 +122,7 @@ func opCanvasNodeConfigure(ctx *Context, raw json.RawMessage) (any, error) {
 		}
 		patch["model"] = choice.ModelKey
 	}
-	if _, err := ctx.Domain.UpdateUserCanvasNodeFields(ctx.UserID, args.CanvasID, args.NodeID, patch, args.ExpectedRevision); err != nil {
-		return nil, mapDomainError(err)
-	}
-	return canvasWriteResult(ctx, args.CanvasID, func(doc map[string]any) map[string]any {
-		return map[string]any{"canvasId": args.CanvasID, "nodeId": args.NodeID, "node": findDocNode(doc, args.NodeID), "draftConfigured": true}
-	})
+	return patch, nil
 }
 
 func validateDraftValue(name, value string) error {

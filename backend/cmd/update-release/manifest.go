@@ -14,8 +14,8 @@ import (
 
 const (
 	payloadSchema       = 1
-	defaultFeedURL      = "https://updates.beefapi.com/beeftv/desktop-update.json"
-	defaultDownloadHost = "https://updates.beefapi.com/beeftv"
+	defaultFeedURL      = "https://beeftv-components-1481187348.cos.ap-guangzhou.myqcloud.com/beeftv/desktop-update.json"
+	defaultDownloadHost = "https://beeftv-components-1481187348.cos.ap-guangzhou.myqcloud.com/beeftv"
 	updaterImportPath   = "infinite-canvas/backend/internal/desktopupdate"
 )
 

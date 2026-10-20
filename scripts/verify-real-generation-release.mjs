@@ -5,6 +5,7 @@ import { validateH3FamilyRelease } from './h3-family-release-contract.mjs';
 import { validateVideoDirectDeliveryRelease } from './video-direct-delivery-release-contract.mjs';
 import { validateTeamRelease } from './team-release-contract.mjs';
 import { validateImagePreparationRelease } from './image-preparation-release-contract.mjs';
+import { validateMusic3Release } from './music3-release-contract.mjs';
 import {
   REQUIRED_AGENT_CHECK_IDS,
   DETERMINISTIC_FAULT_CHECK_IDS,
@@ -32,6 +33,14 @@ const receipt = JSON.parse(readFileSync(`docs/release-evidence/${version}.json`,
 const fail = message => { throw new Error(`Real generation release gate: ${message}`); };
 const nonempty = value => typeof value === 'string' && value.trim() !== '';
 if (receipt.version !== version || receipt.sourceDigest !== sourceDigest) fail('receipt does not match this release source');
+if (version === 'v1.7.27') {
+  const treeDigest = (ref, paths) => createHash('sha256').update(execFileSync('git', ['ls-tree', '-r', ref, '--', ...paths], { encoding: 'utf8' })).digest('hex');
+  validateMusic3Release(receipt, sourceDigest, {
+    reviewedSourceDigest: treeDigest(receipt.review?.reviewedHead, sourcePaths),
+  });
+  console.log('v1.7.27 Music-only release; full matrix NOT run; public API and installed-client acceptance PENDING; four-platform package gates remain mandatory.');
+  process.exit(0);
+}
 if (version === 'v1.7.26') {
   const reviewedHead = receipt.review?.reviewedHead;
   if (!/^[a-f0-9]{40}$/.test(reviewedHead || '')) fail('reviewed commit is required');

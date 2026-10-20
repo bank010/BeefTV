@@ -73,7 +73,8 @@ export function attachmentFromCanvasReference(reference: CanvasResourceReference
 }
 const drafts = localforage.createInstance({ name: "beeftv-assistant-input", storeName: "drafts" });
 const draftWrites = new Map<string, Promise<unknown>>();
-export type AssistantInputDraft = { text: string; attachments: AssistantAttachment[]; skills: AssistantSkillSelection[] };
+export type AssistantInputDraft = { text: string; attachments: AssistantAttachment[]; skills: AssistantSkillSelection[];
+    resultSelection?: { sessionId: string; nodeIds: string[] } | null };
 export async function readAssistantInputDraft(canvasId: string, expected: CapturedUserScope) {
     const key = `${expected.userScope}:${canvasId}`;
     await draftWrites.get(key)?.catch(() => undefined);

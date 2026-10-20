@@ -50,9 +50,9 @@ func TestDesktopProfileStartupChain(t *testing.T) {
 	}
 	for _, name := range []string{
 		"server.mjs", "session-identity.mjs", "canvas-turn.mjs", "request-budget.mjs", "durable-request-budget.mjs",
-		"durable-session-owner.mjs", "durable-turn-budget.mjs", "media-content.mjs", "native-part-store.mjs",
+		"durable-session-owner.mjs", "durable-stream-text.mjs", "durable-turn-budget.mjs", "media-content.mjs", "native-part-store.mjs",
 		"native-history.mjs", "skill-resource.mjs", "operation-bridge.mjs", "canvas-read-view.mjs",
-		"session-owner.mjs", "system-prompt.mjs", "model-stream-idle.mjs", "package.json", "run-agent-host.sh",
+		"session-owner.mjs", "system-prompt.mjs", "model-stream-idle.mjs", "plan.mjs", "studio-digest.mjs", "package.json", "run-agent-host.sh",
 	} {
 		copyFile(t, filepath.Join(hostSource, name), filepath.Join(agentDir, name))
 	}
