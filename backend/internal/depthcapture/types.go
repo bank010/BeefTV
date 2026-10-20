@@ -32,6 +32,8 @@ const (
 	defaultWindowsManifestURL = componentCOSBase + "depth-runtime-manifest.v2.json"
 )
 
+type outputResolutionContextKey struct{}
+
 // CreateRequest is the HTTP create body. Handler keeps the app alias.
 type CreateRequest struct {
 	ProjectID  string `json:"projectId"`

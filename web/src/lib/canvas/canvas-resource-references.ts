@@ -1,4 +1,5 @@
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
+import { h3ReferenceEntries } from "@/lib/canvas/canvas-h3-reference-mentions";
 import { canvasNodeVideoPreviewUrl, canvasVideoAssetPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { writeCanvasNodePrompt } from "@/lib/canvas/canvas-node-prompt";
 import { getNodeResourceKind } from "@/lib/canvas/node-registry";
@@ -94,9 +95,9 @@ export function autoMentionCanvasResourceReferences(prompt: string, references: 
 
     const matcher = new RegExp(`(^|[^A-Za-z0-9_@])(${names.map(escapeRegExp).join("|")})(?![A-Za-z0-9_])`, "gu");
     return prompt
-        .split(/(@\[[^\]]+\]|@[^\s@,.;:!?，。；：！？、)\]}】）]+)/gu)
+        .split(/(@\[[^\]]+\]|@[^\s@,.;:!?，。；：！？、)\]}】）]+|<(?:Picture|Video|Audio) [1-9]\d*>)/gu)
         .map((part) => {
-            if (part.startsWith("@")) return part;
+            if (part.startsWith("@") || /^<(?:Picture|Video|Audio) [1-9]\d*>$/.test(part)) return part;
             return part.replace(matcher, (match, prefix: string, name: string, offset: number, source: string) => {
                 const nextCharacter = source[offset + match.length];
                 if (/^\d+$/u.test(name) && ((prefix && !/[\s,.!?;:，。！？；：、)\]}】）]/u.test(prefix)) || (nextCharacter && !/[\s,.!?;:，。！？；：、)\]}】）]/u.test(nextCharacter)))) return match;
@@ -117,6 +118,7 @@ export type CanvasResourceAutoLinkMatch = {
 export function findCanvasResourceAutoLinkMatch(prompt: string, cursor: number, references: CanvasResourceReference[]): CanvasResourceAutoLinkMatch | null {
     if (cursor <= 0 || cursor > prompt.length) return null;
     const prefix = prompt.slice(0, cursor);
+    if (/<(?:Picture|Video|Audio) [1-9]\d*$/.test(prefix)) return null;
     if (/@(?:\[[^\]]*|[^\s@,.;:!?，。；：！？、)\]}】）]*)$/u.test(prefix)) return null;
     const aliases = new Map<string, CanvasResourceReference | null>();
     references
@@ -196,6 +198,9 @@ function rewriteCanvasPromptAfterReferenceChange(prompt: string, previousReferen
 
     const nextByNodeId = new Map(nextCanvasReferences.map((reference) => [reference.nodeId, reference]));
     let value = prompt;
+    h3ReferenceEntries(previousCanvasReferences, (reference) => reference.kind).forEach(({ item, token }) => {
+        value = replaceCanvasMentionToken(value, token, `@[h3:${item.nodeId}]`);
+    });
     previousCanvasReferences.forEach((reference) => {
         const nodeToken = canvasNodeMentionToken(reference.nodeId);
         canvasResourceReferenceMentionTokens(reference).forEach((token) => {
@@ -206,6 +211,10 @@ function rewriteCanvasPromptAfterReferenceChange(prompt: string, previousReferen
         value = removeCanvasMentionToken(value, canvasNodeMentionToken(reference.nodeId));
     });
     value = normalizeCanvasNodeMentionTokens(value, nextCanvasReferences);
+    const nextH3TokenByNodeId = new Map(h3ReferenceEntries(nextCanvasReferences, (reference) => reference.kind).map(({ item, token }) => [item.nodeId, token]));
+    previousCanvasReferences.forEach((reference) => {
+        value = value.split(`@[h3:${reference.nodeId}]`).join(nextH3TokenByNodeId.get(reference.nodeId) || "");
+    });
     return value === prompt ? prompt : compactRemovedCanvasMentionPrompt(value);
 }
 
@@ -230,7 +239,7 @@ function canvasNodeBoundReferences(references: CanvasResourceReference[]) {
 function canvasReferenceIdentityChanged(previousReferences: CanvasResourceReference[], nextReferences: CanvasResourceReference[]) {
     if (previousReferences.length !== nextReferences.length) return true;
     const nextLabelByNodeId = new Map(nextReferences.map((reference) => [reference.nodeId, reference.label]));
-    return previousReferences.some((reference) => nextLabelByNodeId.get(reference.nodeId) !== reference.label);
+    return previousReferences.some((reference, index) => nextReferences[index]?.nodeId !== reference.nodeId || nextLabelByNodeId.get(reference.nodeId) !== reference.label);
 }
 
 function removeCanvasMentionToken(value: string, token: string) {
@@ -241,7 +250,9 @@ export function replaceCanvasMentionToken(value: string, token: string, replacem
     if (!token) return value;
     const escapedToken = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // Numbered media mentions can touch Chinese prose or another mention, but not a longer number.
-    const boundary = /^@(图片|视频|音频|文本)\d+$/.test(token)
+    const boundary = token.startsWith("<")
+        ? ""
+        : /^@(图片|视频|音频|文本)\d+$/.test(token)
         ? "(?![0-9])"
         : token.startsWith("@[node:") ? "" : `(?=${CANVAS_RESOURCE_MENTION_BOUNDARY.source})`;
     return value.replace(new RegExp(`${escapedToken}${boundary}`, "gu"), replacement);

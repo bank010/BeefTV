@@ -111,6 +111,7 @@ export type VideoCapabilityConfig = {
     defaultRatio: string;
     resolutions: string[];
     defaultResolution: string;
+    resolutionRange?: { min: number; max: number; step: number; unit: "MP" };
     generateAudio: { supported: boolean; default: boolean };
     watermark: { supported: boolean; default: boolean };
     operations: string[];
@@ -1076,6 +1077,7 @@ export function workflowImageCapabilityConfig(fields: readonly WorkflowVideoFiel
 }
 
 export function workflowVideoCapabilityConfig(fields: readonly WorkflowVideoFieldLike[], fallback = defaultModelCapabilityConfig().video!): VideoCapabilityConfig {
+    fields = fields.filter((field) => field.enabled !== false && field.safeToOverride !== false);
     const profile: VideoCapabilityConfig = {
         ...fallback,
         references: { ...fallback.references },
@@ -1089,6 +1091,7 @@ export function workflowVideoCapabilityConfig(fields: readonly WorkflowVideoFiel
     // 后面只根据工作流字段自身声明的 options 或数值范围恢复控件。
     profile.resolutions = [];
     profile.defaultResolution = "";
+    profile.resolutionRange = undefined;
     profile.ratios = [];
     profile.defaultRatio = "";
     profile.duration = { selection: "enum", values: [], default: fallback.duration.default };
@@ -1107,6 +1110,11 @@ export function workflowVideoCapabilityConfig(fields: readonly WorkflowVideoFiel
             if (generated.length) profile.resolutions = generated;
         } else if (defaultValue !== "") profile.resolutions = [defaultValue];
         if (profile.resolutions.length) profile.defaultResolution = matchWorkflowValue(defaultValue, profile.resolutions) || profile.resolutions[0];
+        if (resolutionField.classType === "ResolutionSelector" && resolutionField.fieldName === "megapixels" && bounds.min !== undefined && bounds.max !== undefined && bounds.max >= bounds.min && bounds.step !== undefined && bounds.step > 0) {
+            profile.resolutionRange = { min: bounds.min, max: bounds.max, step: bounds.step, unit: "MP" };
+            profile.resolutions = [];
+            profile.defaultResolution = defaultValue;
+        }
     }
     if (durationField) {
         const options = workflowFieldChoiceValues(durationField)
@@ -1131,7 +1139,7 @@ export function workflowVideoCapabilityConfig(fields: readonly WorkflowVideoFiel
         }
     }
     if (ratioField) {
-        const options = workflowFieldOptionValues(ratioField.options);
+        const options = workflowFieldChoiceValues(ratioField).map(workflowFieldOptionValue).filter(Boolean);
         const defaultValue = workflowFieldDefaultValue(ratioField);
         // 工作流声明了比例字段时，不能继续沿用普通模型的比例列表。
         // 没有 options 时只保留该字段当前默认值（例如 `auto`）。
@@ -1447,6 +1455,11 @@ export function resolveVideoResolutionValue(profile: VideoCapabilityConfig, valu
 }
 
 export function videoResolutionRequest(profile: VideoCapabilityConfig, value: string | undefined) {
+    if (profile.resolutionRange) {
+        const { min, max, step } = profile.resolutionRange;
+        const number = value?.trim() ? Number(value) : NaN;
+        return Number.isFinite(number) && number >= min && number <= max && Math.abs((number - min) / step - Math.round((number - min) / step)) < 1e-7 ? String(number) : undefined;
+    }
     const requested = String(value || "")
         .trim()
         .toLowerCase();

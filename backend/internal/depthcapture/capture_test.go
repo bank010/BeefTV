@@ -73,6 +73,17 @@ func testVideo() *model.Resource {
 	}
 }
 
+func TestSourceOutputResolutionPreservesVideoDimensions(t *testing.T) {
+	width, height := sourceOutputResolution(&model.Resource{Width: 544, Height: 800})
+	if width != 544 || height != 800 {
+		t.Fatalf("resolution = %dx%d, want 544x800", width, height)
+	}
+	width, height = sourceOutputResolution(&model.Resource{Width: 545, Height: 801})
+	if width != 544 || height != 800 {
+		t.Fatalf("odd resolution = %dx%d, want 544x800", width, height)
+	}
+}
+
 func TestProcessRetainsWorkerExitReasonAfterLongProgressMeter(t *testing.T) {
 	tasks := &fakeTasks{}
 	message := strings.Repeat("\r 0 0 0 0 Time Time Current", 150) + "\ncurl: (28) Connection timed out\n模型补下载失败"

@@ -42,6 +42,8 @@ func (s *Service) Process(ctx context.Context, task *model.Task) error {
 	if OverDuration(resource.DurationMs) {
 		return s.failUnlessCanceled(ctx, task, stageTooLong, ErrTooLong.Error())
 	}
+	outputWidth, outputHeight := sourceOutputResolution(resource)
+	ctx = context.WithValue(ctx, outputResolutionContextKey{}, [2]int{outputWidth, outputHeight})
 	started := time.Now()
 	platform := PlatformID(s.goos)
 	var cudaPython, cudaToolDir, cudaModelRuntime string
@@ -166,7 +168,7 @@ func (s *Service) Process(ctx context.Context, task *model.Task) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	stored, err := s.media.SaveVideo(task.UserID, OutputName, info.Size(), OutputWidth, OutputHeight, resource.DurationMs, file, "depth:"+task.ID)
+	stored, err := s.media.SaveVideo(task.UserID, OutputName, info.Size(), outputWidth, outputHeight, resource.DurationMs, file, "depth:"+task.ID)
 	if err != nil {
 		return s.failUnlessCanceled(ctx, task, stageSave, err.Error())
 	}
@@ -175,8 +177,8 @@ func (s *Service) Process(ctx context.Context, task *model.Task) error {
 		FileName:       OutputName,
 		Size:           stored.Size,
 		DurationMs:     stored.DurationMs,
-		Width:          OutputWidth,
-		Height:         OutputHeight,
+		Width:          outputWidth,
+		Height:         outputHeight,
 		Device:         choice.Device,
 		FallbackReason: choice.FallbackReason,
 		RuntimeVersion: "v1",
@@ -189,4 +191,21 @@ func (s *Service) Process(ctx context.Context, task *model.Task) error {
 		return nil
 	}
 	return s.tasks.Complete(task, result)
+}
+
+func sourceOutputResolution(resource *model.Resource) (int, int) {
+	if resource == nil || resource.Width < 2 || resource.Height < 2 {
+		return OutputWidth, OutputHeight
+	}
+	width, height := resource.Width, resource.Height
+	if width%2 != 0 {
+		width--
+	}
+	if height%2 != 0 {
+		height--
+	}
+	if width < 2 || height < 2 {
+		return OutputWidth, OutputHeight
+	}
+	return width, height
 }

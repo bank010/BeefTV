@@ -177,6 +177,13 @@ function shouldRepairLegacyWorkflowSource(fieldName: string, source: string, inf
 
 export function normalizeWorkflowFieldMappings(value: unknown, capability?: RunningHubCapability): WorkflowFieldMapping[] {
     if (!Array.isArray(value)) return [];
+    const configuredSourceCounts = new Map<string, number>();
+    for (const item of value) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+        const sourceKey = ["source", "bind", "from"].find((key) => Object.prototype.hasOwnProperty.call(item, key));
+        const source = normalizeWorkflowFieldSourceName(sourceKey ? item[sourceKey] : "", capability);
+        if (source) configuredSourceCounts.set(source, (configuredSourceCounts.get(source) || 0) + 1);
+    }
     const fields = value.flatMap((item) => {
         if (!item || typeof item !== "object" || Array.isArray(item)) return [];
         const raw = item as Record<string, unknown>;
@@ -204,9 +211,11 @@ export function normalizeWorkflowFieldMappings(value: unknown, capability?: Runn
         } else if (shouldRepairLegacyWorkflowSource(fieldName, source, inferredSource, capability)) {
             source = inferredSource;
         }
-        // 比例、清晰度、时长等标量必须按 nodeId + fieldName 独立配置。
-        // 旧版自动来源会把两个同类字段折叠到同一个全局参数，重新归一化为直接字段值。
-        if (sourceAutomatic && !["prompt", "referenceImage", "referenceVideo", "referenceAudio", "mask"].includes(source)) {
+        // 唯一的显式视频绑定供画布控件使用；多个同类参数仍按具体字段独立配置。
+        // 不能清除后端按拓扑识别出的绑定，否则 PrimitiveFloat.value 等会丢失业务含义。
+        const canvasVideoBinding = capability === "video" && sourceConfigured
+            && ["aspectRatio", "videoSeconds", "vquality"].includes(source) && configuredSourceCounts.get(source) === 1;
+        if (sourceAutomatic && !canvasVideoBinding && !["prompt", "referenceImage", "referenceVideo", "referenceAudio", "mask"].includes(source)) {
             source = "";
             sourceAutomatic = false;
         }

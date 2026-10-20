@@ -73,7 +73,8 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         ? comfyUIOutputDimensions(selectedComfyUIWorkflow.workflowJson, applyWorkflowParameterValues(selectedComfyUIWorkflow.fields, workflowParameters))
         : undefined;
     const workflowParameterValue = (source: string) => {
-        const value = workflowParameters[`source:${source}`];
+        const field = mode === "video" ? selectedWorkflowFields.find((field) => field.enabled !== false && field.safeToOverride !== false && field.source === source) : undefined;
+        const value = workflowParameters[`source:${source}`] ?? (field ? workflowFieldCurrentValue(field, workflowParameters) : undefined);
         return value === undefined || value === null ? undefined : String(value);
     };
     const requestedConfig: AiConfig = {
@@ -81,7 +82,7 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         quality: node?.metadata?.quality ?? workflowParameterValue("quality") ?? config.quality ?? defaultConfig.quality,
         size: outputDimensions
             ? (node?.metadata?.size && node.metadata.size !== "0" ? node.metadata.size : outputDimensions.size)
-            : workflowProvider === "model" ? (node?.metadata?.size ?? config.size ?? defaultConfig.size) : workflowOutputSize || node?.metadata?.size || config.size || defaultConfig.size,
+            : workflowProvider === "model" ? (node?.metadata?.size ?? config.size ?? defaultConfig.size) : (mode === "video" ? node?.metadata?.size || workflowOutputSize : workflowOutputSize || node?.metadata?.size) || config.size || defaultConfig.size,
         transparentBackground: node?.metadata?.transparentBackground ?? config.transparentBackground ?? defaultConfig.transparentBackground,
         videoSeconds:
             workflowProvider === "model" && !isH3Model(preferredModel)

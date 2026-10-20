@@ -226,6 +226,7 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 		Projects:           localRoot.Projects,
 		Tasks:              localRoot.Tasks,
 		Generation:         localRoot.Generation,
+		DepthComponents:    svc.DepthComponents(),
 		BeefAPI:            beefAPIConnection,
 		AssistantHost:      assistantHost,
 		Conversations:      conversation.New(conversation.NewStore(repo)),

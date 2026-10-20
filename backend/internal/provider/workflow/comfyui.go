@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -26,6 +27,14 @@ const (
 	comfyMaxReferenceAudios = 3
 	comfyMaxH3Seconds       = 15
 )
+
+func isDefinitiveComfySubmissionRejection(statusCode int) bool {
+	return statusCode >= http.StatusBadRequest &&
+		statusCode < http.StatusInternalServerError &&
+		statusCode != http.StatusRequestTimeout &&
+		statusCode != http.StatusTooManyRequests &&
+		statusCode != http.StatusTooEarly
+}
 
 func comfyUIRootURL(value string) string {
 	return strings.TrimRight(strings.TrimSpace(value), "/")
@@ -103,6 +112,7 @@ func (c *Client) runComfyUI(ctx context.Context, input Input) (map[string]interf
 	if err := applyComfyWorkflowFields(graph, fields, files, input); err != nil {
 		return nil, err
 	}
+	normalizeComfyCLIPLoaderNames(graph)
 	body, err := json.Marshal(map[string]interface{}{"prompt": graph})
 	if err != nil {
 		return nil, fmt.Errorf("ComfyUI 工作流编码失败：%w", err)
@@ -116,6 +126,15 @@ func (c *Client) runComfyUI(ctx context.Context, input Input) (map[string]interf
 		Body:        body,
 	})
 	if err != nil {
+		var statusErr StatusError
+		if errors.As(err, &statusErr) {
+			if detail := comfyNodeValidationSummaryFromBody(statusErr.Body); detail != "" {
+				return nil, fmt.Errorf("ComfyUI 工作流提交被节点校验拒绝：%s", detail)
+			}
+		}
+		if errors.As(err, &statusErr) && isDefinitiveComfySubmissionRejection(statusErr.StatusCode) {
+			return nil, fmt.Errorf("ComfyUI 工作流提交失败：%w", err)
+		}
 		return nil, CreateUncertain{Err: fmt.Errorf("ComfyUI 工作流提交失败：%w", err)}
 	}
 	var submitted map[string]interface{}
@@ -142,6 +161,7 @@ func (c *Client) runComfyUI(ctx context.Context, input Input) (map[string]interf
 }
 
 var comfyDiagnosticIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,80}$`)
+var comfyDiagnosticFilename = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,120}$`)
 
 func comfyNodeValidationSummary(value any) string {
 	nodes, ok := value.(map[string]any)
@@ -174,16 +194,20 @@ func comfyNodeValidationSummary(value any) string {
 			}
 			entry, _ := item.(map[string]any)
 			reason := "输入校验失败"
+			extra, _ := entry["extra_info"].(map[string]any)
+			field := workflowScalarString(extra["input_name"])
+			if !comfyDiagnosticIdentifier.MatchString(field) {
+				field = ""
+			}
 			switch workflowScalarString(entry["type"]) {
 			case "value_not_in_list":
-				reason = "参数不在允许选项中"
+				reason = comfyInvalidOptionSummary(field, extra["received_value"], workflowScalarString(entry["details"]))
 			case "required_input_missing":
 				reason = "缺少必需输入"
 			case "invalid_input_type", "return_type_mismatch":
 				reason = "输入类型不匹配"
 			}
-			extra, _ := entry["extra_info"].(map[string]any)
-			if field := workflowScalarString(extra["input_name"]); comfyDiagnosticIdentifier.MatchString(field) {
+			if field != "" && workflowScalarString(entry["type"]) != "value_not_in_list" {
 				reason = field + "：" + reason
 			}
 			// Raw message/details/extra_info may echo prompts, credentials or paths.
@@ -195,6 +219,79 @@ func comfyNodeValidationSummary(value any) string {
 		details = append(details, label)
 	}
 	return strings.Join(details, "；")
+}
+
+func comfyNodeValidationSummaryFromBody(body string) string {
+	var response map[string]any
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		return ""
+	}
+	return comfyNodeValidationSummary(response["node_errors"])
+}
+
+func comfyInvalidOptionSummary(field string, received any, details string) string {
+	label := "参数不在 ComfyUI 当前可选值中"
+	if field != "" {
+		label = field + "：" + label
+	}
+	if field != "clip_name" {
+		return label
+	}
+	value := workflowScalarString(received)
+	// ComfyUI file inputs enumerate names relative to their model directory.
+	// Show the selected filename without exposing local path components.
+	if strings.ContainsAny(value, "/\\") {
+		value = path.Base(strings.ReplaceAll(value, "\\", "/"))
+	}
+	if len(value) > 120 || strings.Contains(value, "://") || (value != "" && !comfyDiagnosticFilename.MatchString(value)) {
+		value = ""
+	}
+	if !strings.ContainsAny(details, "[]") {
+		details = ""
+	}
+	start := strings.Index(details, "not in [")
+	end := strings.LastIndex(details, "]")
+	var choices []string
+	if start >= 0 && end > start+len("not in [") {
+		for _, raw := range strings.Split(details[start+len("not in ["):end], ",") {
+			choice := strings.Trim(strings.TrimSpace(raw), "'\"")
+			choice = path.Base(strings.ReplaceAll(choice, "\\", "/"))
+			if comfyDiagnosticFilename.MatchString(choice) {
+				choices = append(choices, choice)
+				if len(choices) == 4 {
+					break
+				}
+			}
+		}
+	}
+	if value != "" {
+		label += "（当前值：" + value + "）"
+	}
+	if len(choices) > 0 {
+		label += "；可选示例：" + strings.Join(choices, "、")
+	}
+	return label
+}
+
+func normalizeComfyCLIPLoaderNames(graph map[string]interface{}) {
+	for _, raw := range graph {
+		node, _ := raw.(map[string]interface{})
+		if node["class_type"] != "CLIPLoader" {
+			continue
+		}
+		inputs, _ := node["inputs"].(map[string]interface{})
+		name, ok := inputs["clip_name"].(string)
+		if !ok || !strings.ContainsAny(name, "/\\") {
+			continue
+		}
+		// ComfyUI validates CLIPLoader choices against directory relative names,
+		// while saved workflows can retain an extra text_encoders/ prefix.
+		name = strings.TrimPrefix(strings.ReplaceAll(name, "\\", "/"), "./")
+		parts := strings.SplitN(name, "/", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "text_encoders") {
+			inputs["clip_name"] = parts[1]
+		}
+	}
 }
 
 func comfyOutboundHeaders(config Config) []outbound.OutboundHeader {

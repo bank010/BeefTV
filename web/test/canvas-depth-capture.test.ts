@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { canvasNodeFailureExplanation, depthCaptureWaitFailureMetadata, findDepthCaptureSourceNode, isDepthCaptureResultNode } from "@/lib/canvas/canvas-depth-capture";
+import { canvasNodeFailureExplanation, canRecoverOrRetryDepthCapture, depthCaptureWaitFailureMetadata, findDepthCaptureSourceNode, isDepthCaptureResultNode } from "@/lib/canvas/canvas-depth-capture";
 import { GenerationFailureNotice } from "@/components/generation/generation-failure-notice";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
@@ -43,6 +43,26 @@ test("confirmed local depth failure offers retry without relaxing paid unknown-r
     expect(explanation.uncertain).toBe(false);
     expect(canvasNodeFailureExplanation({ ...failed, metadata: { ...failed.metadata, taskStatus: "running" } }).uncertain).toBe(true);
     expect(canvasNodeFailureExplanation({ ...failed, metadata: { ...failed.metadata, depthSourceNodeId: undefined } }).uncertain).toBe(true);
+});
+
+test("pre-submission depth failures without a task ID offer a safe explicit retry", () => {
+    const preflightFailure = {
+        ...depth,
+        metadata: {
+            ...depth.metadata,
+            taskId: undefined,
+            taskStatus: "queued",
+            status: "error" as const,
+            taskClientOperationTerminal: true,
+            errorDetails: "操作层只接受本机请求",
+        },
+    };
+    expect(canRecoverOrRetryDepthCapture(preflightFailure)).toBe(true);
+    expect(canvasNodeFailureExplanation(preflightFailure).blockManualRetry).toBe(false);
+    expect(canRecoverOrRetryDepthCapture({
+        ...preflightFailure,
+        metadata: { ...preflightFailure.metadata, taskStage: "submission_unknown", taskClientOperationTerminal: false },
+    })).toBe(false);
 });
 
 test("observation failure keeps a known active depth task loading", () => {

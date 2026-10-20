@@ -30,6 +30,7 @@ func defaultRuntimeDependencies(svc *app.Service) RuntimeDependencies {
 		Eagle: eagle.New(),
 	}
 	if svc != nil {
+		dependencies.DepthComponents = svc.DepthComponents()
 		dependencies.Diagnostics = svc.DiagnosticsDomain()
 		dependencies.Appearance = svc.AppearanceDomain()
 	}
@@ -61,6 +62,7 @@ func registerDesktopCanvasAPI(api *gin.RouterGroup, svc *app.Service, dependenci
 	RegisterChannelModelRoutes(api, svc)
 	RegisterCustomRelayRoutes(api, svc)
 	RegisterTaskRoutes(api, svc, false)
+	RegisterDepthComponentRoutes(api, svc)
 	RegisterRunningHubRoutes(api, svc, false)
 	RegisterComfyUIRoutes(api, svc)
 	RegisterDesktopSkillRoutes(api, svc)

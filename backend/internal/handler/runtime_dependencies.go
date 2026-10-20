@@ -11,6 +11,7 @@ import (
 	"infinite-canvas/backend/internal/assistantruntime"
 	"infinite-canvas/backend/internal/beefapi"
 	"infinite-canvas/backend/internal/conversation"
+	"infinite-canvas/backend/internal/depthcapture"
 	"infinite-canvas/backend/internal/diagnostics"
 	"infinite-canvas/backend/internal/eagle"
 	"infinite-canvas/backend/internal/localapp"
@@ -42,6 +43,12 @@ type VersionedProviderConfig interface {
 	SaveLocalModelConfigRevision([]byte, int64) (int64, error)
 }
 
+type DepthComponentPort interface {
+	ComponentStatus(context.Context, ...bool) (depthcapture.ComponentState, error)
+	StartComponentDownload(context.Context) (depthcapture.ComponentState, error)
+	PauseComponentDownload(context.Context) error
+}
+
 type RuntimeDependencies struct {
 	RequestCoordinator RequestCoordinator
 	ProviderConfig     ProviderConfig
@@ -49,6 +56,7 @@ type RuntimeDependencies struct {
 	Projects           localapp.ProjectPort
 	Tasks              localapp.TaskPort
 	Generation         localapp.GenerationPort
+	DepthComponents    DepthComponentPort
 	Conversations      *conversation.Service
 	// TextReplay is the archive owned by the runtime; legacy callers use its app facade.
 	TextReplay  textreplay.API

@@ -136,6 +136,7 @@ func comfySavedWorkflowToAPI(saved map[string]any) (map[string]any, error) {
 		inputs := make(map[string]any)
 		uiInputs, _ := node["inputs"].([]any)
 		widgetValues, _ := node["widgets_values"].([]any)
+		namedWidgetValues, _ := node["widgets_values"].(map[string]any)
 		widgetIndex := 0
 		for _, rawInput := range uiInputs {
 			input, ok := rawInput.(map[string]any)
@@ -170,7 +171,18 @@ func comfySavedWorkflowToAPI(saved map[string]any) (map[string]any, error) {
 				continue
 			}
 			if widgetValueIndex >= 0 {
-				if widgetValueIndex < len(widgetValues) {
+				// VHS nodes serialize widgets by name, including UI-only preview
+				// state. Copy only declared inputs; connected inputs still win.
+				if namedWidgetValues != nil {
+					widget, _ := input["widget"].(map[string]any)
+					widgetName := workflowScalarString(widget["name"])
+					if widgetName == "" {
+						widgetName = name
+					}
+					if value, exists := namedWidgetValues[widgetName]; exists {
+						inputs[name] = value
+					}
+				} else if widgetValueIndex < len(widgetValues) {
 					inputs[name] = widgetValues[widgetValueIndex]
 				}
 				continue
@@ -213,6 +225,11 @@ func comfySavedInputLink(linkID any, nodes map[string]map[string]any, links map[
 			if input["link"] != nil && outputType != "" && workflowScalarString(input["type"]) == outputType {
 				candidates = append(candidates, input["link"])
 			}
+		}
+		// Bypassed source nodes (LoadImage/LoadAudio/VHS_LoadVideo) have no
+		// matching input to forward. Their downstream reference is disconnected.
+		if len(candidates) == 0 && outputType != "" {
+			return nil, nil
 		}
 		if len(candidates) != 1 {
 			return nil, errors.New("无法唯一确定旁路输入，请在 ComfyUI 中导出 API 格式工作流")

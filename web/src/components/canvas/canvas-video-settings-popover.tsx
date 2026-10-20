@@ -27,7 +27,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
     const [open, setOpen] = useState(false);
     const [buttonRect, setButtonRect] = useState<DOMRect | null>(null);
     const videoProfile = modelCapabilityConfigFor(config, config.model).video;
-    const resolutionSupported = Boolean(videoProfile?.resolutions.length);
+    const resolutionSupported = Boolean(videoProfile?.resolutions.length || videoProfile?.resolutionRange);
     const sizeSupported = Boolean(videoProfile?.ratios.length);
     const resolution = videoProfile ? resolveVideoResolutionValue(videoProfile, config.vquality) : "";
     const size = videoProfile ? resolveVideoRatioValue(videoProfile, config.size) : "";

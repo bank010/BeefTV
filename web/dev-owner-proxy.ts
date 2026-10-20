@@ -9,7 +9,7 @@ function isLoopback(host: string) {
 function isManualLocalWrite(request: IncomingMessage) {
     if (request.method !== "POST" || !request.socket.remoteAddress || !isLoopback(request.socket.remoteAddress)) return false;
     const path = request.url?.split("?")[0];
-    if (path !== "/api/assistant/ui-session" && !path?.startsWith("/api/ops/")) return false;
+    if (path !== "/api/assistant/ui-session" && path !== "/api/depth-captures" && !path?.startsWith("/api/ops/")) return false;
     // Never upgrade an external client or replace an explicitly supplied identity.
     if (["authorization", "x-beeftv-client", "x-beeftv-agent-token", "x-beeftv-owner", "x-desktop-token", "x-beeftv-ui-bootstrap"].some((name) => request.headers[name] !== undefined)) return false;
     const origin = request.headers.origin;
@@ -44,6 +44,10 @@ export function devOwnerProxy(apiProxyTarget: string, tokenFile?: string): Plugi
                 if (!isManualLocalWrite(request)) return next();
                 try {
                     request.headers["x-beeftv-owner"] = readToken();
+                    // The backend compares Origin with its own loopback Host.
+                    // Vite changes Host to the proxy target, so forward the
+                    // authenticated local write with that same origin.
+                    request.headers.origin = target.origin;
                 } catch {
                     response.statusCode = 503;
                     response.setHeader("Content-Type", "application/json");

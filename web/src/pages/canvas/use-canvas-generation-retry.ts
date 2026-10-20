@@ -237,7 +237,9 @@ export function useCanvasGenerationRetry({
             const runAndConsumeRetry = async (input: Parameters<typeof runBackendCanvasGenerationTask>[0]) => {
                 submittedInput = input;
                 if (canvasGenerationRetryBlocked(node.metadata, input)) {
-                    message.warning(node.metadata?.errorDetails || "请先查看失败原因并调整输入，再重新生成");
+                    message.warning(node.metadata?.taskStage === "submission_unknown"
+                        ? "原任务仍在查询中，已阻止重复提交。请点击“查看原任务”或“取回结果”，确认任务结束后再生成。"
+                        : node.metadata?.errorDetails || "请先查看失败原因并调整输入，再重新生成");
                     return;
                 }
                 const originalError = { code: node.metadata?.generationErrorCode || node.metadata?.taskErrorCode, message: node.metadata?.errorDetails };

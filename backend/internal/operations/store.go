@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"infinite-canvas/backend/internal/model"
 )
@@ -109,13 +110,14 @@ func (s *Store) Run(ctx context.Context, req RunRequest, fn func(tx *gorm.DB) ([
 	err := db.Transaction(func(tx *gorm.DB) error {
 		record := model.AgentOpRecord{OpID: req.OpID, UserID: req.UserID, Op: req.Op,
 			PayloadHash: req.PayloadHash, Status: "running", TurnID: strings.TrimSpace(req.TurnID)}
-		if err := tx.Create(&record).Error; err != nil {
-			if !isDuplicateKey(err) {
-				return AsError(err)
-			}
+		insert := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&record)
+		if insert.Error != nil {
+			return AsError(insert.Error)
+		}
+		if insert.RowsAffected == 0 {
 			var existing model.AgentOpRecord
 			if findErr := tx.Where("user_id = ? AND op_id = ?", req.UserID, req.OpID).First(&existing).Error; findErr != nil {
-				return AsError(err)
+				return AsError(findErr)
 			}
 			if existing.Status != "succeeded" {
 				return Conflict("operation_in_progress",
@@ -173,21 +175,4 @@ func (s *Store) RunDomain(ctx context.Context, req RunRequest, binder DomainBind
 		}
 		return fn(domain)
 	})
-}
-
-func isDuplicateKey(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, gorm.ErrDuplicatedKey) {
-		return true
-	}
-	var coder interface{ Code() int }
-	if errors.As(err, &coder) {
-		switch coder.Code() {
-		case 1555, 2067:
-			return true
-		}
-	}
-	return strings.Contains(strings.ToUpper(err.Error()), "UNIQUE CONSTRAINT FAILED")
 }

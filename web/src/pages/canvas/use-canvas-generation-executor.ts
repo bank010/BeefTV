@@ -299,7 +299,9 @@ export function useCanvasGenerationExecutor({
                         const generationContext = { ...rawGenerationContext, prompt: effectivePrompt };
                         if (canvasGenerationRetryBlocked(sourceNode?.metadata, { ...generationContext, mode })) {
                             diagnostic("generation_retry_blocked", "warning");
-                            message.warning(sourceNode?.metadata?.errorDetails || "请先查看失败原因并调整输入，再重新生成");
+                            message.warning(sourceNode?.metadata?.taskStage === "submission_unknown"
+                                ? "原任务仍在查询中，已阻止重复提交。请点击“查看原任务”或“取回结果”，确认任务结束后再生成。"
+                                : sourceNode?.metadata?.errorDetails || "请先查看失败原因并调整输入，再重新生成");
                             return;
                         }
                         if (mode === "audio" && generationContext.characterReferences.length) {

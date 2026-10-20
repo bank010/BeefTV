@@ -226,13 +226,16 @@ export type PromptOptimizationMode = "expand" | "refine" | "style" | "model-adap
 export type PromptOptimizationInput = {
     prompt: string;
     mode: PromptOptimizationMode;
-    generationMode: "image" | "video";
+    generationMode: "text" | "image" | "video" | "audio";
     targetModel?: string;
+    targetModelFamily?: string;
     targetProtocol?: string;
+    targetDuration?: string;
     optimizerModel?: string;
     context?: {
         texts?: Array<{ title: string; text: string }>;
         images?: Array<{ title: string; url: string }>;
+        references?: Array<{ kind: "image" | "video" | "audio" | "text" | "character"; title: string }>;
     };
 };
 

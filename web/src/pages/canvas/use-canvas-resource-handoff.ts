@@ -23,6 +23,7 @@ import { CanvasNodeType, type CanvasNodeData, type Position } from "@/types/canv
 import { readOwnedCanvasNodes, runOwnedCanvasEnsureQueue, runOwnedCanvasPageCommit, useCanvasOwnerLifetime } from "./canvas-owner-epoch";
 import { applyArchivedCanvasNodeAssets, CANVAS_HANDOFF_PERSIST_FAILED_MESSAGE, commitOwnedCanvasAssetHandoff, rebaseCreatedCanvasNodes } from "./canvas-resource-handoff-commit";
 import { canvasGenerationFailureMetadata } from "./canvas-generation-failure";
+import { canReloadCanvasGenerationResult } from "@/lib/canvas/canvas-generation-recovery";
 import { linkedFolderPresentation, planCanvasHandoffEffect, resolveCanvasAssetHandoffPlan } from "./canvas-resource-handoff-plan";
 
 const NODE_STATUS_SUCCESS = "success" as const;
@@ -296,7 +297,7 @@ export function useCanvasResourceHandoff({
     const reloadCanvasNodeResource = useCallback(
         async (node: CanvasNodeData) => {
             const taskId = node.metadata?.taskId;
-            if (!taskId || !node.metadata?.resourceReloadAvailable) return;
+            if (!taskId || !canReloadCanvasGenerationResult(node.metadata)) return;
             const owner = lifetime.capture(projectId);
             const targetNodeId = node.id;
             // 继续取回登记为画布上的进行中请求：切换画布、同一节点上发起新请求时随之取消。

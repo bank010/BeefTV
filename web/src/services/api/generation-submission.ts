@@ -1,5 +1,5 @@
 import { ApiError } from "./request";
-import type { CreateTaskInput, GenerationTask } from "./task-center";
+import type { GenerationTask } from "./task-center";
 
 export class GenerationSubmissionUnknownError extends Error {
     readonly code = "submission_uncertain";
@@ -14,7 +14,7 @@ export function submissionAcceptanceUnknown(error: unknown): boolean {
 }
 
 /** Replay this frozen command only. Recovery after reload uses the read-only receipt API. */
-export async function submitGenerationCommand(input: CreateTaskInput, operationId: string, submit: (input: CreateTaskInput) => Promise<GenerationTask>, find?: () => Promise<GenerationTask | undefined>, isCurrent: () => boolean = () => true) {
+export async function submitGenerationCommand<TInput>(input: TInput, operationId: string, submit: (input: TInput) => Promise<GenerationTask>, find?: () => Promise<GenerationTask | undefined>, isCurrent: () => boolean = () => true) {
     const frozen = structuredClone(input);
     try {
         return await submit(frozen);

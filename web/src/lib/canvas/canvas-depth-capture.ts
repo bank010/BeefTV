@@ -1,4 +1,4 @@
-import { explainGenerationError, generationFailureMetadata } from "@/lib/generation-error";
+import { explainGenerationError, generationFailureMetadata, isDefinitiveSubmissionRejection } from "@/lib/generation-error";
 import { CanvasGenerationDurableAckError } from "@/services/canvas-generation-errors";
 import type { GenerationTask } from "@/services/api/task-center";
 import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
@@ -8,7 +8,15 @@ export function isDepthCaptureResultNode(node: CanvasNodeData) {
 }
 
 export function canRecoverOrRetryDepthCapture(node: CanvasNodeData) {
-    return isDepthCaptureResultNode(node) && ["failed", "cancelled", "succeeded"].includes(node.metadata?.taskStatus || "");
+    if (!isDepthCaptureResultNode(node)) return false;
+    if (["failed", "cancelled", "succeeded"].includes(node.metadata?.taskStatus || "")) return true;
+    // A local preflight (for example, persisting the canvas before submission)
+    // can fail before a task exists. Such a node is safe to retry explicitly;
+    // an unknown submission must still be reconciled by its operation ID.
+    return node.metadata?.status === "error"
+        && !node.metadata?.taskId
+        && node.metadata?.taskStage !== "submission_unknown"
+        && node.metadata?.taskClientOperationTerminal !== false;
 }
 
 export function findDepthCaptureSourceNode(node: CanvasNodeData, nodes: CanvasNodeData[]) {
@@ -65,6 +73,9 @@ export function depthCaptureWaitFailureMetadata(error: unknown, observed?: Gener
 
 export function canvasNodeFailureExplanation(node: CanvasNodeData) {
     const explanation = explainGenerationError({ code: node.metadata?.generationErrorCode || node.metadata?.taskErrorCode, message: node.metadata?.errorDetails }, { taskId: node.metadata?.taskId, model: node.metadata?.model, createdAt: node.metadata?.taskCreatedAt, stage: node.metadata?.taskStage });
+    if (isDefinitiveSubmissionRejection(node.metadata?.taskStage, node.metadata?.taskFailureDiagnostics)) {
+        return { ...explanation, reason: "ComfyUI 已拒绝本次提交", action: "调整视频参数后可以重新生成", uncertain: false, retryable: true, blockAutomaticRetry: false, blockManualRetry: false };
+    }
     // This action opens saved history; it must never dispatch another generation.
     if (explanation.category === "result_target_unavailable") return { ...explanation, blockManualRetry: false };
     if (!canRecoverOrRetryDepthCapture(node)) return explanation;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button, Progress, type App } from "antd";
 import { getDesktopAppBinding, type DepthComponentState } from "@/services/desktop-runtime";
+import { downloadDepthComponents, pauseDepthComponentDownload, readDepthComponentStatus } from "@/services/api/depth-components";
 import { navigateToSettings } from "@/lib/settings-navigation";
 
 const gb = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
@@ -12,16 +13,18 @@ const statusText: Record<DepthComponentState["status"], string> = {
 
 export function DepthComponentsPanel({ initialState, onReady, onCancel, onOpenSettings }: { initialState?: DepthComponentState; onReady?: () => void; onCancel?: () => Promise<void>; onOpenSettings?: () => void }) {
     const binding = getDesktopAppBinding();
+    const readStatus = binding?.DepthComponentStatus ?? readDepthComponentStatus;
+    const startDownload = binding?.DownloadDepthComponents ?? downloadDepthComponents;
+    const pauseDownload = binding?.PauseDepthComponentDownload ?? pauseDepthComponentDownload;
     const [state, setState] = useState(initialState);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
     const refresh = useCallback(async (force = false) => {
         try {
-            if (!binding?.DepthComponentStatus) throw new Error("请在 BeefTV 桌面版中管理本地组件");
-            setState(await binding.DepthComponentStatus(force));
+            setState(await readStatus(force));
             setError("");
         } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-    }, [binding]);
+    }, [readStatus]);
     useEffect(() => { if (!initialState) void refresh(); }, [initialState, refresh]);
     useEffect(() => {
         if (!running(state)) return;
@@ -52,7 +55,7 @@ export function DepthComponentsPanel({ initialState, onReady, onCancel, onOpenSe
             </> : null}
             {insufficient && !running(state) ? <p role="alert" className="text-destructive">空间不足，请先更换目录或清理磁盘。</p> : null}
             <div className="flex flex-wrap gap-2">
-                {running(state) ? <Button loading={busy} onClick={() => void mutate(binding?.PauseDepthComponentDownload)}>暂停下载</Button> : state.status !== "ready" ? <Button type="primary" loading={busy} disabled={insufficient} onClick={() => void mutate(binding?.DownloadDepthComponents)}>{state.status === "paused" || state.status === "error" ? "继续下载" : onReady ? "下载并继续" : "下载组件"}</Button> : null}
+                {running(state) ? <Button loading={busy} onClick={() => void mutate(pauseDownload)}>暂停下载</Button> : state.status !== "ready" ? <Button type="primary" loading={busy} disabled={insufficient} onClick={() => void mutate(startDownload)}>{state.status === "paused" || state.status === "error" ? "继续下载" : onReady ? "下载并继续" : "下载组件"}</Button> : null}
                 {onOpenSettings && !running(state) ? <Button onClick={onOpenSettings}>前往存储设置</Button> : null}
                 {!onReady && !running(state) ? <Button disabled={busy} onClick={() => void refresh(true)}>重新检查</Button> : null}
                 {onCancel ? <Button disabled={busy} onClick={async () => {
@@ -70,8 +73,7 @@ type ModalAPI = ReturnType<typeof App.useApp>["modal"];
 
 export async function confirmDepthComponents(modal: ModalAPI): Promise<boolean> {
     const binding = getDesktopAppBinding();
-    if (!binding?.DepthComponentStatus) throw new Error("请先在 BeefTV 桌面版的存储设置中安装深度捕捉组件");
-    const state = await binding.DepthComponentStatus(true);
+    const state = await (binding?.DepthComponentStatus ?? readDepthComponentStatus)(true);
     if (state.status === "ready") return true;
     return new Promise<boolean>((resolve) => {
         let settled = false;
@@ -80,7 +82,7 @@ export async function confirmDepthComponents(modal: ModalAPI): Promise<boolean> 
         const cancel = async () => {
             // A download finishing during cancellation must not launch the task.
             cancelRequested = true;
-            await binding.PauseDepthComponentDownload?.();
+            await (binding?.PauseDepthComponentDownload ?? pauseDepthComponentDownload)();
             dialog.destroy();
             finish(false);
         };

@@ -6,6 +6,7 @@ import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { CanvasNodeType, type CanvasConnection, type CanvasGenerationMode, type CanvasNodeData } from "@/types/canvas";
 import { getGenerationResourceNodes, getContextResourceNodes, getMentionResourceNodes } from "@/lib/canvas/canvas-resource-references";
+import { h3ReferenceEntries } from "@/lib/canvas/canvas-h3-reference-mentions";
 import { canvasNodeVideoPreviewUrl, canvasVideoAssetPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { isNeutralColorGrade, resolveCanvasColorGradeReference } from "@/lib/canvas/canvas-color-grade";
 import { getNodeResourceKind } from "@/lib/canvas/node-registry";
@@ -191,10 +192,18 @@ function buildComposerGenerationContext(
 ): NodeGenerationContext {
     const normalizedPrompt = normalizeGenerationNodeMentionTokens(prompt, inputs);
     const slotInputByToken = new Map(generationSlotEntries(inputs).map(({ token, input }) => [token, input]));
+    h3ReferenceEntries(inputs.filter((input) => !input.nodeId.startsWith("asset:")), (input) => input.type)
+        .forEach(({ item, token }) => slotInputByToken.set(token, item));
     const assetInputById = new Map(inputs.filter((input) => input.nodeId.startsWith("asset:")).map((input) => [input.nodeId.slice("asset:".length), input]));
     const nodeInputById = new Map(inputs.filter((input) => !input.nodeId.startsWith("asset:")).map((input) => [input.nodeId, input]));
     const selectedInputs: NodeGenerationInput[] = [];
     const labelByNodeId = new Map<string, string>();
+    const h3TokenByNodeId = new Map<string, string>();
+    const h3Counts = { Picture: 0, Video: 0, Audio: 0 };
+    const assignH3Token = (input: NodeGenerationInput) => {
+        const kind = input.type === "image" || input.type === "character" ? "Picture" : input.type === "video" ? "Video" : input.type === "audio" ? "Audio" : null;
+        if (kind && !h3TokenByNodeId.has(input.nodeId)) h3TokenByNodeId.set(input.nodeId, `<${kind} ${++h3Counts[kind]}>`);
+    };
     const textBlocks: string[] = [];
     const counts = { image: 0, drawing: 0, video: 0, audio: 0, text: 0, character: 0 };
     let hasToken = false;
@@ -208,6 +217,7 @@ function buildComposerGenerationContext(
             if (input.type === "text" || labelByNodeId.has(input.nodeId)) return;
             const labelKind = input.sourceKind === "drawing" ? "drawing" : input.type;
             labelByNodeId.set(input.nodeId, generationLabel(labelKind, counts[labelKind]++));
+            assignH3Token(input);
         });
     }
 
@@ -224,8 +234,9 @@ function buildComposerGenerationContext(
                 labelByNodeId.set(input.nodeId, label);
                 if (input.type === "text") textBlocks.push(`【${label}】\n${input.text || ""}`);
                 else selectedInputs.push(input);
+                if (input.type !== "text") assignH3Token(input);
             }
-            nextPrompt += input.type === "text" ? `【${label}】` : `@${label}`;
+            nextPrompt += input.type === "text" ? `【${label}】` : match[5] ? h3TokenByNodeId.get(input.nodeId) || match[0] : `@${label}`;
         } else nextPrompt += match[0];
         lastIndex = match.index + match[0].length;
     }
@@ -295,7 +306,7 @@ function buildComposerGenerationContext(
     };
 }
 
-const GENERATION_MENTION_PATTERN = /@\[(node|asset):([^\]]+)\]|@(图片|视频|音频|文本|角色|绘图)(\d+)/g;
+const GENERATION_MENTION_PATTERN = /@\[(node|asset):([^\]]+)\]|@(图片|视频|音频|文本|角色|绘图)(\d+)|<(Picture|Video|Audio) ([1-9]\d*)>/g;
 
 export function generationInputMentionLabel(input: NodeGenerationInput, inputs: NodeGenerationInput[]) {
     const entry = generationSlotEntries(inputs).find((item) => item.input.nodeId === input.nodeId);
@@ -323,6 +334,8 @@ function assertResolvableGenerationMentions(prompt: string, inputs: NodeGenerati
 function inspectGenerationMentions(prompt: string, inputs: NodeGenerationInput[]) {
     const normalizedPrompt = normalizeGenerationNodeMentionTokens(prompt, inputs);
     const slotInputByToken = new Map(generationSlotEntries(inputs).map(({ token, input }) => [token, input]));
+    h3ReferenceEntries(inputs.filter((input) => !input.nodeId.startsWith("asset:")), (input) => input.type)
+        .forEach(({ item, token }) => slotInputByToken.set(token, item));
     const nodeInputById = new Map(inputs.filter((input) => !input.nodeId.startsWith("asset:")).map((input) => [input.nodeId, input]));
     const assetInputById = new Map(inputs.filter((input) => input.nodeId.startsWith("asset:")).map((input) => [input.nodeId.slice("asset:".length), input]));
     const unresolved = new Set<string>();
@@ -359,6 +372,7 @@ function resolveGenerationMention(
         const end = (match.index || 0) + match[0].length;
         return hasMentionBoundary(prompt, end) ? slotInputByToken.get(match[0]) : undefined;
     }
+    if (match[5]) return slotInputByToken.get(match[0]);
     if (match[1] === "node") return nodeInputById.get(match[2]);
     if (match[1] === "asset") return assetInputById.get(match[2]);
     return undefined;

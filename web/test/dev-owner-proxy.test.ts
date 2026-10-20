@@ -13,7 +13,7 @@ test("dev proxy authenticates only same-origin manual writes and preserves clien
     writeFileSync(tokenFile, "test-owner-one", { mode: 0o600 });
     const upstream = createHttpServer((request, response) => {
         response.setHeader("Content-Type", "application/json");
-        response.end(JSON.stringify({ owner: request.headers["x-beeftv-owner"] ?? null, client: request.headers["x-beeftv-client"] ?? null }));
+        response.end(JSON.stringify({ owner: request.headers["x-beeftv-owner"] ?? null, client: request.headers["x-beeftv-client"] ?? null, origin: request.headers.origin ?? null }));
     });
     await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
     const address = upstream.address() as { port: number };
@@ -29,19 +29,20 @@ test("dev proxy authenticates only same-origin manual writes and preserves clien
         const port = (server.httpServer!.address() as { port: number }).port;
         const origin = `http://127.0.0.1:${port}`;
         const send = (headers: Record<string, string> = { Origin: origin }, path = "/api/ops/canvas.document.commit", method = "POST") => fetch(origin + path, { method, headers });
-        expect(await (await send()).json()).toEqual({ owner: "test-owner-one", client: null });
-        expect(await (await send(undefined, "/api/assistant/ui-session")).json()).toEqual({ owner: "test-owner-one", client: null });
+        expect(await (await send()).json()).toEqual({ owner: "test-owner-one", client: null, origin: target });
+        expect(await (await send(undefined, "/api/assistant/ui-session")).json()).toEqual({ owner: "test-owner-one", client: null, origin: target });
+        expect(await (await send(undefined, "/api/depth-captures")).json()).toEqual({ owner: "test-owner-one", client: null, origin: target });
         for (const headers of [{}, { Origin: "https://example.com" }, { Origin: "null" }, { Origin: "http://127.0.0.1:1" }]) {
-            expect((await (await send(headers)).json()).owner).toBeNull();
+            expect(await (await send(headers)).json()).toEqual({ owner: null, client: null, origin: "Origin" in headers ? headers.Origin : null });
         }
         for (const header of ["Authorization", "X-Beeftv-Client", "X-Beeftv-Agent-Token", "X-Desktop-Token", "X-Beeftv-UI-Bootstrap"]) {
-            expect((await (await send({ Origin: origin, [header]: "external" })).json()).owner).toBeNull();
+            expect(await (await send({ Origin: origin, [header]: "external" })).json()).toEqual({ owner: null, client: null, origin });
         }
-        expect((await (await send({ Origin: origin, "X-Beeftv-Owner": "explicit-owner" })).json()).owner).toBe("explicit-owner");
-        expect((await (await send(undefined, "/api/tasks")).json()).owner).toBeNull();
-        expect((await (await send(undefined, "/api/ops/canvas.document.commit", "GET")).json()).owner).toBeNull();
+        expect(await (await send({ Origin: origin, "X-Beeftv-Owner": "explicit-owner" })).json()).toEqual({ owner: "explicit-owner", client: null, origin });
+        expect(await (await send(undefined, "/api/tasks")).json()).toEqual({ owner: null, client: null, origin: null });
+        expect(await (await send(undefined, "/api/ops/canvas.document.commit", "GET")).json()).toEqual({ owner: null, client: null, origin: null });
         writeFileSync(tokenFile, "test-owner-two");
-        expect((await (await send()).json()).owner).toBe("test-owner-two");
+        expect(await (await send()).json()).toEqual({ owner: "test-owner-two", client: null, origin: target });
         rmSync(tokenFile);
         const unavailable = await send();
         expect(unavailable.status).toBe(503);

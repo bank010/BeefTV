@@ -10,7 +10,9 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { appHref } from "@/lib/app-routing";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 import { queryGenerationTask } from "@/services/api/task-center";
-import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { modelOptionName, resolveModelChannel, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { buildCanvasGenerationRequirements, buildGenerationConfig } from "@/lib/canvas/canvas-generation-config";
+import { optimizePromptWithConfig, promptPolishModelFamily } from "@/lib/plugins/builtin/prompt-optimizer";
 import { uploadMediaFile } from "@/services/file-storage";
 import { getActiveUserScope, scopedLocalStorage } from "@/lib/user-scope";
 import { assertUserScope, captureUserScope, userScopeMatches, type CapturedUserScope } from "@/lib/user-scope-guard";
@@ -67,6 +69,7 @@ import {
     buildCanvasAgentMentionReferences,
     buildCanvasNodeMentionReferenceMap,
     buildCanvasResourceReferences,
+    buildNodeMentionReferences,
     getContextResourceNodes,
     reorderCanvasResourceConnections,
     replaceCanvasReferenceMentions,
@@ -1543,6 +1546,48 @@ function InfiniteCanvasPage() {
         setHoveredNodeId,
     });
 
+    const polishNodePrompt = useCallback(async (node: CanvasNodeData) => {
+        const mode = node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Image ? "image" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : null;
+        if (!mode) throw new Error("当前节点不支持提示词润色");
+        const prompt = (node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim();
+        if (!prompt) throw new Error("请先输入提示词");
+        const optimizerModel = effectiveConfig.textModel.trim();
+        if (!optimizerModel) throw new Error("请先在模型设置中选择文本模型");
+
+        const references = buildNodeMentionReferences(node, nodesRef.current, connectionsRef.current)
+            .filter((reference): reference is CanvasResourceReference & { kind: Exclude<CanvasResourceReference["kind"], "skill"> } => reference.kind !== "skill");
+        const requirements = buildCanvasGenerationRequirements(effectiveConfig, node, mode, {
+            textCount: 1 + references.filter((reference) => reference.kind === "text").length,
+            imageCount: references.filter((reference) => reference.kind === "image").length,
+            videoCount: references.filter((reference) => reference.kind === "video").length,
+            audioCount: references.filter((reference) => reference.kind === "audio").length,
+            characterCount: references.filter((reference) => reference.kind === "character").length,
+        });
+        const generationConfig = buildGenerationConfig(effectiveConfig, node, mode, requirements);
+        const channel = resolveModelChannel(generationConfig, generationConfig.model);
+        const result = await optimizePromptWithConfig(effectiveConfig, {
+            prompt,
+            mode: "model-adapt",
+            generationMode: mode,
+            targetModel: modelOptionName(generationConfig.model) || generationConfig.model,
+            targetModelFamily: promptPolishModelFamily(effectiveConfig, generationConfig.model),
+            targetProtocol: channel.modelProfiles?.find((item) => item.model === modelOptionName(generationConfig.model))?.protocol || channel.interfaceType,
+            targetDuration: mode === "video" ? generationConfig.videoSeconds : undefined,
+            optimizerModel,
+            context: {
+                texts: references.filter((reference) => (reference.kind === "text" || reference.kind === "character") && reference.text?.trim()).map((reference) => ({ title: reference.title || reference.label, text: reference.text!.trim() })),
+                images: references.filter((reference) => (reference.kind === "image" || reference.kind === "character") && reference.previewUrl && /^(data:|https?:\/\/)/i.test(reference.previewUrl)).map((reference) => ({ title: reference.title || reference.label, url: reference.previewUrl! })),
+                references: references.map((reference) => ({ kind: reference.kind, title: reference.title || reference.label })),
+            },
+        });
+        if (!result.optimizedPrompt.trim()) throw new Error("模型没有返回润色后的提示词");
+        const latestNode = nodesRef.current.find((item) => item.id === node.id);
+        const latestPrompt = latestNode?.metadata?.composerContent ?? latestNode?.metadata?.prompt ?? "";
+        if (latestPrompt.trim() !== prompt) throw new Error("润色期间提示词发生变化，已保留最新内容");
+        if (latestNode?.type !== node.type || latestNode?.metadata?.model !== node.metadata?.model) throw new Error("润色期间节点或模型发生变化，已保留最新内容");
+        handleNodePromptChange(node.id, result.optimizedPrompt);
+    }, [effectiveConfig, handleNodePromptChange, nodesRef, connectionsRef]);
+
     const handleRemoveNodeReference = useCallback(
         (targetNodeId: string, reference: CanvasResourceReference) => {
             const referenceNodeId = reference.nodeId;
@@ -2148,6 +2193,7 @@ function InfiniteCanvasPage() {
                         }
                     }}
                     onPromptChange={handleNodePromptChange}
+                    onPolishPrompt={polishNodePrompt}
                     onConfigChange={handleConfigNodeChange}
                     onGenerate={handleGenerateNode}
                     onRemoveReference={handleRemoveNodeReference}

@@ -63,9 +63,10 @@ func runCommand(ctx context.Context, python, toolDir, modelRuntime, device, inpu
 			return err
 		}
 	}
+	width, height := outputResolution(ctx)
 	command := exec.CommandContext(ctx, python, "-m", "depth_capture", inputPath,
 		"--output-dir", outputDir, "--runtime-dir", modelRuntime, "--device", device,
-		"--input-size", "280", "--max-resolution", "960", "--output-resolution", "1920x1080",
+		"--input-size", "280", "--max-resolution", "960", "--output-resolution", fmt.Sprintf("%dx%d", width, height),
 		"--max-seconds", "15", "--low-percentile", "2", "--high-percentile", "98", "--gamma", "1.25")
 	command.Dir = toolDir
 	command.Env = WorkerEnvForPlatform(toolDir, goos)
@@ -110,4 +111,13 @@ func runCommand(ctx context.Context, python, toolDir, modelRuntime, device, inpu
 		return errors.New(message)
 	}
 	return nil
+}
+
+func outputResolution(ctx context.Context) (int, int) {
+	if ctx != nil {
+		if resolution, ok := ctx.Value(outputResolutionContextKey{}).([2]int); ok && resolution[0] >= 2 && resolution[1] >= 2 {
+			return resolution[0], resolution[1]
+		}
+	}
+	return OutputWidth, OutputHeight
 }

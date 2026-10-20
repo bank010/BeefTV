@@ -5,8 +5,9 @@ import { VideoPlayer } from "@/components/video-player";
 import { CachedResourceImage } from "@/components/cached-resource-image";
 import { GenerationFailureNotice } from "@/components/generation/generation-failure-notice";
 import { generationDeliveryProgressView, generationTaskFetchingResult } from "@/lib/generation-delivery-progress";
-import { explainGenerationError } from "@/lib/generation-error";
+import { explainGenerationError, isDefinitiveSubmissionRejection } from "@/lib/generation-error";
 import { canvasNodeFailureExplanation, canRecoverOrRetryDepthCapture } from "@/lib/canvas/canvas-depth-capture";
+import { canReloadCanvasGenerationResult } from "@/lib/canvas/canvas-generation-recovery";
 import { formatGenerationElapsed, generationProgressDisplay, generationTaskShowsProgress, isGenerationTaskSubmissionUncertain, trackGenerationProgressChange, type GenerationProgressRecord } from "@/lib/generation-task-display";
 import { canvasRichTextHTML } from "@/lib/canvas/canvas-rich-text";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
@@ -304,7 +305,7 @@ function ErrorContent({ node, theme, onRetry, onReloadResource, onOpenTaskDetail
         officialStatus: node.metadata?.taskOfficialStatus,
         errorCode: node.metadata?.taskErrorCode || node.metadata?.generationErrorCode,
     };
-    const submissionUncertain = isGenerationTaskSubmissionUncertain(errorDisplayTask) || explanation.uncertain;
+    const submissionUncertain = !isDefinitiveSubmissionRejection(node.metadata?.taskStage, node.metadata?.taskFailureDiagnostics) && (isGenerationTaskSubmissionUncertain(errorDisplayTask) || explanation.uncertain);
     return (
         <div
             data-canvas-no-zoom
@@ -328,7 +329,7 @@ function ErrorContent({ node, theme, onRetry, onReloadResource, onOpenTaskDetail
                     retryLabel={explanation.category === "result_target_unavailable" ? "生成历史" : localDepthAction && node.metadata?.taskStatus === "succeeded" ? "恢复结果" : node.metadata?.isBatchRoot ? "重新生成失败项" : "重新生成"}
                 />
             </div>
-            {node.metadata?.resourceReloadAvailable ? (
+            {canReloadCanvasGenerationResult(node.metadata) ? (
                 <button
                     type="button"
                     className="inline-flex h-8 items-center gap-1.5 rounded-[var(--r-md)] px-3 text-xs font-medium transition-colors"

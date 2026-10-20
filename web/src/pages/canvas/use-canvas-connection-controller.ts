@@ -8,7 +8,7 @@ import { getNodeSpec } from "@/constant/canvas";
 import { batchSourceRestriction, buildBatchConnectionCreateRequest, hasBatchConnectionCandidate, planBatchConnections, type CanvasBatchConnectionPreview } from "@/lib/canvas/canvas-batch-connection";
 import { batchReferenceHandleAtY } from "@/lib/canvas/canvas-batch-table";
 import { connectedNodeCenterFromEdgeDrop } from "@/lib/canvas/canvas-connected-node-placement";
-import { canvasConnectionError } from "@/lib/canvas/canvas-connection-policy";
+import { canvasConnectionError, mediaReferenceWorkflowWarning } from "@/lib/canvas/canvas-connection-policy";
 import { attachNodeToStoryboardRow, createCanvasNode, getConnectionTargetAnchor, isHiddenBatchChild, normalizeConnection, storyboardHandleAtY, storyboardPromptTemplateMetadata, storyboardRowFromHandle } from "@/lib/canvas/canvas-project-domain";
 import { createCanvasDrawingFromImage } from "@/lib/canvas/canvas-drawing-storage";
 import type { CanvasDrawingEngine } from "@/lib/canvas/canvas-drawing-engine";
@@ -267,6 +267,8 @@ export function useCanvasConnectionController({
         } else {
             setConnections((currentConnections) => [...currentConnections, { id: `conn-${Date.now()}`, fromNodeId, toNodeId, fromHandleId, toHandleId, fromAnchorRatio, toAnchorRatio }]);
             setNodes((currentNodes) => attachNodeToStoryboardRow(currentNodes, { fromNodeId, toNodeId, fromHandleId, toHandleId }));
+            const warning = mediaReferenceWorkflowWarning(config, nodesRef.current, { fromNodeId, toNodeId });
+            if (warning) message.warning(warning);
         }
         setContextMenu(null);
     }, [config, connectionsRef, message, nodesRef, setConnections, setContextMenu, setNodes]);
@@ -432,6 +434,8 @@ export function useCanvasConnectionController({
         onConnectedNodeCreated?.(newNode, pending.connection.nodeId);
         setNodes((currentNodes) => attachNodeToStoryboardRow([...currentNodes, newNode], connected));
         setConnections((currentConnections) => [...currentConnections, { id: nanoid(), ...connected }]);
+        const warning = mediaReferenceWorkflowWarning(config, [...nodesRef.current, newNode], connection);
+        if (warning) message.warning(warning);
         setSelectedNodeIds(new Set([newNode.id]));
         setSelectedConnectionId(null);
         if (nodeType === CanvasNodeType.Drawing) setDrawingNodeId(newNode.id);

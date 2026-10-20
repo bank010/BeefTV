@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import type { VideoSettingsConstraints } from "@/lib/video-settings-constraints";
 import { Switch } from "@/components/ui/base/switch";
 
@@ -19,6 +19,72 @@ const sizeOptions = [
     { value: "auto", label: "auto", width: 0, height: 0 },
 ];
 
+const MAX_VIDEO_RESOLUTION_1080P_MP = (1920 * 1080) / 1_000_000;
+const WORKFLOW_RESOLUTION_TIERS = [
+    { label: "480p", megapixels: (854 * 480) / 1_000_000 },
+    { label: "720p", megapixels: (1280 * 720) / 1_000_000 },
+    { label: "1080p", megapixels: MAX_VIDEO_RESOLUTION_1080P_MP },
+] as const;
+
+type WorkflowResolutionTier = { label: (typeof WORKFLOW_RESOLUTION_TIERS)[number]["label"]; value: number };
+
+function workflowVideoResolutionSliderMax(range: NonNullable<VideoCapabilityConfig["resolutionRange"]>) {
+    const capped = Math.min(range.max, MAX_VIDEO_RESOLUTION_1080P_MP);
+    const steps = Math.floor((capped - range.min) / range.step + 1e-7);
+    return Math.max(range.min, Number((range.min + Math.max(0, steps) * range.step).toPrecision(8)));
+}
+
+function workflowVideoResolutionTiers(range: NonNullable<VideoCapabilityConfig["resolutionRange"]>): WorkflowResolutionTier[] {
+    const max = workflowVideoResolutionSliderMax(range);
+    const rawMax = Math.min(range.max, MAX_VIDEO_RESOLUTION_1080P_MP);
+    const tiers = WORKFLOW_RESOLUTION_TIERS.flatMap(({ label, megapixels }) => {
+        if (megapixels < range.min - range.step / 2 || megapixels > rawMax + range.step / 2) return [];
+        const value = clampWorkflowVideoResolution(megapixels, range, max);
+        return [{ label, value }];
+    });
+    const distinct = tiers.filter((tier, index) => tiers.findIndex((candidate) => candidate.value === tier.value) === index);
+    return distinct.length ? distinct : [{ label: "480p", value: range.min }];
+}
+
+function nearestWorkflowResolutionTier(value: string | number, tiers: WorkflowResolutionTier[]) {
+    const parsed = Number(value);
+    const candidate = Number.isFinite(parsed) ? parsed : tiers[0]!.value;
+    return tiers.reduce((best, tier) => Math.abs(tier.value - candidate) < Math.abs(best.value - candidate) ? tier : best, tiers[0]!);
+}
+
+function clampWorkflowVideoResolution(value: string | number, range: NonNullable<VideoCapabilityConfig["resolutionRange"]>, max: number) {
+    const parsed = Number(value);
+    const candidate = Number.isFinite(parsed) ? parsed : range.min;
+    const clamped = Math.min(max, Math.max(range.min, candidate));
+    const steps = Math.round((clamped - range.min) / range.step);
+    return Number((range.min + steps * range.step).toPrecision(8));
+}
+
+function videoDurationAtResolution(profile: VideoCapabilityConfig, maxSeconds: number): VideoCapabilityConfig {
+    if (!Number.isFinite(maxSeconds)) return profile;
+    if (profile.duration.selection === "range") {
+        const min = profile.duration.fractionalMin ?? profile.duration.min ?? 1;
+        return { ...profile, duration: { ...profile.duration, max: Math.max(min, Math.min(profile.duration.max ?? maxSeconds, maxSeconds)) } };
+    }
+    const values = (profile.duration.values || []).filter((value) => value <= maxSeconds);
+    const defaultValue = values.reduce<number | undefined>((best, value) => best === undefined || Math.abs(value - Math.min(profile.duration.default, maxSeconds)) < Math.abs(best - Math.min(profile.duration.default, maxSeconds)) ? value : best, undefined);
+    return values.length
+        ? { ...profile, duration: { ...profile.duration, values, default: defaultValue ?? values[0]! } }
+        : profile;
+}
+
+function workflowDurationOptions(profile: VideoCapabilityConfig) {
+    if (profile.duration.selection === "range") {
+        const min = profile.duration.fractionalMin ?? profile.duration.min ?? VIDEO_DURATION_MIN;
+        const max = Math.max(min, profile.duration.max ?? min);
+        const step = profile.duration.continuous ? 0.1 : Math.max(1, profile.duration.step || 1);
+        const values: number[] = [];
+        for (let value = min; value <= max + 1e-7 && values.length < 1000; value = Number((value + step).toPrecision(8))) values.push(value);
+        return values;
+    }
+    return [...new Set((profile.duration.values || []).filter((value) => Number.isFinite(value) && value > 0))].sort((a, b) => a - b);
+}
+
 type VideoSettingsPanelProps = {
     taskConstraints?: VideoSettingsConstraints;
     config: AiConfig;
@@ -30,6 +96,22 @@ type VideoSettingsPanelProps = {
 
 export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[292px] space-y-3", taskConstraints }: VideoSettingsPanelProps) {
     const profile = modelCapabilityConfigFor(config, config.model).video!;
+    const range = profile.resolutionRange;
+    const maxResolution = range ? workflowVideoResolutionSliderMax(range) : 0;
+    const resolutionTiers = range ? workflowVideoResolutionTiers(range) : [];
+    const selectedResolutionTier = range ? nearestWorkflowResolutionTier(resolveVideoResolutionValue(profile, config.vquality), resolutionTiers) : undefined;
+    const fullHdLimit = selectedResolutionTier?.label === "1080p";
+    const durationProfile = fullHdLimit ? videoDurationAtResolution(profile, 10) : profile;
+    const durationOptions = workflowDurationOptions(durationProfile);
+    const maxAvailableDuration = durationProfile.duration.selection === "range"
+        ? durationProfile.duration.max ?? 10
+        : durationOptions.length ? durationOptions[durationOptions.length - 1]! : 10;
+    useEffect(() => {
+        if (!range) return;
+        const configured = Number(config.vquality);
+        if (!Number.isFinite(configured) || configured !== selectedResolutionTier?.value) onConfigChange("vquality", String(selectedResolutionTier?.value ?? maxResolution));
+        if (fullHdLimit && Number(config.videoSeconds) > maxAvailableDuration) onConfigChange("videoSeconds", String(maxAvailableDuration));
+    }, [config.vquality, config.videoSeconds, fullHdLimit, maxAvailableDuration, maxResolution, onConfigChange, range, selectedResolutionTier?.value]);
     if (resolveModelRequestConfig(config, config.model).interfaceType === "volcengine-jimeng-video") {
         return <JiMengVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
@@ -37,10 +119,10 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
         return <SeedanceVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} taskConstraints={taskConstraints} />;
     }
 
-    const seconds = normalizeVideoValue(profile, { seconds: config.videoSeconds }).seconds;
+    const seconds = normalizeVideoValue(durationProfile, { seconds: config.videoSeconds }).seconds;
     const resolution = resolveVideoResolutionValue(profile, config.vquality);
     const ratio = resolveVideoRatioValue(profile, config.size);
-    const dimensions = videoDimensionsForRatioAndResolution(ratio, resolution);
+    const dimensions = profile.resolutionRange ? undefined : videoDimensionsForRatioAndResolution(ratio, resolution);
     const sizeSupported = profile.ratios.length > 0;
     const configuredResolutions = sortVideoResolutionOptions(profile.resolutions).map((value) => ({ value, label: formatVideoResolutionLabel(value) }));
     const generateAudio = boolConfig(config.videoGenerateAudio, profile.generateAudio.default);
@@ -51,7 +133,28 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-sm font-semibold">视频设置</div> : null}
-                {configuredResolutions.length ? (
+                {range ? (
+                    <SettingGroup title="分辨率" color={theme.node.muted}>
+                        <div className="grid grid-cols-3 gap-1.5">
+                            {resolutionTiers.map((tier) => (
+                                <OptionPill
+                                    key={tier.label}
+                                    selected={selectedResolutionTier?.label === tier.label}
+                                    theme={theme}
+                                    onClick={() => {
+                                        onConfigChange("vquality", String(tier.value));
+                                        if (tier.label === "1080p" && Number(config.videoSeconds) > 10) onConfigChange("videoSeconds", "10");
+                                    }}
+                                >
+                                    {tier.label}
+                                </OptionPill>
+                            ))}
+                        </div>
+                        <p className="text-xs leading-relaxed" style={{ color: theme.node.muted }}>
+                            {`${selectedResolutionTier?.label || "480p"} 时，视频最长支持 ${maxAvailableDuration} 秒。`}
+                        </p>
+                    </SettingGroup>
+                ) : configuredResolutions.length ? (
                     <SettingGroup title="分辨率" color={theme.node.muted}>
                         <div className="grid grid-cols-3 gap-1.5">
                             {configuredResolutions.map((item) => (
@@ -85,11 +188,12 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                                     type="button"
                                     className="flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-md px-1 text-[var(--fs-label)] font-medium transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1"
                                     style={{ background: ratio === value ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }}
+                                    aria-pressed={ratio === value}
                                     onMouseDown={(event) => event.stopPropagation()}
                                     onClick={() => onConfigChange("size", value)}
                                 >
                                     <SizePreview width={ratioPreview(value).width} height={ratioPreview(value).height} color={theme.node.text} />
-                                    <span>{value}</span>
+                                    <span>{videoSizeLabel(value)}</span>
                                 </button>
                             ))}
                         </div>
@@ -97,7 +201,10 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </SettingGroup>
                 ) : null}
                 <SettingGroup title="秒数" color={theme.node.muted}>
-                    {workflowDuration ? <p className="text-sm">由工作流决定</p> : <VideoDurationControl profile={profile} value={Number(seconds)} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />}
+                    {workflowDuration ? <p className="text-sm">由工作流决定</p> : range
+                        && durationOptions.length
+                        ? <WorkflowDurationSlider options={durationOptions} value={Number(seconds)} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
+                        : <VideoDurationControl profile={durationProfile} value={Number(seconds)} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />}
                 </SettingGroup>
                 {profile.generateAudio.supported || profile.watermark.supported ? (
                     <SettingGroup title="输出" color={theme.node.muted}>
@@ -211,17 +318,20 @@ function SeedanceVideoSettingsPanel({ config, profile, onConfigChange, theme, sh
 }
 
 export function videoResolutionLabel(value: string) {
+    if (/^\d+(?:\.\d+)?$/.test(value.trim())) {
+        const megapixels = Number(value);
+        return WORKFLOW_RESOLUTION_TIERS.reduce((best, tier) => Math.abs(tier.megapixels - megapixels) < Math.abs(best.megapixels - megapixels) ? tier : best, WORKFLOW_RESOLUTION_TIERS[0]!).label;
+    }
     return formatVideoResolutionLabel(value);
 }
 
 export function videoSizeLabel(value: string) {
-    const ratio = normalizeSeedanceRatio(value);
     if (value === "adaptive" || value === "auto") return "自适应";
-    // The compact summary must mirror the selected value (for example 16:9),
-    // while the settings panel can still use semantic labels such as 横屏.
-    if (ratio === value) return ratio;
-    const size = normalizeVideoSizeValue(value);
-    return sizeOptions.find((item) => item.value === size)?.label || size;
+    // Workflow enum values can include descriptions; keep the submitted value
+    // intact while displaying its actual ratio instead of a landscape fallback.
+    const ratio = value.trim().match(/^(\d+)\s*:\s*(\d+)(?=\s|\(|$)/);
+    if (ratio && Number(ratio[1]) > 0 && Number(ratio[2]) > 0) return `${ratio[1]}:${ratio[2]}`;
+    return sizeOptions.find((item) => item.value === value)?.label || value;
 }
 
 export function videoSecondsLabel(value: string, profile?: VideoCapabilityConfig) {
@@ -342,6 +452,40 @@ function VideoDurationControl({ profile, value, theme, disabled, onChange }: { p
     );
 }
 
+function WorkflowDurationSlider({ options, value, theme, onChange }: { options: number[]; value: number; theme: CanvasTheme; onChange: (value: number) => void }) {
+    const selectedIndex = options.reduce((bestIndex, option, index) => Math.abs(option - value) < Math.abs(options[bestIndex]! - value) ? index : bestIndex, 0);
+    const selectedValue = options[selectedIndex] ?? options[0] ?? 1;
+    const formatSeconds = (seconds: number) => `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} 秒`;
+    return (
+        <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2 text-xs">
+                <span style={{ color: theme.node.muted }}>时长</span>
+                <span className="font-semibold tabular-nums" style={{ color: theme.node.text }}>{formatSeconds(selectedValue)}</span>
+            </div>
+            <input
+                type="range"
+                min={0}
+                max={Math.max(0, options.length - 1)}
+                step={1}
+                value={selectedIndex}
+                aria-label="视频时长（秒）"
+                aria-valuetext={formatSeconds(selectedValue)}
+                className="video-duration-range h-8 w-full"
+                style={{ accentColor: theme.accent.primary }}
+                onChange={(event) => {
+                    const nextValue = options[Number(event.target.value)];
+                    if (nextValue !== undefined) onChange(nextValue);
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+            />
+            <div className="flex justify-between px-0.5 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>
+                <span>{options.length ? formatSeconds(options[0]!) : ""}</span>
+                <span>{options.length ? formatSeconds(options[options.length - 1]!) : ""}</span>
+            </div>
+        </div>
+    );
+}
+
 function DurationRangeControl({ value, min, max, step, theme, onChange, continuous }: { value: number; min: number; max: number; step: number | "any"; theme: CanvasTheme; onChange: (value: number) => void; continuous?: boolean }) {
     return (
         <div className="space-y-1.5">
@@ -388,13 +532,8 @@ function SizePreview({ width, height, color }: { width: number; height: number; 
 }
 
 function ratioPreview(ratio: string) {
-    if (ratio === "9:16") return { width: 9, height: 16 };
-    if (ratio === "1:1") return { width: 1, height: 1 };
-    if (ratio === "4:3") return { width: 4, height: 3 };
-    if (ratio === "3:4") return { width: 3, height: 4 };
-    if (ratio === "21:9") return { width: 21, height: 9 };
-    if (ratio === "adaptive") return { width: 0, height: 0 };
-    return { width: 16, height: 9 };
+    const parts = videoSizeLabel(ratio).match(/^(\d+):(\d+)$/);
+    return parts ? { width: Number(parts[1]), height: Number(parts[2]) } : { width: 0, height: 0 };
 }
 
 function SwitchRow({ label, checked, theme, onChange }: { label: string; checked: boolean; theme: CanvasTheme; onChange: (checked: boolean) => void }) {

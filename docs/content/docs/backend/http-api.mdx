@@ -93,6 +93,8 @@ ComfyUI 地址、凭据、工作流与字段映射独立保存在 ComfyUI 配置
 
 `POST /depth-captures` 接收待处理视频素材编号，创建本机深度动作捕捉任务。只接受当前用户已上传完成的视频。可选 `nodeId` 指定结果节点，此时必须提供 `projectId`；任务保存目标节点并在完成后使用既有画布任务绑定操作回填。节点必须仍引用该任务，已删除或已改用其他任务的节点不会被恢复或覆盖。
 
+本机浏览器通过 `GET /depth-components/status?refresh=true` 查看深度组件与下载大小，通过 `POST /depth-components/download` 在用户确认后开始下载，通过 `POST /depth-components/pause` 暂停下载。三个接口仅接受本机来源；桌面应用仍可使用原生组件入口。
+
 深度任务继续在 `resultJson.resourceId` 返回结果资源，同时通过标准 `outputs` 提供视频素材及交付状态。历史深度任务也支持结果交付修复；没有记录目标节点的旧任务可通过 `canvas.task.bind` 绑定仍引用该任务的节点。交付暂时失败不会改写任务的成功状态，后台恢复仅重试交付，不重新执行深度处理。
 
 若创建响应丢失，深度节点尚未保存 `taskId`，后台只在画布和目标节点匹配、节点 `taskClientOperationId` 与任务持久化的 `clientOperationId` 一致、节点仍为没有结果的深度视频节点时补上绑定。已有其他任务或素材的节点不会被覆盖。

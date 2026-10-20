@@ -46,12 +46,34 @@ export function canvasConnectionError(config: AiConfig, nodes: CanvasNodeData[],
         return options.ignoreCapacity ? "" : capacityError(config, mode, "image", visualInputCount, "参考图");
     }
     if (mode === "video") {
-        return options.ignoreCapacity ? "" : capacityError(config, mode, "image", visualInputCount, "参考图") || capacityError(config, mode, "video", input.videoCount, "参考视频") || capacityError(config, mode, "audio", input.audioCount, "参考音频");
+        if (options.ignoreCapacity) return "";
+        return capacityError(config, mode, "image", visualInputCount, "参考图")
+            || pendingMediaCapacityError(config, "video", input.videoCount, "参考视频")
+            || pendingMediaCapacityError(config, "audio", input.audioCount, "参考音频");
     }
     if (mode === "text" && input.audioCount > 0) return "文本生成节点不能连接参考音频";
     if (mode === "audio" && input.characterCount > 1) return "角色配音一次只能连接一个角色卡";
     if (mode === "audio" && (input.imageCount > 0 || input.videoCount > 0 || input.audioCount > 0)) return "音频生成节点只接受文本或单个角色卡输入";
     return "";
+}
+
+export function mediaReferenceWorkflowWarning(config: AiConfig, nodes: CanvasNodeData[], candidate: ConnectionCandidate) {
+    const source = nodes.find((node) => node.id === candidate.fromNodeId);
+    const target = nodes.find((node) => node.id === candidate.toNodeId);
+    const kind = source?.type === CanvasNodeType.Video ? "video" : source?.type === CanvasNodeType.Audio ? "audio" : null;
+    if (!kind || !target || getNodeGenerationMode(target) !== "video") return "";
+    const label = kind === "video" ? "视频" : "音频";
+    return maxModelInputCapacity(config, "video", kind) === 0
+        ? `${label}已连接；当前模型或工作流没有参考${label}输入。生成前请在 ComfyUI 工作流中配置参考${label}槽位，或选择支持参考${label}的模型。`
+        : "";
+}
+
+function pendingMediaCapacityError(config: AiConfig, kind: "video" | "audio", count: number, label: string) {
+    const configuredCapacity = maxModelInputCapacity(config, "video", kind);
+    // Canvas links can be prepared before a compatible workflow is configured.
+    // Generation still checks the selected model and its actual media slots.
+    const maximum = configuredCapacity && configuredCapacity > 0 ? configuredCapacity : 3;
+    return count > maximum ? `最多连接 ${maximum} 个${label}` : "";
 }
 
 function acceptedInputKindLabel(kind: "image" | "video" | "audio" | "text" | "table_data") {

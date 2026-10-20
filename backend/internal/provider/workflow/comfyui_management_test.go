@@ -62,6 +62,54 @@ func TestComfySavedWorkflowRejectsAmbiguousOrCyclicBypass(t *testing.T) {
 	}
 }
 
+func TestComfySavedWorkflowVideoNamedWidgetsAndBypassedReferences(t *testing.T) {
+	var saved map[string]any
+	if err := json.Unmarshal([]byte(`{"nodes":[
+		{"id":1,"type":"LoadImage","inputs":[{"name":"image","widget":{"name":"image"}}],"widgets_values":["reference.png"]},
+		{"id":2,"type":"VHS_LoadVideo","mode":4,"inputs":[],"outputs":[{"type":"IMAGE"},{"type":"INT"},{"type":"AUDIO"}],"widgets_values":{"video":"unused.mp4"}},
+		{"id":3,"type":"MiniMaxH3ReferenceToVideo","inputs":[{"name":"ref_images.ref_image_0","link":10},{"name":"ref_videos.ref_video_0","link":11},{"name":"ref_video_audios.ref_video_audio_0","link":12}]},
+		{"id":4,"type":"PrimitiveFloat","inputs":[{"name":"value","widget":{}}],"widgets_values":[24]},
+		{"id":5,"type":"VHS_VideoCombine","inputs":[{"name":"images","link":13},{"name":"frame_rate","link":14,"widget":{"name":"frame_rate"}},{"name":"loop_count","widget":{"name":"loop_count"}},{"name":"format","widget":{"name":"format"}},{"name":"crf","widget":{"name":"crf"}},{"name":"save_output","widget":{"name":"save_output"}},{"name":"trim_to_audio","widget":{"name":"trim_to_audio"}}],"widgets_values":{"frame_rate":30,"loop_count":0,"format":"video/h264-mp4","crf":19,"save_output":true,"trim_to_audio":false,"videopreview":{"filename":"preview.mp4"},"unknown":"ui-only"}},
+		{"id":6,"type":"VHS_LoadVideo","inputs":[{"name":"video","widget":{"name":"video"}},{"name":"force_rate","widget":{"name":"force_rate"}}],"widgets_values":{"video":"reference.mp4","force_rate":24,"videopreview":{}}}
+	],"links":[[10,1,0,3,0,"IMAGE"],[11,2,0,3,1,"IMAGE"],[12,2,2,3,2,"AUDIO"],[13,3,0,5,0,"IMAGE"],[14,4,0,5,1,"FLOAT"]]}`), &saved); err != nil {
+		t.Fatal(err)
+	}
+	graph, err := comfySavedWorkflowToAPI(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if graph["2"] != nil {
+		t.Fatal("bypassed video loader survived")
+	}
+	references := graph["3"].(map[string]any)["inputs"].(map[string]any)
+	if len(references) != 1 || references["ref_images.ref_image_0"] == nil {
+		t.Fatalf("bypassed references survived: %#v", references)
+	}
+	inputs := graph["5"].(map[string]any)["inputs"].(map[string]any)
+	if len(inputs) != 7 || inputs["format"] != "video/h264-mp4" || inputs["crf"] != float64(19) || inputs["loop_count"] != float64(0) || inputs["save_output"] != true || inputs["trim_to_audio"] != false {
+		t.Fatalf("lost named widget values or copied UI state: %#v", inputs)
+	}
+	if link, ok := inputs["frame_rate"].([]any); !ok || link[0] != "4" {
+		t.Fatalf("named widget replaced connected frame rate: %#v", inputs["frame_rate"])
+	}
+	fields, err := workflowFieldsFromManagement(graph, "video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundVideo := false
+	for _, field := range fields {
+		if field.NodeID == "2" || field.FieldName == "videopreview" || field.FieldName == "unknown" {
+			t.Fatalf("UI state or bypassed reference became a field: %s.%s", field.NodeID, field.FieldName)
+		}
+		if field.NodeID == "6" && field.FieldName == "video" {
+			foundVideo = field.Source == "referenceVideo" && field.FieldValue == "reference.mp4"
+		}
+	}
+	if !foundVideo {
+		t.Fatal("active named video widget was not mapped as a reference")
+	}
+}
+
 func TestFetchComfyUIUserDataMapsPathList(t *testing.T) {
 	executor := &scriptedExecutor{handler: func(req Request) ([]byte, string, error) {
 		if req.Method != "GET" {

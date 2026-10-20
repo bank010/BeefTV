@@ -2,12 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { App, Button, Dropdown, Input, Popover, Tag, Typography } from "antd";
 import { Callout } from "@/components/ui/product/callout";
 import { Bubble, Sender, type BubbleItemType } from "@ant-design/x";
-import { ArrowUp, Check, ChevronDown, FileText, Image as ImageIcon, LoaderCircle, Music2, Sparkles, UserRound, Video, X } from "lucide-react";
+import { AlertCircle, ArrowUp, Check, CheckCircle2, ChevronDown, FileText, Image as ImageIcon, LoaderCircle, Music2, Sparkles, UserRound, Video, X } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import type { PromptOptimizationMode, PromptOptimizationResult, PromptOptimizerProvider } from "@/lib/plugins/plugin-types";
 import type { AiConfig } from "@/stores/use-config-store";
+import { promptPolishModelFamily, resolvePromptPolishSkill } from "@/lib/plugins/builtin/prompt-optimizer";
 
 type CanvasPromptOptimizerDrawerProps = {
     open: boolean;
@@ -44,6 +45,17 @@ type PanelSize = { width: number; height: number };
 type PanelOffset = { x: number; y: number };
 type PanelPosition = { left: number; top: number };
 type ResizeEdges = { top?: boolean; right?: boolean; bottom?: boolean; left?: boolean };
+type OptimizationLogEntry = { label: string; status: "running" | "done" | "error" };
+
+function h3PromptMode(references: CanvasResourceReference[]) {
+    const active = references.filter((reference) => reference.active && ["image", "character", "video", "audio"].includes(reference.kind));
+    const pictures = active.filter((reference) => reference.kind === "image" || reference.kind === "character").length;
+    const otherMedia = active.some((reference) => reference.kind === "video" || reference.kind === "audio");
+    if (otherMedia || pictures > 2) return "Ref2VA";
+    if (pictures === 2) return "FL2VA";
+    if (pictures === 1) return "I2VA";
+    return "T2VA";
+}
 
 const PANEL_MARGIN = 12;
 const PANEL_MIN_WIDTH = 300;
@@ -113,6 +125,7 @@ export function CanvasPromptOptimizerDrawer({ open, children, prompt, generation
     const [working, setWorking] = useState(false);
     const [error, setError] = useState("");
     const [streaming, setStreaming] = useState(false);
+    const [optimizationLog, setOptimizationLog] = useState<OptimizationLogEntry[]>([]);
     const [panelSize, setPanelSize] = useState<PanelSize>(getInitialPanelSize);
     const [panelOffset, setPanelOffset] = useState<PanelOffset>({ x: 0, y: 0 });
     const [panelInteracting, setPanelInteracting] = useState(false);
@@ -150,6 +163,7 @@ export function CanvasPromptOptimizerDrawer({ open, children, prompt, generation
         setError("");
         setWorking(false);
         setStreaming(false);
+        setOptimizationLog([]);
     }, [open, optimizerModel, prompt]);
 
     useLayoutEffect(() => {
@@ -426,6 +440,21 @@ export function CanvasPromptOptimizerDrawer({ open, children, prompt, generation
         setWorking(true);
         setStreaming(false);
         setError("");
+        const targetModelFamily = promptPolishModelFamily(config, targetModel);
+        const skill = resolvePromptPolishSkill({ prompt: promptValue, mode, generationMode, targetModel, targetProtocol, targetModelFamily });
+        const selectedReferencesForRun = optimizationReferences;
+        const mediaSummary = [
+            ["image", "character"].some((kind) => selectedReferencesForRun.some((reference) => reference.kind === kind))
+                ? `图片 ${selectedReferencesForRun.filter((reference) => reference.kind === "image" || reference.kind === "character").length}` : "",
+            selectedReferencesForRun.some((reference) => reference.kind === "video") ? `视频 ${selectedReferencesForRun.filter((reference) => reference.kind === "video").length}` : "",
+            selectedReferencesForRun.some((reference) => reference.kind === "audio") ? `音频 ${selectedReferencesForRun.filter((reference) => reference.kind === "audio").length}` : "",
+        ].filter(Boolean);
+        const initialLog: OptimizationLogEntry[] = [
+            { label: skill.h3 ? `读取 ${skill.label} Skill · ${targetModelFamily === "minimax-h3-reference" ? "Ref2VA" : h3PromptMode(selectedReferencesForRun)}` : `读取 ${skill.label} Skill`, status: "done" },
+            { label: mediaSummary.length ? `识别参考素材 · ${mediaSummary.join(" · ")}` : "未连接图片、视频或音频参考", status: "done" },
+            { label: `请求文本模型 · ${activeOptimizerModel || "默认文本模型"}`, status: "running" },
+        ];
+        setOptimizationLog(initialLog);
         setSubmittedPrompt(promptValue);
         setDraftPrompt("");
         setResult(null);
@@ -437,9 +466,18 @@ export function CanvasPromptOptimizerDrawer({ open, children, prompt, generation
                     mode,
                     generationMode,
                     targetModel,
+                    targetModelFamily,
                     targetProtocol,
+                    targetDuration: generationMode === "video" ? config.videoSeconds : undefined,
                     optimizerModel: activeOptimizerModel || undefined,
-                    context: { texts: textContext, images: imageContext },
+                    context: {
+                        texts: textContext,
+                        images: imageContext,
+                        references: optimizationReferences.filter((reference): reference is CanvasResourceReference & { kind: Exclude<CanvasResourceReference["kind"], "skill"> } => reference.kind !== "skill").map((reference) => ({
+                            kind: reference.kind,
+                            title: reference.title || reference.label,
+                        })),
+                    },
                 },
                 {
                     signal: controller.signal,
@@ -449,10 +487,20 @@ export function CanvasPromptOptimizerDrawer({ open, children, prompt, generation
             if (controller.signal.aborted) return;
             setResult(optimized);
             setSelectedPrompt(optimized.optimizedPrompt);
+            setOptimizationLog([
+                ...initialLog.slice(0, 2),
+                { label: `文本模型返回结果 · ${activeOptimizerModel || "默认文本模型"}`, status: "done" },
+                { label: "结构化提示词已生成，等待你确认采用", status: "done" },
+            ]);
         } catch (reason) {
             if (controller.signal.aborted) return;
             setDraftPrompt(promptValue);
-            setError(reason instanceof Error ? reason.message : "提示词优化失败，请稍后重试");
+            const errorMessage = reason instanceof Error ? reason.message : "提示词优化失败，请稍后重试";
+            setError(errorMessage);
+            setOptimizationLog([
+                ...initialLog.slice(0, 2),
+                { label: `文本模型请求失败 · ${errorMessage}`, status: "error" },
+            ]);
         } finally {
             if (!controller.signal.aborted) {
                 setWorking(false);
@@ -535,6 +583,26 @@ export function CanvasPromptOptimizerDrawer({ open, children, prompt, generation
                 <div className="canvas-prompt-optimizer-bubble is-assistant-bubble is-working" role="status">
                     <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" />
                     <span>{streaming ? "正在接收优化结果…" : "正在整理你的想法…"}</span>
+                </div>
+            ),
+        });
+    }
+
+    if (optimizationLog.length) {
+        bubbleItems.push({
+            key: "optimization-log",
+            role: "ai",
+            content: (
+                <div className="canvas-prompt-optimizer-bubble is-assistant-bubble">
+                    <div className="canvas-prompt-optimizer-message-meta"><span>AI 润色日志</span></div>
+                    <ol className="mt-2 space-y-1.5 text-xs" aria-label="AI 润色日志">
+                        {optimizationLog.map((entry, index) => (
+                            <li key={`${index}-${entry.label}`} className="flex items-start gap-2 leading-relaxed">
+                                {entry.status === "running" ? <LoaderCircle className="mt-0.5 size-3.5 shrink-0 animate-spin motion-reduce:animate-none" /> : entry.status === "error" ? <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-destructive" /> : <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-primary" />}
+                                <span>{entry.label}</span>
+                            </li>
+                        ))}
+                    </ol>
                 </div>
             ),
         });
@@ -657,6 +725,7 @@ export function CanvasPromptOptimizerDrawer({ open, children, prompt, generation
             </div>
 
             <div ref={chatRef} className="canvas-prompt-optimizer-chat-shell">
+                {!provider ? <Callout className="mx-3 mt-3" tone="warning" title="提示词优化暂不可用">请启用提示词优化插件并配置可用的文本模型。</Callout> : null}
                 <Bubble.List
                     className="canvas-prompt-optimizer-chat thin-scrollbar"
                     items={bubbleItems}

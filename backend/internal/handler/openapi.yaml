@@ -800,6 +800,37 @@ paths:
           $ref: "#/components/responses/Envelope"
         "400":
           $ref: "#/components/responses/Error"
+  /depth-components/status:
+    get:
+      tags: [tasks]
+      summary: 查看本机深度捕捉组件状态
+      parameters:
+        - in: query
+          name: refresh
+          schema: { type: boolean }
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "403":
+          $ref: "#/components/responses/Error"
+  /depth-components/download:
+    post:
+      tags: [tasks]
+      summary: 用户确认后开始下载本机深度捕捉组件
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "403":
+          $ref: "#/components/responses/Error"
+  /depth-components/pause:
+    post:
+      tags: [tasks]
+      summary: 暂停本机深度捕捉组件下载
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "403":
+          $ref: "#/components/responses/Error"
   /depth-captures:
     post:
       tags: [tasks]

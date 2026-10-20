@@ -102,6 +102,12 @@ export type GenerationFailureDiagnostics = {
     capturedAt?: string;
 };
 
+export function isDefinitiveSubmissionRejection(stage: string | undefined, diagnostics: GenerationFailureDiagnostics | undefined) {
+    if (stage !== "submission_unknown" || diagnostics?.source !== "upstream_http") return false;
+    const status = diagnostics.httpStatus;
+    return typeof status === "number" && Number.isInteger(status) && status >= 400 && status < 500 && ![408, 425, 429].includes(status);
+}
+
 type CategoryCopy = { reason: string; action: string };
 
 const LOCAL_TASK_ADMISSION_FAILURE: CategoryCopy = {

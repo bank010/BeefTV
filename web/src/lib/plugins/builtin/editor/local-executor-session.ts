@@ -1,8 +1,10 @@
 import { createClientId } from "@/lib/client-id";
 import { assertUserScope, captureUserScope, isUserScopeAbandonedError, type CapturedUserScope } from "@/lib/user-scope-guard";
-import { createDepthCaptureTask, type DepthCaptureResult } from "@/services/api/depth-capture";
+import { createDepthCaptureTask, type DepthCaptureCreateRequest, type DepthCaptureResult } from "@/services/api/depth-capture";
 import { getResource, type RemoteResource } from "@/services/api/resources";
-import { waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import { findGenerationTaskByOperation, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import { submitGenerationCommand } from "@/services/api/generation-submission";
+import { isCanvasSubmitControlError } from "@/services/canvas-revision-conflict";
 import {
     createTimelineRenderTask,
     createTimelineTranscriptionTask,
@@ -91,7 +93,7 @@ export function localExecutorIntentAfterSubmit(
 }
 
 export function isUncertainLocalExecutorSubmit(error: unknown, submittedTaskId?: string) {
-    if (submittedTaskId || isLocalExecutorSessionStop(error)) return false;
+    if (submittedTaskId || isLocalExecutorSessionStop(error) || isCanvasSubmitControlError(error)) return false;
     const status = error && typeof error === "object" && "status" in error ? Number((error as { status?: unknown }).status) : Number.NaN;
     if (Number.isFinite(status) && status >= 400 && status < 500 && status !== 408 && status !== 409 && status !== 429) return false;
     return true;
@@ -214,9 +216,24 @@ export async function runOwnedDepthCapture(input: {
     intervalMs?: number;
 }): Promise<{ task: GenerationTask; resource: RemoteResource; capture: DepthCaptureResult }> {
     assertLocalExecutorSession(input.session);
-    const created = await createDepthCaptureTask(
-        { projectId: input.projectId, nodeId: input.nodeId, resourceId: input.resourceId, clientOperationId: input.clientOperationId },
-        { signal: input.session.controller.signal, expectedScope: input.session.expectedScope },
+    const payload: DepthCaptureCreateRequest = {
+        projectId: input.projectId,
+        nodeId: input.nodeId,
+        resourceId: input.resourceId,
+        clientOperationId: input.clientOperationId,
+    };
+    const created = await submitGenerationCommand(
+        payload,
+        input.clientOperationId,
+        (frozen) => {
+            assertLocalExecutorSession(input.session);
+            return createDepthCaptureTask(frozen, { signal: input.session.controller.signal, expectedScope: input.session.expectedScope });
+        },
+        () => {
+            assertLocalExecutorSession(input.session);
+            return findGenerationTaskByOperation(input.clientOperationId, input.projectId, input.session.controller.signal);
+        },
+        () => !input.session.controller.signal.aborted,
     );
     assertLocalExecutorSession(input.session);
     await input.onCreated?.(created);

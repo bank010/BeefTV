@@ -292,6 +292,11 @@ export function selectPreferredCanvasProject(local: CanvasProject | null | undef
         return local;
     }
     if (sameCanvasDocument(local, backend)) return backend;
+    // A browser origin has its own IndexedDB. When the same local workspace is
+    // opened through another loopback origin, that cache may contain an older
+    // project without a commit journal. A newer SQLite revision is authoritative
+    // and must replace it; otherwise a stale failure node hides a completed task.
+    if ((backend.revision ?? 0) > (local.revision ?? 0)) return backend;
     return local;
 }
 
@@ -704,6 +709,69 @@ async function sendCanvasDocumentCommit(
     }
 }
 
+/**
+ * A revision conflict commonly means another local surface committed between
+ * the editor's read and its save. Rebase local-only additions (including a
+ * pending generation node) onto that confirmed revision and submit once more.
+ * A true field conflict remains paused for the user to resolve in the editor.
+ */
+async function rebaseAndRetryCanvasDocumentCommit(id: string, scope: string, expected: CapturedUserScope) {
+    try {
+        assertDispatchGuard(expected);
+        const journal = await loadCanvasOperationJournal(id, scope);
+        const base = journal.pendingProjection?.base
+            ?? journal.confirmedSnapshot
+            ?? canvasDocumentBase(id, scope)?.snapshot
+            ?? null;
+        if (!base) return false;
+        const remote = await readLocalCanvasProjectFromBackend(id, expected);
+        assertDispatchGuard(expected);
+        await confirmRemoteDocument(remote, scope);
+        const aligned = alignLiveAfterConfirmedRemote({
+            id,
+            scope,
+            remote,
+            base,
+            hadLive: true,
+            expected,
+        });
+        if (!aligned || canvasSubmitBlocked(id, scope)) return false;
+        const live = openLocalCanvasProject(id);
+        const current = await loadCanvasOperationJournal(id, scope);
+        if (!live || current.inFlight || (current.confirmedSnapshot && sameCanvasDocument(current.confirmedSnapshot, live))) return false;
+        const queued = await updateCanvasOperationJournal(id, scope, (entry) => {
+            if (entry.inFlight) return;
+            const expectedRevision = entry.confirmedRevision || live.revision || 0;
+            return {
+                ...entry,
+                inFlight: {
+                    operationId: newCanvasCommitOperationId(),
+                    expectedRevision,
+                    payload: { canvasId: id, expectedRevision, document: structuredClone(live) },
+                },
+            };
+        });
+        if (!queued.inFlight) return false;
+        // This runs inside the current projection lock. Calling
+        // commitLiveCanvasDocument here would wait on that same lock.
+        await sendCanvasDocumentCommit(id, queued.inFlight.operationId, queued.inFlight.payload, expected, false);
+        return true;
+    } catch (rebaseError) {
+        rethrowIfAbandoned(rebaseError);
+        return false;
+    }
+}
+
+/** A user has explicitly started a generation, so retry a conflict-free rebase before submission. */
+export async function reconcileCanvasGenerationPreflight(id: string, expectedScope?: CapturedUserScope) {
+    const expected = expectedScope ?? captureUserScope();
+    const scope = expected.userScope;
+    assertDispatchGuard(expected);
+    if (!canvasSubmitBlocked(id, scope)) return;
+    if (await rebaseAndRetryCanvasDocumentCommit(id, scope, expected)) return;
+    throw new CanvasBackendSubmitPausedError();
+}
+
 function shouldKeepCanvasCommitIdentity(error: unknown) {
     if (error instanceof DOMException && error.name === "AbortError") return true;
     if (!(error instanceof ApiError)) return true;
@@ -818,19 +886,44 @@ export async function adoptServerConfirmedGenerationPatch(project: CanvasProject
     const expected = resolveDispatchGuard(scope, expectedScope);
     const journalScope = expected.userScope;
     return withCanvasProjection(journalScope, project.id, async () => {
-        const incomingRevision = typeof project.revision === "number" && Number.isInteger(project.revision) && project.revision >= 0
+        let incomingRevision = typeof project.revision === "number" && Number.isInteger(project.revision) && project.revision >= 0
             ? project.revision
             : -1;
         const journal = await loadCanvasOperationJournal(project.id, journalScope);
         if (!matchesDispatchGuard(expected) || canvasDeleting.has(saveKey(journalScope, project.id))) return undefined;
-        if (incomingRevision < 0 || incomingRevision < journal.confirmedRevision) {
+        if (incomingRevision < 0) {
             return openLocalCanvasProject(project.id) ?? undefined;
+        }
+        if (incomingRevision < journal.confirmedRevision) {
+            // A task-bind receipt can be older than a later canvas commit. Read the
+            // current canonical document before discarding the generation effect.
+            try {
+                const latest = await readLocalCanvasProjectFromBackend(project.id, expected);
+                if (!matchesDispatchGuard(expected)) return undefined;
+                const latestRevision = typeof latest.revision === "number" && Number.isInteger(latest.revision) && latest.revision >= 0
+                    ? latest.revision
+                    : -1;
+                if (latestRevision < journal.confirmedRevision) return openLocalCanvasProject(project.id) ?? undefined;
+                project = latest;
+                incomingRevision = latestRevision;
+            } catch (error) {
+                rethrowIfAbandoned(error);
+                return openLocalCanvasProject(project.id) ?? undefined;
+            }
         }
         if (incomingRevision === journal.confirmedRevision && journal.confirmedSnapshot && sameCanvasDocument(journal.confirmedSnapshot, project)) {
             if (journal.pendingProjection) {
                 return replayPendingCanvasProjection(project.id, journalScope, expected, { throwOnFailure: true });
             }
-            return openLocalCanvasProject(project.id) ?? undefined;
+            const live = openLocalCanvasProject(project.id);
+            if (!live) return undefined;
+            const settled = settleInFlightGenerationOverlay({ base: journal.confirmedSnapshot, local: live, remote: project });
+            if (settled !== live) {
+                applyLiveCanvasProject(project.id, settled, false);
+                await projectionStoreFlush();
+                return openLocalCanvasProject(project.id) ?? settled;
+            }
+            return live;
         }
         const liveAtStart = openLocalCanvasProject(project.id);
         const existed = Boolean(liveAtStart);

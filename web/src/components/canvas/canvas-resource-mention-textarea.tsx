@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { ArrowLeft, ChevronRight, FileText, Folder, Image as ImageIcon, Music2, Pencil, Search, UserRound, Video, Workflow } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { h3ReferenceEntries } from "@/lib/canvas/canvas-h3-reference-mentions";
 import { usePersonalAssetLibrary } from "@/hooks/use-personal-asset-library";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { buildAssetMentionReferences, canvasResourceDisplayName, canvasResourceMentionToken, findCanvasResourceAutoLinkMatch, type CanvasResourceAutoLinkMatch, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
@@ -64,6 +65,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     const pendingSelectionRef = useRef<number | null>(null);
     const pendingScrollTopRef = useRef<number | null>(null);
     const lastRenderedValueRef = useRef("");
+    const lastRenderedReferencesRef = useRef("");
     const interactingWithMenuRef = useRef(false);
     const interactingTimerRef = useRef<number | null>(null);
     const [mention, setMention] = useState<MentionState | null>(null);
@@ -155,7 +157,8 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
         if (!editor || composingRef.current) return;
         const isFocused = document.activeElement === editor;
         const currentValue = serializeEditableValue(editor);
-        if (currentValue === value && lastRenderedValueRef.current === value) {
+        const referencesKey = activeReferences.map((reference) => `${reference.id}:${reference.nodeId}:${reference.kind}:${reference.label}:${reference.active}`).join("|");
+        if (currentValue === value && lastRenderedValueRef.current === value && lastRenderedReferencesRef.current === referencesKey) {
             syncInlineMentionPreviews(editor, activeReferences);
             pendingSelectionRef.current = null;
             return;
@@ -164,6 +167,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
         const scrollTop = pendingScrollTopRef.current;
         renderEditableContent(editor, value, activeReferences);
         lastRenderedValueRef.current = value;
+        lastRenderedReferencesRef.current = referencesKey;
         if (isFocused && selection !== null) setEditableSelection(editor, selection);
         pendingSelectionRef.current = null;
         reportContentSize(editor);
@@ -327,7 +331,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
         const next = serializeEditableValue(editor);
         const cursor = getEditableSelection(editor)?.start ?? next.length;
         pendingSelectionRef.current = cursor;
-        lastRenderedValueRef.current = next;
+        lastRenderedValueRef.current = editorHasExpectedMentionChips(editor, next, activeReferences) ? next : "";
         onChange(next);
         syncMention(next, cursor);
         reportContentSize(editor);
@@ -690,15 +694,16 @@ function createInlineMentionChip(reference: CanvasResourceReference, token: stri
     // “/” is an input command, not part of the selected Skill name. Keep the
     // command token in the serialized value, but render the chip as a normal
     // icon + label so it remains readable after selection and submission.
+    const isH3Token = token.startsWith("<");
     prefix.textContent = reference.kind === "skill" ? "✦" : reference.kind === "text" ? "▤" : "@";
-    chip.appendChild(prefix);
+    if (!isH3Token) chip.appendChild(prefix);
 
     // Skill chip 的前缀已经承担图标职责，不再追加 fallback preview，避免出现两个星标。
     if (reference.kind !== "skill" && reference.kind !== "text") chip.appendChild(createInlinePreview(reference));
 
     const label = document.createElement("span");
     label.className = "canvas-resource-inline-label";
-    label.textContent = canvasResourceDisplayName(reference);
+    label.textContent = isH3Token ? token : canvasResourceDisplayName(reference);
     chip.appendChild(label);
 
     return chip;
@@ -1057,11 +1062,13 @@ function splitMentionText(value: string, references: CanvasResourceReference[]) 
         referenceByToken.set(`@${reference.label}`, { reference, serializedToken });
         if (reference.nodeId && !reference.assetId) referenceByToken.set(`@[node:${reference.nodeId}]`, { reference, serializedToken });
     });
+    h3ReferenceEntries(references.filter((reference) => reference.active && !reference.assetId), (reference) => reference.kind)
+        .forEach(({ item, token }) => referenceByToken.set(token, { reference: item, serializedToken: token }));
     const tokens = [...referenceByToken.keys()].sort((a, b) => b.length - a.length);
     const parts: MentionTextPart[] = [];
     let index = 0;
     while (index < value.length) {
-        const token = tokens.find((item) => value.startsWith(item, index) && hasMentionBoundary(value, index + item.length));
+        const token = tokens.find((item) => value.startsWith(item, index) && (item.startsWith("<") || hasMentionBoundary(value, index + item.length)));
         if (!token) {
             const nextTokenIndex = findNextMentionIndex(value, tokens, index + 1);
             const end = nextTokenIndex < 0 ? value.length : nextTokenIndex;
@@ -1082,11 +1089,17 @@ function renderEditableContent(editor: HTMLElement, value: string, references: C
     editor.replaceChildren(...nodes);
 }
 
+function editorHasExpectedMentionChips(editor: HTMLElement, value: string, references: CanvasResourceReference[]) {
+    const expected = splitMentionText(value, references).filter((part): part is Extract<MentionTextPart, { type: "mention" }> => part.type === "mention").map((part) => part.token);
+    const actual = Array.from(editor.querySelectorAll<HTMLElement>("[data-mention-token]"), (chip) => chip.dataset.mentionToken);
+    return expected.length === actual.length && expected.every((token, index) => token === actual[index]);
+}
+
 function findNextMentionIndex(value: string, tokens: string[], fromIndex: number) {
     let next = -1;
     tokens.forEach((token) => {
         const index = value.indexOf(token, fromIndex);
-        if (index >= 0 && hasMentionBoundary(value, index + token.length) && (next < 0 || index < next)) next = index;
+        if (index >= 0 && (token.startsWith("<") || hasMentionBoundary(value, index + token.length)) && (next < 0 || index < next)) next = index;
     });
     return next;
 }

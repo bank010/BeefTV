@@ -116,6 +116,9 @@ func collectManagementWorkflowFields(workflow map[string]any, capability string)
 			fields = append(fields, field)
 		}
 	}
+	if capability == "video" {
+		applyWorkflowVideoControls(workflow, fields)
+	}
 	return applyManagementFieldDefaults(fields, capability)
 }
 

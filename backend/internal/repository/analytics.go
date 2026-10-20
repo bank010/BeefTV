@@ -171,7 +171,8 @@ func (r *Repository) LatestProviderRequestIDForTask(taskID string) (string, erro
 	err := r.db.Select("provider_request_id").
 		Where("task_id = ? AND provider_request_id <> ''", taskID).
 		Order("created_at desc").
-		First(&log).Error
+		Limit(1).
+		Find(&log).Error
 	return strings.TrimSpace(log.ProviderRequestID), err
 }
 

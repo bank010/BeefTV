@@ -436,6 +436,13 @@ describe("画布文档提交日记", () => {
         expect(selectPreferredCanvasProject(localDirty, backend).title).toBe("本地草稿");
     });
 
+    test("跨本机地址的无基线旧缓存采用更新后的服务端画布", () => {
+        clearCanvasDocumentBase("c1");
+        const staleCache = canvas("旧失败状态", 1);
+        const backend = canvas("已完成结果", 2);
+        expect(selectPreferredCanvasProject(staleCache, backend).title).toBe("已完成结果");
+    });
+
     test("启动恢复提交不能用 loading 空 overlay 覆盖已确认 success+storageKey", async () => {
         const node1 = node("image-1790921196364-0djku", "图片", {
             metadata: {
@@ -1532,6 +1539,34 @@ describe("画布文档提交日记", () => {
         expect(journal.inFlight?.operationId).toBe("op-keep");
         expect(canvasDocumentBase("c1")?.revision).toBe(4);
         expect(canvasDocumentBase("c1")?.snapshot.title).toBe("已确认");
+    });
+
+    test("较旧绑定回执读取最新服务端快照，并结算同一任务的失败展示层", async () => {
+        const bound = node("video-target", "视频", {
+            metadata: { taskId: "task-1", status: "success", taskStatus: "succeeded", content: "/api/resources/video/file", storageKey: "resource:video", assetId: "asset-video", durationMs: 1600 },
+        });
+        const confirmed = canvas("已绑定", 4, { nodes: [bound] });
+        await seedConfirmed(confirmed);
+        server.document = confirmed;
+        useCanvasStore.setState({ projects: [canvas("本地草稿", 4, {
+            nodes: [{ ...bound, metadata: { taskId: "task-1", status: "error", taskStatus: "succeeded", errorDetails: "画布尚未更新" } }],
+        })] });
+
+        const adopted = await adoptServerConfirmedGenerationPatch(canvas("旧绑定回执", 2, {
+            nodes: [{ ...bound, metadata: { taskId: "task-1", status: "success", content: "/api/resources/video/file", storageKey: "resource:video", assetId: "asset-video" } }],
+        }));
+
+        expect(adopted.nodes[0]?.metadata).toMatchObject({
+            taskId: "task-1",
+            status: "success",
+            taskStatus: "succeeded",
+            content: "/api/resources/video/file",
+            storageKey: "resource:video",
+            assetId: "asset-video",
+        });
+        expect(adopted.nodes[0]?.metadata?.errorDetails).toBeUndefined();
+        expect(adopted.title).toBe("本地草稿");
+        expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(4);
     });
 
     test("日记写入会把 snapshot.revision 对齐到 confirmedRevision", async () => {

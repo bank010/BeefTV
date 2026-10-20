@@ -19,6 +19,7 @@ import { captureUserScope, UserScopeAbandonedError } from "@/lib/user-scope-guar
 import { apiClient, ApiError } from "@/services/api/request";
 import { createDepthCaptureTask } from "@/services/api/depth-capture";
 import { createTimelineRenderTask, createTimelineTranscriptionTask } from "@/services/api/timeline-tasks";
+import { CanvasBackendSubmitPausedError } from "@/services/canvas-revision-conflict";
 import type { GenerationTask } from "@/services/api/task-center";
 import { waitForGenerationTask } from "@/services/api/task-center";
 import type { TimelineProject } from "@/types/timeline";
@@ -135,6 +136,8 @@ describe("local-executor clientOperationId intent", () => {
         expect(isUncertainLocalExecutorSubmit(new Error("任务失败"), "task-terminal")).toBe(false);
         expect(isUncertainLocalExecutorSubmit(new ApiError("缺少媒体", { status: 400 }))).toBe(false);
         expect(isUncertainLocalExecutorSubmit(new DOMException("Aborted", "AbortError"))).toBe(false);
+        expect(isUncertainLocalExecutorSubmit(new CanvasBackendSubmitPausedError())).toBe(false);
+        expect(localExecutorIntentAfterError({ clientOperationId: "paused-operation" }, new CanvasBackendSubmitPausedError()).terminal).toBe(true);
     });
 
     test("explicit 4xx before taskId is terminal and does not reuse clientOperationId", () => {

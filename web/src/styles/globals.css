@@ -11005,6 +11005,25 @@ html:not(.dark) .creation-studio-control:hover,
         flex: 1 1 220px;
     }
 
+    .canvas-node-composer-footer--video {
+        display: grid;
+        grid-template-columns: minmax(148px, 34%) minmax(0, 1fr) max-content;
+        justify-content: initial;
+    }
+
+    .canvas-node-composer-footer--video .canvas-node-composer-model {
+        min-width: 0;
+        max-width: none;
+    }
+
+    .canvas-node-composer-footer-spacer {
+        min-width: 0;
+    }
+
+    .canvas-node-composer-footer-actions {
+        justify-self: end;
+    }
+
     .canvas-node-composer-settings-trigger {
         height: 28px !important;
         width: var(--canvas-composer-settings-width) !important;
@@ -11015,6 +11034,13 @@ html:not(.dark) .creation-studio-control:hover,
         box-shadow: none !important;
         font-size: var(--fs-tiny) !important;
         font-weight: 400 !important;
+    }
+
+    .canvas-node-composer-settings-trigger.canvas-node-composer-polish-trigger {
+        width: 28px !important;
+        min-width: 28px !important;
+        justify-content: center !important;
+        padding-inline: 0 !important;
     }
 
     .canvas-node-composer-reference-tools-trigger {

@@ -1,7 +1,7 @@
 import { depthCaptureTaskMetadata, depthCaptureWaitFailureMetadata, isDepthCaptureResultNode } from "@/lib/canvas/canvas-depth-capture";
 import { assertLocalExecutorSession, beginLocalExecutorSession, isLocalExecutorSessionStop, observeLocalExecutorTask, type LocalExecutorSession } from "@/lib/plugins/builtin/editor/local-executor-session";
 import type { CapturedUserScope } from "@/lib/user-scope-guard";
-import type { GenerationTask } from "@/services/api/task-center";
+import { findGenerationTaskByOperation, type GenerationTask } from "@/services/api/task-center";
 import { bindBackendCanvasGenerationResult } from "@/services/canvas-generation-consumer";
 import type { CanvasNodeData } from "@/types/canvas";
 
@@ -13,7 +13,9 @@ type DepthTarget = {
 };
 
 function ownsTask(input: DepthTarget, node: CanvasNodeData) {
-    return node.id === input.node.id && node.metadata?.taskId === input.node.metadata?.taskId;
+    if (node.id !== input.node.id) return false;
+    if (input.node.metadata?.taskId) return node.metadata?.taskId === input.node.metadata.taskId;
+    return Boolean(input.node.metadata?.taskClientOperationId && node.metadata?.taskClientOperationId === input.node.metadata.taskClientOperationId);
 }
 
 function updateDepthTarget(input: DepthTarget, update: (node: CanvasNodeData) => CanvasNodeData) {
@@ -43,14 +45,28 @@ export async function attachOwnedDepthCaptureResult(input: DepthTarget & { task:
 }
 
 export async function recoverOwnedDepthCaptureNode(input: DepthTarget, bind = bindBackendCanvasGenerationResult): Promise<void> {
-    const taskId = input.node.metadata?.taskId;
-    if (!taskId) {
-        updateDepthTarget(input, node => ({ ...node, metadata: { ...node.metadata, status: "error", errorDetails: "深度任务未成功提交，请重新生成" } }));
-        return;
+    const operationId = input.node.metadata?.taskClientOperationId;
+    let initialTask: GenerationTask | undefined;
+    let taskId = input.node.metadata?.taskId;
+    if (!taskId && operationId) {
+        try {
+            initialTask = await findGenerationTaskByOperation(operationId, input.session.projectId, input.session.controller.signal);
+            assertLocalExecutorSession(input.session);
+            if (initialTask) {
+                taskId = initialTask.id;
+                updateDepthTarget(input, node => ({ ...node, metadata: { ...node.metadata, taskId, taskStatus: initialTask!.status, status: "loading" } }));
+            }
+        } catch (error) {
+            if (isLocalExecutorSessionStop(error)) return;
+            updateDepthTarget(input, node => ({ ...node, metadata: { ...node.metadata, errorDetails: error instanceof Error ? error.message : "查询深度任务失败" } }));
+            return;
+        }
     }
+    if (!taskId) return;
     let latestTask: GenerationTask | undefined;
     try {
         const task = await observeLocalExecutorTask(taskId, input.session, {
+            initialTask,
             intervalMs: 1000,
             onTaskUpdate: task => {
                 latestTask = task;
@@ -81,7 +97,8 @@ export function recoverOwnedDepthCaptureNodes(input: {
     if (input.signal.aborted) return;
     for (const node of input.nodesRef.current) {
         if (node.metadata?.generationErrorCode === "result_target_unavailable") continue;
-        if (!isDepthCaptureResultNode(node) || (node.metadata?.status !== "loading" && !(node.metadata?.status === "error" && node.metadata.taskId))) continue;
+        const hasRecoverableIntent = Boolean(node.metadata?.taskId || (node.metadata?.taskClientOperationId && node.metadata?.taskStage === "submission_unknown"));
+        if (!isDepthCaptureResultNode(node) || (node.metadata?.status !== "loading" && !(node.metadata?.status === "error" && hasRecoverableIntent))) continue;
         const observer = new AbortController();
         input.observers.add(observer);
         const onAbort = () => observer.abort();
