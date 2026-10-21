@@ -675,7 +675,7 @@ export function modelCapabilityConfigFor(
     config: {
         channels: Array<{ id: string; models: string[]; baseUrl?: string; interfaceType?: ModelProtocol; modelProfiles?: Array<{ model: string; capabilityConfig?: ModelCapabilityConfig; protocol?: ModelProtocol }> }>;
         taskWorkflowProvider?: string;
-        comfyUI?: { selectedWorkflowId?: string; workflows?: Array<{ workflowId: string; capability: string; imageEditWorkflowId?: string; fields?: WorkflowVideoFieldLike[]; workflowJson?: Record<string, unknown> }> };
+        comfyUI?: { selectedWorkflowId?: string; workflows?: Array<{ workflowId: string; capability: string; imageEditWorkflowId?: string; fields?: WorkflowVideoFieldLike[]; workflowJson?: Record<string, unknown>; sourceWorkflowJson?: Record<string, unknown> }> };
     },
     model: string,
     imageCount?: number,
@@ -693,12 +693,19 @@ export function modelCapabilityConfigFor(
             const fields = workflow.fields?.length ? workflow.fields : workflowVideoFieldsFromJson(workflow.workflowJson);
             if (workflow.capability === "video") {
                 const video = workflowVideoCapabilityConfig(fields, fallback.video!);
-                video.references.maxImages = workflowMediaInputLimit(fields, ["referenceimage", "image", "referenceimages"]);
-                video.references.maxVideos = workflowMediaInputLimit(fields, ["referencevideo", "video", "referencevideos"]);
-                video.references.maxAudios = workflowMediaInputLimit(fields, ["referenceaudio", "audio", "referenceaudios"]);
+                const mapped = {
+                    maxImages: workflowMediaInputLimitForWorkflow(fields, workflow.workflowJson, ["referenceimage", "image", "referenceimages"], workflow.sourceWorkflowJson),
+                    maxVideos: workflowMediaInputLimitForWorkflow(fields, workflow.workflowJson, ["referencevideo", "video", "referencevideos"], workflow.sourceWorkflowJson),
+                    maxAudios: workflowMediaInputLimitForWorkflow(fields, workflow.workflowJson, ["referenceaudio", "audio", "referenceaudios"], workflow.sourceWorkflowJson),
+                };
+                video.references.maxImages = mapped.maxImages;
+                video.references.maxVideos = mapped.maxVideos;
+                video.references.maxAudios = mapped.maxAudios;
                 if (video.references.maxImages === 0) video.operations = video.operations.filter((operation) => operation !== "image_to_video");
                 if (video.references.maxImages + video.references.maxVideos + video.references.maxAudios === 0) {
                     video.operations = video.operations.filter((operation) => operation !== "reference_to_video");
+                } else {
+                    video.operations = Array.from(new Set([...video.operations, "text_to_video", "image_to_video", "reference_to_video"]));
                 }
                 if (video.references.maxAudios === 0) video.operations = video.operations.filter((operation) => operation !== "audio_to_video");
                 return { ...fallback, video };
@@ -765,10 +772,24 @@ export function modelCapabilityConfigFor(
     return { ...fallback, ...capabilityConfig, text, image, video };
 }
 
+export function workflowFieldEffectiveMediaSource(field: WorkflowVideoFieldLike): string {
+    const explicit = workflowFieldSource(field);
+    if (["referenceimage", "image", "referenceimages", "referencevideo", "video", "referencevideos", "referenceaudio", "audio", "referenceaudios"].includes(explicit)) {
+        return explicit;
+    }
+    const fieldType = String(field.fieldType || "")
+        .trim()
+        .toUpperCase();
+    if (fieldType === "IMAGE") return "referenceimage";
+    if (fieldType === "VIDEO") return "referencevideo";
+    if (fieldType === "AUDIO") return "referenceaudio";
+    return explicit;
+}
+
 export function workflowMediaInputLimit(fields: readonly WorkflowVideoFieldLike[], sources: readonly string[]) {
     let max = 0;
     for (const field of fields) {
-        const source = workflowFieldSource(field) || String(field.fieldName || "").trim().replace(/[\s_-]/g, "").toLowerCase();
+        const source = workflowFieldEffectiveMediaSource(field) || String(field.fieldName || "").trim().replace(/[\s_-]/g, "").toLowerCase();
         if (field.enabled === false || field.safeToOverride === false || !sources.includes(source)) continue;
         const imageOrder = Number(field.imageOrder);
         const sourceIndex = Number(field.sourceIndex);
@@ -830,6 +851,7 @@ export type WorkflowVideoFieldLike = {
     optionsSource?: string;
     enabled?: boolean;
     source?: string;
+    sourceAutomatic?: boolean;
     sourceIndex?: number;
     imageOrder?: number;
     sourceFromUpstream?: boolean;
@@ -896,6 +918,7 @@ export function workflowFieldRole(field: WorkflowVideoFieldLike) {
     if (["prompt", "text", "positiveprompt", "positive"].includes(source)) return "prompt";
     if (["referenceimage", "image", "referencevideo", "video", "referenceaudio", "audio", "mask"].includes(source) || ["IMAGE", "VIDEO", "AUDIO"].includes(fieldType)) return "media";
     if (!workflowFieldSafeToOverride(field)) return "internal";
+    if (["aspectratio", "videoseconds", "vquality"].includes(source)) return "business";
     const key = normalizeWorkflowVideoFieldKey(String(field.fieldName || ""));
     if (
         [
@@ -1199,6 +1222,87 @@ export function workflowVideoDefaultSize(fields: readonly WorkflowVideoFieldLike
     return "";
 }
 
+function managementMediaFieldName(key: string, mediaType: "image" | "video" | "audio") {
+    if (key === mediaType) return true;
+    for (const prefix of ["input", "reference", "ref", "source", "init", "start", "end", "first", "last", "control", "controlnet", "style", "subject"]) {
+        if (key === `${prefix}${mediaType}`) return true;
+    }
+    for (const suffix of ["file", "path", "filename", "upload"]) {
+        if (key === `${mediaType}${suffix}`) return true;
+    }
+    if (mediaType === "image") {
+        return key === "firstframe" || key === "lastframe" || key === "startframe" || key === "endframe";
+    }
+    return false;
+}
+
+function managementMediaValueType(value: unknown): "IMAGE" | "VIDEO" | "AUDIO" | "" {
+    let sample = value;
+    if (Array.isArray(sample)) sample = sample[0];
+    const text = String(sample ?? "").trim().toLowerCase();
+    if (!text) return "";
+    const path = text.split(/[?#]/, 1)[0] || text;
+    if (/\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(path)) return "IMAGE";
+    if (/\.(mp4|webm|mov|m4v|mkv)$/i.test(path)) return "VIDEO";
+    if (/\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(path)) return "AUDIO";
+    return "";
+}
+
+function inferManagementWorkflowFieldType(fieldName: string, fieldValue: unknown, classType: string): string {
+    const key = normalizeWorkflowVideoFieldKey(fieldName);
+    const classKey = normalizeWorkflowVideoFieldKey(classType);
+    if (key.includes("mask")) return "IMAGE";
+    if (classKey.includes("loadimage") && (key === "file" || key === "path" || managementMediaFieldName(key, "image"))) return "IMAGE";
+    if (classKey.includes("loadvideo") && (key === "file" || key === "path" || managementMediaFieldName(key, "video"))) return "VIDEO";
+    if (classKey.includes("loadaudio") && (key === "file" || key === "path" || managementMediaFieldName(key, "audio"))) return "AUDIO";
+    if (managementMediaFieldName(key, "image")) return "IMAGE";
+    if (managementMediaFieldName(key, "video")) return "VIDEO";
+    if (managementMediaFieldName(key, "audio")) return "AUDIO";
+    const mediaFromValue = managementMediaValueType(fieldValue);
+    if (mediaFromValue) return mediaFromValue;
+    if (typeof fieldValue === "boolean") return "BOOLEAN";
+    if (typeof fieldValue === "number") return "NUMBER";
+    return "TEXT";
+}
+
+export function workflowMediaInputLimitForWorkflow(
+    fields: readonly WorkflowVideoFieldLike[],
+    workflowJson: Record<string, unknown> | undefined,
+    sources: readonly string[],
+    sourceWorkflowJson?: Record<string, unknown>,
+) {
+    const fromSaved = workflowMediaInputLimit(fields, sources);
+    const fromApiGraph = workflowMediaInputLimit(workflowVideoFieldsFromJson(workflowJson), sources);
+    const fromSourceGraph = workflowMediaInputLimitFromSourceWorkflow(sourceWorkflowJson, sources);
+    return Math.max(fromSaved, fromApiGraph, fromSourceGraph);
+}
+
+function workflowMediaInputLimitFromSourceWorkflow(value: Record<string, unknown> | undefined, sources: readonly string[]) {
+    const nodes = Array.isArray(value?.nodes) ? value.nodes : [];
+    if (!nodes.length) return 0;
+    const normalizedSources = sources.map((source) => normalizeWorkflowVideoFieldKey(source));
+    const kind = normalizedSources.some((source) => ["referenceimage", "image", "referenceimages"].includes(source))
+        ? "image"
+        : normalizedSources.some((source) => ["referencevideo", "video", "referencevideos"].includes(source))
+          ? "video"
+          : normalizedSources.some((source) => ["referenceaudio", "audio", "referenceaudios"].includes(source))
+            ? "audio"
+            : "";
+    if (!kind) return 0;
+    const pattern = kind === "image" ? /^ref_images\.ref_image_(\d+)$/i : kind === "video" ? /^ref_videos\.ref_video_(\d+)$/i : /^ref_audios\.ref_audio_(\d+)$/i;
+    let limit = 0;
+    nodes.forEach((rawNode) => {
+        if (!rawNode || typeof rawNode !== "object" || Array.isArray(rawNode)) return;
+        const inputs = Array.isArray((rawNode as Record<string, unknown>).inputs) ? ((rawNode as Record<string, unknown>).inputs as unknown[]) : [];
+        inputs.forEach((rawInput) => {
+            if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) return;
+            const match = String((rawInput as Record<string, unknown>).name || "").trim().match(pattern);
+            if (match) limit = Math.max(limit, Number(match[1]) + 1);
+        });
+    });
+    return limit;
+}
+
 export function workflowVideoFieldsFromJson(value: Record<string, unknown> | undefined) {
     if (!value || typeof value !== "object") return [] as WorkflowVideoFieldLike[];
     const fields: WorkflowVideoFieldLike[] = [];
@@ -1210,14 +1314,39 @@ export function workflowVideoFieldsFromJson(value: Record<string, unknown> | und
         if (!inputs || typeof inputs !== "object" || Array.isArray(inputs)) return;
         Object.entries(inputs as Record<string, unknown>).forEach(([fieldName, fieldValue]) => {
             if (Array.isArray(fieldValue)) return;
-            const fieldType = typeof fieldValue === "number" ? "NUMBER" : typeof fieldValue === "boolean" ? "BOOLEAN" : "TEXT";
+            const fieldType = inferManagementWorkflowFieldType(fieldName, fieldValue, classType);
             const candidate = { nodeId, classType, fieldName, fieldValue, fieldType };
             const safeToOverride = workflowFieldSafeToOverride(candidate);
             const role = workflowFieldRole(candidate);
             fields.push({ ...candidate, safeToOverride, role, enabled: safeToOverride && role !== "internal" });
         });
     });
+    applyWorkflowVideoControlBindings(value, fields);
     return fields;
+}
+
+function applyWorkflowVideoControlBindings(graph: Record<string, unknown>, fields: WorkflowVideoFieldLike[]) {
+    const node = (id: string) => graph[id] as { class_type?: string; inputs?: Record<string, unknown> } | undefined;
+    const linkedNode = (value: unknown, slot: number) => Array.isArray(value) && value.length === 2 && Number(value[1]) === slot ? String(value[0]) : "";
+    const bind = (id: string, name: string, source: string, range?: { min: number; max: number; step: number }) => {
+        const field = fields.find((field) => field.nodeId === id && field.fieldName === name);
+        if (field) Object.assign(field, { source, sourceAutomatic: true, role: "business", enabled: true, ...range });
+    };
+    for (const raw of Object.values(graph)) {
+        const target = raw as { class_type?: string; inputs?: Record<string, unknown> } | null;
+        if (target?.class_type !== "MiniMaxH3ReferenceToVideo") continue;
+        const inputs = target.inputs || {};
+        const size = linkedNode(inputs.width, 0);
+        if (size && size === linkedNode(inputs.height, 1) && node(size)?.class_type === "ResolutionSelector") {
+            bind(size, "aspect_ratio", "aspectRatio");
+            bind(size, "megapixels", "vquality", { min: 0.1, max: 16, step: 0.1 });
+        }
+        const frames = node(linkedNode(inputs.length, 1));
+        const expression = String(frames?.inputs?.expression || "").replace(/\s/g, "");
+        if (frames?.class_type !== "ComfyMathExpression" || expression !== "max(5,round(a*24))+(5-(max(5,round(a*24))%17))%17") continue;
+        const seconds = linkedNode(frames.inputs?.["values.a"], 0);
+        if (node(seconds)?.class_type === "PrimitiveFloat") bind(seconds, "value", "videoSeconds", { min: 1, max: 15, step: 1 });
+    }
 }
 
 function workflowVideoFieldMatches(field: WorkflowVideoFieldLike, source: string) {

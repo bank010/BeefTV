@@ -1,7 +1,7 @@
 import { type GenerationTask } from "@/services/api/task-center";
 import { createClientId } from "@/lib/client-id";
 import { backendProviderConfig, logicalModelIDForConfig, runBackendGenerationTask, type GenerationTaskDependencies } from "@/services/api/generation-task";
-import { resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
+import { comfyUIWorkflowForModel, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { resourceIdFromStorageKey } from "@/services/api/resources";
@@ -451,8 +451,13 @@ export function buildVideoGenerationMetadata(
     const metadata = node?.metadata;
     const referenceImageIds = new Set((context?.referenceImages || []).map((image) => image.id));
     // 工作流视频把已连接媒体交给字段映射处理，不再把历史首尾帧选择当成硬约束。
-    // 工作流视频把已连接媒体交给字段映射处理，不再把历史首尾帧选择当成硬约束。
-    const workflowVideo = node?.type === CanvasNodeType.Config && (config?.taskWorkflowProvider === "runninghub" || isCanvasWorkflowProvider(metadata));
+    const declaredWorkflowVideo =
+        config?.taskWorkflowProvider === "runninghub" ||
+        config?.taskWorkflowProvider === "comfyui" ||
+        Boolean(config?.model && comfyUIWorkflowForModel(config, config.model));
+    const workflowVideo =
+        declaredWorkflowVideo &&
+        (node?.type === CanvasNodeType.Video || (node?.type === CanvasNodeType.Config && isCanvasWorkflowProvider(metadata)));
     const startFrame = workflowVideo ? undefined : requireConnectedVideoFrame(metadata?.videoStartFrameNodeId, "首帧", referenceImageIds);
     const endFrame = workflowVideo ? undefined : requireConnectedVideoFrame(metadata?.videoEndFrameNodeId, "尾帧", referenceImageIds);
     return {
@@ -465,7 +470,7 @@ export function buildVideoGenerationMetadata(
         videoCameraMovePrompt: metadata?.videoCameraMovePrompt,
         videoStartFrameNodeId: startFrame,
         videoEndFrameNodeId: endFrame,
-        videoMiddleFrameNodeId: metadata?.videoMiddleFrameNodeId ? requireConnectedVideoFrame(metadata.videoMiddleFrameNodeId, "中间帧", referenceImageIds) : undefined,
+        videoMiddleFrameNodeId: workflowVideo ? undefined : metadata?.videoMiddleFrameNodeId ? requireConnectedVideoFrame(metadata.videoMiddleFrameNodeId, "中间帧", referenceImageIds) : undefined,
         videoMiddleFrameTime: metadata?.videoMiddleFrameTime,
         videoH3Options: metadata?.videoH3Options,
         videoReferenceOrder: config && isH3Model(config.model) ? h3ResolvedReferenceOrder(metadata?.videoReferenceOrder, [...(context?.referenceImages || []), ...(context?.referenceVideos || []), ...(context?.referenceAudios || [])]) : metadata?.videoReferenceOrder,

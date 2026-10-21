@@ -8,7 +8,7 @@ WORKDIR /src
 COPY plugin-packages ./plugin-packages
 RUN ./plugin-packages/build-packages.sh
 
-FROM golang:1.25-alpine AS backend-build
+FROM golang:1.27-alpine AS backend-build
 
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG BUILD_VERSION

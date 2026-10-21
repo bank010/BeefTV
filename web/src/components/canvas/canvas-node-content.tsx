@@ -230,7 +230,7 @@ function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }: Pick<C
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ background: theme.node.fill, color: theme.node.activeStroke }}>
             {submissionUncertain ? <AlertCircle className="size-10" /> : <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />}
-            <span className="text-[var(--fs-tiny)] font-semibold">{delivery?.title || (fetchingResult ? "正在取回结果" : "生成中")}</span>
+            <span className="text-[var(--fs-tiny)] font-semibold">{delivery?.title || (fetchingResult ? "正在取回结果" : !taskId && node.metadata?.processingLabel ? node.metadata.processingLabel : "生成中")}</span>
             {hasTaskIdentity ? (
                 <div className="flex w-full max-w-[210px] flex-col items-center gap-1.5">
                     {fetchingResult ? null : (
@@ -456,13 +456,18 @@ function ImageNodeContent(props: CanvasNodeContentProps) {
     if (!props.node.metadata?.content && props.isBatchRoot) {
         const content = props.node.metadata?.status === "loading"
             ? <LoadingContent node={props.node} theme={props.theme} />
-            : props.node.metadata?.status === "error"
-                ? <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} />
+            : props.node.metadata?.status === "error" || canReloadCanvasGenerationResult(props.node.metadata)
+                ? <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} onOpenTaskDetails={props.onOpenTaskDetails} />
                 : <EmptyImageContent {...props} isBatchRoot={false} />;
         return <BatchFrame batchPreviewNodes={props.batchPreviewNodes} batchCount={props.batchCount} batchExpanded={props.batchExpanded} batchOpening={props.batchOpening} batchRecovering={props.batchRecovering} theme={props.theme} onToggleBatch={props.onToggleBatch}>{content}</BatchFrame>;
     }
-    if (!props.node.metadata?.content) return <EmptyImageContent {...props} />;
-    return <ImageContent scale={props.scale} batchPreviewNodes={props.batchPreviewNodes} node={props.node} theme={props.theme} isBatchRoot={props.isBatchRoot} batchCount={props.batchCount} batchExpanded={props.batchExpanded} batchOpening={props.batchOpening} batchRecovering={props.batchRecovering} onToggleBatch={props.onToggleBatch} />;
+    if (!props.node.metadata?.content) {
+        if (canReloadCanvasGenerationResult(props.node.metadata)) {
+            return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} onOpenTaskDetails={props.onOpenTaskDetails} />;
+        }
+        return <EmptyImageContent {...props} />;
+    }
+    return <ImageContent scale={props.scale} batchPreviewNodes={props.batchPreviewNodes} node={props.node} theme={props.theme} isBatchRoot={props.isBatchRoot} batchCount={props.batchCount} batchExpanded={props.batchExpanded} batchOpening={props.batchOpening} batchRecovering={props.batchRecovering} onToggleBatch={props.onToggleBatch} onReloadResource={props.onReloadResource} />;
 }
 
 function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchPreviewNodes, batchExpanded, batchOpening, batchRecovering, onToggleBatch }: CanvasNodeContentProps) {
@@ -691,7 +696,7 @@ function EmptyAudioContent({ theme }: { theme: CanvasTheme }) {
     return <div className="flex h-full w-full items-center justify-center" style={{ color: theme.node.muted }}><Music2 className="canvas-node-empty-audio-mark size-14 opacity-30" strokeWidth={1.25} aria-hidden /></div>;
 }
 
-function ImageContent({ node, theme, scale = 1, isBatchRoot, batchCount, batchPreviewNodes, batchExpanded, batchOpening, batchRecovering, onToggleBatch }: Pick<CanvasNodeContentProps, "node" | "theme" | "scale" | "isBatchRoot" | "batchCount" | "batchPreviewNodes" | "batchExpanded" | "batchOpening" | "batchRecovering" | "onToggleBatch">) {
+function ImageContent({ node, theme, scale = 1, isBatchRoot, batchCount, batchPreviewNodes, batchExpanded, batchOpening, batchRecovering, onToggleBatch, onReloadResource }: Pick<CanvasNodeContentProps, "node" | "theme" | "scale" | "isBatchRoot" | "batchCount" | "batchPreviewNodes" | "batchExpanded" | "batchOpening" | "batchRecovering" | "onToggleBatch" | "onReloadResource">) {
     const imageContainerRef = useRef<HTMLDivElement>(null);
     const nearViewport = useNearViewport(imageContainerRef);
     const { url, loading, error, retry, fail } = useNodeResourceUrl(node, nearViewport);
@@ -735,9 +740,28 @@ function ImageContent({ node, theme, scale = 1, isBatchRoot, batchCount, batchPr
         });
     };
 
+    const pendingCanvasResult = canReloadCanvasGenerationResult(node.metadata);
+
     return (
         <BatchFrame batchPreviewNodes={batchPreviewNodes} batchCount={isBatchRoot ? batchCount : 0} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} theme={theme} onToggleBatch={onToggleBatch}>
-            <div ref={imageContainerRef} className="h-full w-full overflow-hidden rounded-[var(--node-radius)]">
+            <div ref={imageContainerRef} className="relative h-full w-full overflow-hidden rounded-[var(--node-radius)]">
+                {pendingCanvasResult ? (
+                    <div className="pointer-events-none absolute inset-x-2 top-2 z-[var(--node-z-overlay)] rounded-[var(--r-md)] px-3 py-2 text-center text-[var(--fs-tiny)] leading-snug shadow-sm" style={{ background: theme.node.panel, color: theme.node.text }}>
+                        <div>{node.metadata?.errorDetails || "生成结果已保留，请点击「继续取回」"}</div>
+                        <button
+                            type="button"
+                            data-canvas-no-zoom
+                            className="pointer-events-auto mt-2 inline-flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2.5 text-[var(--fs-tiny)] font-medium"
+                            style={{ background: theme.accent.primary, color: theme.accent.onPrimary }}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={(event) => { event.stopPropagation(); onReloadResource?.(node); }}
+                        >
+                            <Download className="size-3" />
+                            继续取回
+                        </button>
+                    </div>
+                ) : null}
                 {error ? (
                     <div role="status" aria-label="图片加载失败" className="flex size-full items-center justify-center text-center text-xs" style={{ background: theme.node.fill, color: theme.node.text }}>
                         <div className="flex flex-col items-center gap-2" style={{ transform: "scale(var(--canvas-live-inverse-scale, 1))", transformOrigin: "center" }}>

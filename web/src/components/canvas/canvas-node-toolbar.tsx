@@ -43,12 +43,15 @@ type CanvasNodeToolbarProps = {
     onUpscale: (node: CanvasNodeData) => void;
     onSuperResolve: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
+    onTurnaroundSheet: (node: CanvasNodeData) => void;
     onLighting: (node: CanvasNodeData) => void;
     onPanorama: (node: CanvasNodeData) => void;
     onViewImage: (node: CanvasNodeData) => void;
     onExtractVideoFrames: (node: CanvasNodeData, preset?: "current" | "first" | "last") => void;
     onExtractAudioFromVideo: (node: CanvasNodeData) => void;
     onTrimVideoSegments: (node: CanvasNodeData) => void;
+    onShotBreakdown?: (node: CanvasNodeData) => void;
+    splittingVideoNodeIds?: ReadonlySet<string>;
     onDepthCapture: (node: CanvasNodeData) => void;
     onSubtitles: (node: CanvasNodeData) => void;
     onTimeline: (node: CanvasNodeData) => void;
@@ -105,12 +108,15 @@ export function CanvasNodeToolbar({
     onUpscale,
     onSuperResolve,
     onAngle,
+    onTurnaroundSheet,
     onLighting,
     onPanorama,
     onViewImage,
     onExtractVideoFrames,
     onExtractAudioFromVideo,
     onTrimVideoSegments,
+    onShotBreakdown,
+    splittingVideoNodeIds,
     onDepthCapture,
     onSubtitles,
     onTimeline,
@@ -239,6 +245,7 @@ export function CanvasNodeToolbar({
         onUpscale,
         onSuperResolve,
         onAngle,
+        onTurnaroundSheet,
         onLighting,
         onPanorama,
         onViewImage,
@@ -332,7 +339,7 @@ export function CanvasNodeToolbar({
     // that belong to the four image workflows in the primary dock.
     const imagePrimaryTools = primary.filter((tool) => tool.id === "maskEdit");
     const portraitTools = compact ? [] : isImage ? inGroup("portrait").filter((tool) => tool.id === "emotion") : inGroup("portrait");
-    const viewpointLightingTools = compact ? [] : isImage ? [...inGroup("viewpoint"), ...inGroup("lighting")].filter((tool) => tool.id === "angle" || tool.id === "lighting") : [...inGroup("viewpoint"), ...inGroup("lighting")];
+    const viewpointLightingTools = compact ? [] : isImage ? [...inGroup("viewpoint"), ...inGroup("lighting")].filter((tool) => tool.id === "turnaroundSheet" || tool.id === "angle" || tool.id === "lighting") : [...inGroup("viewpoint"), ...inGroup("lighting")];
     const panoramaTools = compact || isImage ? [] : inGroup("panorama");
     const processTools = compact
         ? [...inGroup("portrait"), ...inGroup("viewpoint"), ...inGroup("lighting"), ...inGroup("panorama"), ...inGroup("process")]
@@ -343,7 +350,9 @@ export function CanvasNodeToolbar({
     const utilityTools = inGroup("utility");
     const imageSettingsTools = isImage ? allTools.filter((tool) => tool.id === "replace" || tool.id === "resize" || tool.id === "node-lock") : [];
     const processMenuLabel = compact ? "工具" : isVideo ? "提取素材" : isImage ? "图片工具" : isAudio ? "音频处理" : "文本调整";
+    const splittingVideo = splittingVideoNodeIds?.has(node.id) || false;
     const videoProcessingTools = [
+        ...(onShotBreakdown ? [{ id: "jingxu", label: splittingVideo ? "正在自动分镜" : "自动分镜", icon: <Images className="size-3.5" />, group: "process" as const, order: 0, disabled: splittingVideo || (!node.metadata?.content && !node.metadata?.storageKey), onClick: () => onShotBreakdown(node) }] : []),
         ...registryToolbarTools.filter((tool) => tool.id === "trimRegenerate" || tool.id === "cropVideo" || tool.id === "depthCapture"),
         ...(narrow ? inGroup("workspace") : []),
     ];

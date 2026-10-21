@@ -339,9 +339,11 @@ export function generationErrorCode(error: unknown) {
 }
 
 export function generationFailureMetadata(error: unknown, prompt: string, references: Array<string | { id?: string; storageKey?: string; url?: string }> = []): GenerationFailureMetadata {
+    const fromCode = generationErrorCode(error);
     const explained = explainGenerationError(error);
+    const errorCode = fromCode ?? (explained.category === "unknown" ? undefined : explained.errorCode);
     const inputFingerprint = generationInputFingerprint(prompt, references);
-    if (!explained.moderation) return { errorDetails: explained.message, generationErrorSummary: explained.summary, generationErrorCode: explained.category === "unknown" ? undefined : explained.errorCode };
+    if (!explained.moderation) return { errorDetails: explained.message, generationErrorSummary: explained.summary, generationErrorCode: errorCode };
     return {
         errorDetails: explained.message,
         generationErrorCode: explained.errorCode,

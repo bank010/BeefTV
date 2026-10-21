@@ -1,5 +1,4 @@
 import { localAssetToInsertPayload } from "@/components/canvas/asset-picker-modal";
-import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { CanvasAssistantSidebar } from "./canvas-assistant-sidebar";
 import { useCanvasAssistantContinuation } from "./use-canvas-assistant-continuation";
 import { highlightAssistantNodes } from "./canvas-assistant-highlight";
@@ -9,10 +8,12 @@ import type { Dispatch, MouseEvent as ReactMouseEvent, SetStateAction } from "re
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { appHref } from "@/lib/app-routing";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
-import { queryGenerationTask } from "@/services/api/task-center";
+import { queryGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { modelOptionName, resolveModelChannel, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { buildCanvasGenerationRequirements, buildGenerationConfig } from "@/lib/canvas/canvas-generation-config";
+import { defaultCanvasImagePolishMode } from "@/lib/plugins/builtin/image-prompt-polish";
 import { optimizePromptWithConfig, promptPolishModelFamily } from "@/lib/plugins/builtin/prompt-optimizer";
+import type { PromptOptimizationMode } from "@/lib/plugins/plugin-types";
 import { uploadMediaFile } from "@/services/file-storage";
 import { getActiveUserScope, scopedLocalStorage } from "@/lib/user-scope";
 import { assertUserScope, captureUserScope, userScopeMatches, type CapturedUserScope } from "@/lib/user-scope-guard";
@@ -22,6 +23,7 @@ import { uploadImage } from "@/services/image-storage";
 import { imageMetadata } from "@/lib/canvas/canvas-generation-task-sync";
 import { isCanvasImageSourceNode } from "@/lib/canvas/canvas-image-source";
 import { canOpenCanvasNodePromptPanel, isCanvasMediaResultNode } from "@/lib/canvas/canvas-node-semantics";
+import { isCanvasNodeActivelyGenerating, isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import copyToClipboard from "copy-to-clipboard";
 import { nanoid } from "nanoid";
 import { canvasAppearanceBaseTheme, canvasAppearanceForTheme, DEFAULT_CANVAS_BACKGROUND_MODE, normalizeCanvasAppearance, resolveCanvasAppearance, writeCanvasAppearanceDefault, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
@@ -921,6 +923,7 @@ function InfiniteCanvasPage() {
         taskDetailLoading,
         taskDetailError,
         taskDetailLogs,
+        isLiveRequestNode,
         handleGenerateNode,
         handleRetryNode,
         cancelCanvasTask,
@@ -1048,6 +1051,14 @@ function InfiniteCanvasPage() {
         startGenerationRequest,
         finishGenerationRequest,
     });
+    const continueCanvasGenerationResult = useCallback((task: GenerationTask) => {
+        const node = nodesRef.current.find((item) => item.metadata?.taskId === task.id);
+        if (node) void reloadCanvasNodeResource(node);
+    }, [reloadCanvasNodeResource]);
+    const continuingCanvasTaskId = useMemo(
+        () => nodes.find((node) => node.metadata?.status === "loading" && node.metadata?.taskId)?.metadata?.taskId ?? null,
+        [nodes],
+    );
     const canvasContext = useMemo(() => summarizeCanvasContext(nodes, selectedNodeIds, linkedProjectQuery.data?.units), [linkedProjectQuery.data?.units, nodes, selectedNodeIds]);
     const directorReferenceTargetRef = useRef<{ projectId: string; nodeId: string | null; scope: string } | null>(null);
     directorReferenceTargetRef.current = { projectId, nodeId: directorNodeId, scope: canvasStorageScope };
@@ -1125,6 +1136,7 @@ function InfiniteCanvasPage() {
         extractingVideoFramesNodeId,
         frameDialogNodeId,
         generateAngleNode,
+        generateTurnaroundSheet,
         generateLightingNode,
         openPanoramaConfig,
         createPanoramaViewerWithConfig,
@@ -1146,6 +1158,8 @@ function InfiniteCanvasPage() {
         openVideoCrop,
         closeInlineVideoTrim,
         confirmInlineVideoTrim,
+        splitVideoIntoShots,
+        splittingVideoNodeIds,
         setFrameDialogNodeId,
         setAngleNodeId,
         setLightingNodeId,
@@ -1177,6 +1191,7 @@ function InfiniteCanvasPage() {
         startGenerationRequest,
         finishGenerationRequest,
         bindGenerationTask,
+        applyGenerationTaskResult,
     });
 
     useEffect(() => {
@@ -1546,13 +1561,14 @@ function InfiniteCanvasPage() {
         setHoveredNodeId,
     });
 
-    const polishNodePrompt = useCallback(async (node: CanvasNodeData) => {
+    const polishNodePrompt = useCallback(async (node: CanvasNodeData, options?: { mode?: PromptOptimizationMode }) => {
         const mode = node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Image ? "image" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : null;
         if (!mode) throw new Error("当前节点不支持提示词润色");
         const prompt = (node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim();
         if (!prompt) throw new Error("请先输入提示词");
         const optimizerModel = effectiveConfig.textModel.trim();
         if (!optimizerModel) throw new Error("请先在模型设置中选择文本模型");
+        const polishMode = options?.mode ?? (mode === "image" ? defaultCanvasImagePolishMode() : "model-adapt");
 
         const references = buildNodeMentionReferences(node, nodesRef.current, connectionsRef.current)
             .filter((reference): reference is CanvasResourceReference & { kind: Exclude<CanvasResourceReference["kind"], "skill"> } => reference.kind !== "skill");
@@ -1567,7 +1583,7 @@ function InfiniteCanvasPage() {
         const channel = resolveModelChannel(generationConfig, generationConfig.model);
         const result = await optimizePromptWithConfig(effectiveConfig, {
             prompt,
-            mode: "model-adapt",
+            mode: polishMode,
             generationMode: mode,
             targetModel: modelOptionName(generationConfig.model) || generationConfig.model,
             targetModelFamily: promptPolishModelFamily(effectiveConfig, generationConfig.model),
@@ -2172,7 +2188,7 @@ function InfiniteCanvasPage() {
                 <CanvasNodePromptPanel
                     projectId={projectId}
                     node={panelNode}
-                    isRunning={isCanvasNodeGenerating(panelNode, runningNodeId)}
+                    isRunning={isCanvasNodeActivelyGenerating(panelNode, runningNodeId, isLiveRequestNode)}
                     mentionReferences={[
                         ...(mentionReferencesByNodeId.get(panelNode.id) || EMPTY_RESOURCE_REFERENCES),
                         ...buildCanvasResourceReferences(nodesRef.current, connectionsRef.current).filter((reference) => reference.kind === "text" && reference.nodeId !== panelNode.id && !(mentionReferencesByNodeId.get(panelNode.id) || []).some((active) => active.nodeId === reference.nodeId)),
@@ -2223,6 +2239,7 @@ function InfiniteCanvasPage() {
             message,
             projectId,
             runningNodeId,
+            isLiveRequestNode,
             skillMentionReferences,
             workspaceMode,
         ],
@@ -2336,7 +2353,7 @@ function InfiniteCanvasPage() {
             return (
                 <CanvasConfigNodePanel
                     node={contentNode}
-                    isRunning={isCanvasNodeGenerating(contentNode, runningNodeId)}
+                    isRunning={isCanvasNodeActivelyGenerating(contentNode, runningNodeId, isLiveRequestNode)}
                     inputSummary={getInputSummary(configInputsById.get(contentNode.id) || [])}
                     onConfigChange={handleConfigNodeChange}
                     onComposerToggle={() => setDialogNodeId((current) => (current === contentNode.id ? null : contentNode.id))}
@@ -2382,6 +2399,7 @@ function InfiniteCanvasPage() {
             removeScriptRow,
             retryFailedBatchItems,
             runningNodeId,
+            isLiveRequestNode,
             stopRemainingBatchItems,
             theme,
             updateBatchRow,
@@ -3039,6 +3057,7 @@ function InfiniteCanvasPage() {
                                 setDialogNodeId(null);
                                 setAngleNodeId((current) => (current === node.id ? null : node.id));
                             }}
+                            onTurnaroundSheet={(node) => void generateTurnaroundSheet(node)}
                             onLighting={(node) => {
                                 setDialogNodeId(null);
                                 setLightingNodeId((current) => (current === node.id ? null : node.id));
@@ -3049,6 +3068,8 @@ function InfiniteCanvasPage() {
                             onExtractAudioFromVideo={(node) => void extractAudioFromVideo(node)}
                             // 视频剪辑使用视频节点下方的内嵌时间轴，不再打开旧的片段重拍弹窗。
                             onTrimVideoSegments={openInlineVideoTrim}
+                            onShotBreakdown={(node) => void splitVideoIntoShots(node)}
+                            splittingVideoNodeIds={splittingVideoNodeIds}
                             onDepthCapture={(node) => void depthCaptureNode(node)}
                             onSubtitles={(node) => setSubtitleNodeId(node.id)}
                             onTimeline={(node) => setTimelineNodeId(node.id)}
@@ -3386,7 +3407,9 @@ function InfiniteCanvasPage() {
                                 onCloseTask: () => setTaskDetail(null),
                                 onCancelTask: cancelCanvasTask,
                                 onRetrieveTask: (task) => void retrieveTaskResult(task),
+                                onContinueCanvasResult: continueCanvasGenerationResult,
                                 retrievingTaskId,
+                                continuingCanvasTaskId,
                                 superResolveNode,
                                 onCloseSuperResolve: () => setSuperResolveNodeId(null),
                                 onUseLocalUpscale: () => {

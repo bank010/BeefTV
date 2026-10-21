@@ -32,6 +32,7 @@ type Config struct {
 	WorkflowID            string
 	WebappID              string
 	WorkflowJSON          map[string]interface{}
+	SourceWorkflowJSON    map[string]interface{}
 	WorkflowFields        []Field
 	RunningHubUploadKey   string
 }

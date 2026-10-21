@@ -344,8 +344,13 @@ export async function executeImageGeneration({
                 if (!representativeFailure || failure.generationErrorCode === CONTENT_MODERATION_ERROR_CODE) representativeFailure = failure;
                 hasFailure = true;
                 failureCount += 1;
+                const failureStatus = isKeptGenerationResultCode(failure.generationErrorCode)
+                    ? NODE_STATUS_ERROR
+                    : targetId === nodeId
+                        ? generationFailureNodeStatus(isExistingImageNode)
+                        : NODE_STATUS_ERROR;
                 setNodes((current) => {
-                    const next = current.map((node) => (node.id === targetId ? { ...node, metadata: { ...node.metadata, status: targetId === nodeId ? generationFailureNodeStatus(isExistingImageNode) : NODE_STATUS_ERROR, ...failure } } : node));
+                    const next = current.map((node) => (node.id === targetId ? { ...node, metadata: { ...node.metadata, status: failureStatus, ...failure } } : node));
                     if (projectId) useCanvasStore.getState().updateProject(projectId, { nodes: next });
                     return next;
                 });

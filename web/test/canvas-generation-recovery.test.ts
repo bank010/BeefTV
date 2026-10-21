@@ -25,3 +25,13 @@ test("recovery remains unavailable when the original target is gone or output al
         content: "/api/resources/ready/file",
     })).toBe(false);
 });
+
+test("kept canvas results stay reloadable even when the node still shows a previous image", () => {
+    expect(canReloadCanvasGenerationResult({
+        status: "success",
+        taskId: "task-1",
+        taskStatus: "succeeded",
+        generationErrorCode: "canvas_conflict",
+        content: "/api/resources/ready/file",
+    })).toBe(true);
+});

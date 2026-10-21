@@ -1,4 +1,4 @@
-import { comfyUIWorkflowForModel, normalizeRunningHubCapability, type AiConfig, type RunningHubCapability, type RunningHubWorkflowKind, type WorkflowFieldMapping } from "@/stores/use-config-store";
+import { comfyUIWorkflowForModel, normalizeRunningHubCapability, resolveWorkflowFieldsForExecution, type AiConfig, type RunningHubCapability, type RunningHubWorkflowKind, type WorkflowFieldMapping } from "@/stores/use-config-store";
 import { comfyUIImageRoutingError, comfyUIWorkflowForInput } from "@/lib/comfyui-image-routing";
 import { workflowMediaInputLimit } from "@/lib/model-capabilities";
 import { workflowProviderPluginEnabled } from "@/lib/plugins/builtin/workflows";
@@ -17,6 +17,7 @@ export type GenerationWorkflowExecution = {
     workflowId: string;
     webappId: string;
     workflowJson: Record<string, unknown>;
+    sourceWorkflowJson?: Record<string, unknown>;
     workflowFields: WorkflowFieldMapping[];
 };
 
@@ -53,7 +54,7 @@ export function resolveGenerationWorkflowExecution(config: AiConfig, mode: Gener
             workflowId: kind === "workflow" ? workflowId : "",
             webappId,
             workflowJson: workflow.workflowJson || {},
-            workflowFields: workflow.fields || [],
+            workflowFields: resolveWorkflowFieldsForExecution(workflow),
 
 		};
 	}
@@ -89,7 +90,8 @@ export function resolveGenerationWorkflowExecution(config: AiConfig, mode: Gener
 			workflowId,
 			webappId: "",
 			workflowJson: workflow.workflowJson || {},
-			workflowFields: workflow.fields || [],
+			sourceWorkflowJson: workflow.sourceWorkflowJson,
+			workflowFields: resolveWorkflowFieldsForExecution(workflow),
 		};
 	}
 

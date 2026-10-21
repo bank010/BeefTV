@@ -95,7 +95,8 @@ type VideoSettingsPanelProps = {
 };
 
 export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[292px] space-y-3", taskConstraints }: VideoSettingsPanelProps) {
-    const profile = modelCapabilityConfigFor(config, config.model).video!;
+    const baseProfile = modelCapabilityConfigFor(config, config.model).video!;
+    const profile = taskConstraints?.maxOutputSeconds ? videoDurationAtResolution(baseProfile, taskConstraints.maxOutputSeconds) : baseProfile;
     const range = profile.resolutionRange;
     const maxResolution = range ? workflowVideoResolutionSliderMax(range) : 0;
     const resolutionTiers = range ? workflowVideoResolutionTiers(range) : [];

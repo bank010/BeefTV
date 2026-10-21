@@ -28,13 +28,15 @@ function assertValidRange(range: VideoSegmentRange, durationMs?: number) {
     if (durationMs !== undefined && endMs > Math.round(durationMs)) throw new Error("片段结束时间超过视频时长");
 }
 
-async function readVideoSourceBlob(source: VideoSegmentSource) {
+export async function readVideoSourceBlob(source: VideoSegmentSource, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     if (source.storageKey) {
         const stored = await getMediaBlob(source.storageKey);
+        signal?.throwIfAborted();
         if (stored) return stored;
     }
     if (source.url) {
-        const response = await fetch(source.url);
+        const response = await fetch(source.url, { signal, credentials: "same-origin" });
         if (!response.ok) throw new Error(`视频资源请求失败（${response.status}）`);
         return response.blob();
     }

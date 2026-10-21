@@ -18,6 +18,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useEffectiveConfig } from "@/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Position } from "@/types/canvas";
 
+import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import {
     createImageNodeFromTextSource,
     createInsertingHistoryGate,
@@ -31,7 +32,7 @@ import { readOwnedCanvasNodes, useCanvasOwnerLifetime } from "./canvas-owner-epo
 import { useCanvasBatchTable } from "./use-canvas-batch-table";
 import { useCanvasGeneration } from "./use-canvas-generation";
 import { useCanvasGenerationBatches } from "./use-canvas-generation-batches";
-import { useCanvasGenerationExecutor } from "./use-canvas-generation-executor";
+import { useCanvasGenerationExecutor, type CanvasNodeGenerationOptions } from "./use-canvas-generation-executor";
 import { useCanvasGenerationRetry } from "./use-canvas-generation-retry";
 import { useCanvasStoryboard } from "./use-canvas-storyboard";
 
@@ -101,6 +102,7 @@ export function useCanvasGenerationOrchestration({
         taskDetailLoading,
         taskDetailError,
         taskDetailLogs,
+        isLiveRequestNode,
     } = useCanvasGeneration({
         projectId,
         domainProjectId: linkedProjectId,
@@ -110,7 +112,7 @@ export function useCanvasGenerationOrchestration({
         setNodes,
     });
 
-    const handleGenerateNode = useCanvasGenerationExecutor({
+    const runGenerateNode = useCanvasGenerationExecutor({
         projectId,
         domainProjectId,
         addedSkills,
@@ -127,7 +129,18 @@ export function useCanvasGenerationOrchestration({
         finishGenerationRequest,
         bindGenerationTask,
         applyGenerationTaskResult,
+        isLiveRequestNode,
     });
+
+    const handleGenerateNode = useCallback(
+        (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options?: CanvasNodeGenerationOptions) =>
+            runGenerateNode(nodeId, mode, prompt, options).catch((error) => {
+                if (error instanceof Error && (error.name === "AbortError" || error.message === "The operation was aborted")) return;
+                message.error(error instanceof Error ? error.message : "生成提交失败");
+                throw error;
+            }),
+        [message, runGenerateNode],
+    );
 
     const { enqueueGenerationBatch, retryFailedBatchItems, stopRemainingBatchItems } = useCanvasGenerationBatches({
         projectId,
@@ -362,6 +375,7 @@ export function useCanvasGenerationOrchestration({
         taskDetailLoading,
         taskDetailError,
         taskDetailLogs,
+        isLiveRequestNode,
         handleGenerateNode,
         handleRetryNode,
         cancelCanvasTask,

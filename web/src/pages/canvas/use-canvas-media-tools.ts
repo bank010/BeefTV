@@ -21,7 +21,17 @@ import { audioMetadata, imageMetadata, videoMetadata } from "@/lib/canvas/canvas
 import { findAvailableGenerationGroupPosition, imageGenerationChildPosition, imageGenerationGroupSize } from "@/lib/canvas/canvas-generation-layout";
 import { canvasGenerationPromptMetadata } from "@/lib/canvas/canvas-generation-submission";
 import { cancelIncompleteImageBatch } from "@/lib/canvas/canvas-image-batch-retry";
-import { buildAngleLabel, buildAnglePrompt, createCanvasNode } from "@/lib/canvas/canvas-project-domain";
+import {
+    applyTurnaroundSheetGenerationDefaults,
+    buildAngleLabel,
+    buildAnglePrompt,
+    buildTurnaroundSheetPrompt,
+    createCanvasNode,
+    imageNodeDisplaySizeFromSource,
+    referenceImageEditGenerationSize,
+    turnaroundSheetNodeDisplaySize,
+    TURNAROUND_SHEET_ASPECT_RATIO,
+} from "@/lib/canvas/canvas-project-domain";
 import { validateVideoSegmentBatch } from "@/lib/canvas/canvas-video-regeneration";
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
 import {
@@ -30,7 +40,9 @@ import {
     nodeReferenceImage,
     isGenerationCanceled,
     runBackendCanvasGenerationTask,
+    runCanvasGenerationTaskToConsumer,
 } from "@/lib/canvas/canvas-project-generation";
+import { canvasGenerationFailureMetadata } from "@/pages/canvas/canvas-generation-failure";
 import { fitNodeSize, VIDEO_NODE_MAX_SIZE } from "@/lib/canvas/canvas-node-size";
 import { compositeEmotionImage, emotionGenerationSize, emotionProviderMask, normalizeEmotionPromptForProvider, resolveEmotionEditPlan } from "@/lib/canvas/canvas-emotion";
 import { DEFAULT_PORTRAIT_TEXTURE_SETTINGS } from "@/lib/canvas/canvas-portrait-texture";
@@ -56,6 +68,7 @@ import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 import { syncLocalCanvasSnapshot } from "@/services/local-workspace-sync";
+import { splitJingxuVideo } from "@/services/jingxu-video";
 import { openLocalCanvasProjectFromBackend, persistCanvasDocument, reconcileCanvasGenerationPreflight } from "@/services/local-workspace-repository";
 import { http } from "@/services/api/request";
 import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
@@ -164,6 +177,7 @@ type UseCanvasMediaToolsOptions = {
     startGenerationRequest: (targetNodeId: string, originNodeId: string, runningId?: string, controller?: AbortController) => AbortController;
     finishGenerationRequest: (targetNodeId: string, controller: AbortController) => void;
     bindGenerationTask: (targetNodeId: string, task: GenerationTask) => void;
+    applyGenerationTaskResult: (nodeId: string, task: GenerationTask, isNodeOwned?: () => boolean) => Promise<void>;
 };
 
 const NODE_STATUS_LOADING = "loading" as const;
@@ -190,6 +204,7 @@ export function useCanvasMediaTools({
     startGenerationRequest,
     finishGenerationRequest,
     bindGenerationTask,
+    applyGenerationTaskResult,
 }: UseCanvasMediaToolsOptions) {
     const { message, modal } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
@@ -212,6 +227,13 @@ export function useCanvasMediaTools({
     const [inlineTrimNodeId, setInlineTrimNodeId] = useState<string | null>(null);
     const [inlineTrimRunning, setInlineTrimRunning] = useState(false);
     const inlineTrimRunningRef = useRef(false);
+    const [splittingVideoNodeIds, setSplittingVideoNodeIds] = useState<ReadonlySet<string>>(new Set());
+    const shotSplitRef = useRef(new Map<string, AbortController>());
+    useEffect(() => () => {
+        for (const abort of shotSplitRef.current.values()) abort.abort();
+        shotSplitRef.current.clear();
+        setSplittingVideoNodeIds(new Set());
+    }, [projectId]);
     const [panoramaConfigNodeId, setPanoramaConfigNodeId] = useState<string | null>(null);
     const projectIdRef = useRef(projectId);
     const depthObserversRef = useRef(new Set<AbortController>());
@@ -281,6 +303,112 @@ export function useCanvasMediaTools({
             throw error;
         }
     }, [connectionsRef, domainProjectId, message, nodesRef, projectId, setNodes]);
+
+    const splitVideoIntoShots = useCallback(async (node: CanvasNodeData) => {
+        if (shotSplitRef.current.has(node.id)) return;
+        if (!node.metadata?.content && !node.metadata?.storageKey) {
+            message.warning("视频节点为空，无法自动分镜");
+            return;
+        }
+        const abort = new AbortController();
+        shotSplitRef.current.set(node.id, abort);
+        setSplittingVideoNodeIds(new Set(shotSplitRef.current.keys()));
+        setHoveredNodeId(null);
+        setToolbarNodeId(null);
+        const expectedScope = captureUserScope();
+        const progress = startUploadStatus("自动分镜", "正在检测镜头", 100);
+        let progressStep = 0;
+        const created = new Set<string>();
+        const pendingIds: string[] = [];
+        let activeIndex = 0;
+        const assertActive = () => {
+            abort.signal.throwIfAborted();
+            assertUserScope(expectedScope);
+            if (projectIdRef.current !== projectId) throw new DOMException("Aborted", "AbortError");
+        };
+        const addPending = (index: number, label: string) => {
+            const size = fitNodeSize(node.metadata?.naturalWidth || node.width, node.metadata?.naturalHeight || node.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+            const child: CanvasNodeData = {
+                id: nanoid(), type: CanvasNodeType.Video, title: `${node.title || "视频"} · 镜头 ${index + 1}`,
+                position: findAvailableGenerationGroupPosition(nodesRef.current, { x: node.position.x + node.width + 96 + (index % 3) * (size.width + 48), y: node.position.y + Math.floor(index / 3) * (size.height + 80) }, size),
+                ...size, metadata: mediaResultMetadata("derived", { status: NODE_STATUS_LOADING, processingLabel: label, videoTrimSourceNodeId: node.id }),
+            };
+            pendingIds.push(child.id);
+            nodesRef.current = [...nodesRef.current, child];
+            connectionsRef.current = [...connectionsRef.current, { id: nanoid(), fromNodeId: node.id, toNodeId: child.id }];
+            setNodes(nodesRef.current); setConnections(connectionsRef.current);
+        };
+        const updatePendingLabel = (label: string) => {
+            if (projectIdRef.current !== projectId || abort.signal.aborted) return;
+            nodesRef.current = nodesRef.current.map((item) => item.id === pendingIds[activeIndex] && item.metadata?.status === NODE_STATUS_LOADING ? { ...item, metadata: { ...item.metadata, processingLabel: label } } : item);
+            setNodes(nodesRef.current);
+        };
+        addPending(0, "正在检测镜头");
+        try {
+            const count = await splitJingxuVideo({ url: node.metadata?.content, storageKey: node.metadata?.storageKey }, {
+                signal: abort.signal,
+                onProgress: (detail) => { progress.update(detail, progressStep); updatePendingLabel(detail); },
+                onDetected: (shots) => {
+                    assertActive();
+                    for (let index = 1; index < shots.length; index++) addPending(index, "等待切分视频");
+                    selectedNodeIdsRef.current = new Set(pendingIds);
+                    setSelectedNodeIds(new Set(pendingIds));
+                    setSelectedConnectionId(null);
+                },
+                onEncoding: (index) => { activeIndex = index; updatePendingLabel("正在切分视频"); },
+                onShot: async (blob, shot, index, total) => {
+                    assertActive();
+                    progressStep = Math.floor(index / total * 99);
+                    progress.update(`正在保存镜头 ${index + 1}/${total}`, progressStep);
+                    updatePendingLabel("正在保存视频");
+                    const uploaded = await uploadMediaFile(blob, "video", undefined, expectedScope);
+                    assertActive();
+                    if (!nodesRef.current.some((current) => current.id === node.id)) throw new Error("原视频节点已删除，已停止自动分镜");
+                    const pending = nodesRef.current.find((item) => item.id === pendingIds[index]);
+                    if (!pending) throw new Error("分镜节点已删除，已停止自动分镜");
+                    const size = fitNodeSize(uploaded.width || node.width, uploaded.height || node.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+                    const child: CanvasNodeData = {
+                        ...pending,
+                        ...size,
+                        metadata: mediaResultMetadata("derived", {
+                            ...videoMetadata(uploaded), status: NODE_STATUS_SUCCESS,
+                            prompt: `从「${node.title || "视频"}」自动分镜 ${shot.start.toFixed(2)}–${shot.end.toFixed(2)} 秒`,
+                            videoTrimSourceNodeId: node.id, videoTrimStartMs: Math.round(shot.start * 1000), videoTrimEndMs: Math.round(shot.end * 1000),
+                        }),
+                    };
+                    const connection = connectionsRef.current.find((item) => item.fromNodeId === node.id && item.toNodeId === child.id);
+                    nodesRef.current = nodesRef.current.map((item) => item.id === child.id ? child : item);
+                    setNodes(nodesRef.current);
+                    setConnections(connectionsRef.current);
+                    const saved = await persistMediaNodes([child], connection ? [connection] : [], { expectedScope, signal: abort.signal });
+                    assertActive();
+                    if (!saved.get(child.id)) throw new Error(`镜头 ${index + 1} 尚未确认保存，自动分镜已停止`);
+                    created.add(child.id);
+                    selectedNodeIdsRef.current = new Set(created);
+                    setSelectedNodeIds(new Set(created));
+                    setSelectedConnectionId(null);
+                },
+            });
+            assertActive();
+            progress.done(`已生成 ${count} 个分镜视频`);
+            message.success(`已生成 ${count} 个分镜视频`);
+        } catch (error) {
+            const stopped = abort.signal.aborted || (error instanceof Error && error.name === "AbortError");
+            const detail = stopped ? "自动分镜已停止" : error instanceof Error ? error.message : "自动分镜失败";
+            const suffix = created.size ? `，已保存 ${created.size} 个镜头` : "";
+            progress.fail(detail + suffix);
+            if (projectIdRef.current === projectId) {
+                nodesRef.current = nodesRef.current.map((item) => pendingIds.includes(item.id) && item.metadata?.status === NODE_STATUS_LOADING ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, processingLabel: undefined, errorDetails: detail } } : item);
+                setNodes(nodesRef.current);
+            }
+            if (!stopped) message.error(detail + suffix);
+        } finally {
+            if (shotSplitRef.current.get(node.id) === abort) {
+                shotSplitRef.current.delete(node.id);
+                setSplittingVideoNodeIds(new Set(shotSplitRef.current.keys()));
+            }
+        }
+    }, [connectionsRef, message, nodesRef, persistMediaNodes, projectId, selectedNodeIdsRef, setConnections, setHoveredNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds, setToolbarNodeId, startUploadStatus]);
 
     const createImageReversePromptNodes = useCallback((node: CanvasNodeData) => {
         if (node.type !== CanvasNodeType.Image || !node.metadata?.content) {
@@ -1241,13 +1369,19 @@ export function useCanvasMediaTools({
 
     const generateAngleNode = useCallback(async (node: CanvasNodeData, params: CanvasImageAngleParams) => {
         if (!node.metadata?.content) return;
-        const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1" };
+        const baseConfig = buildGenerationConfig(effectiveConfig, node, "image");
+        const generationConfig = {
+            ...baseConfig,
+            count: "1",
+            size: referenceImageEditGenerationSize(node, baseConfig.size),
+        };
         if (!isAiConfigReady(generationConfig, generationConfig.model)) {
             navigateToSettings({ continueCreation: true });
             return;
         }
         const childId = nanoid();
         const imageSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
+        const placeholderSize = imageNodeDisplaySizeFromSource(node, imageSpec.width, imageSpec.height);
         const title = buildAngleLabel(params);
         const prompt = buildAnglePrompt(params);
         const source = nodeReferenceImage(node);
@@ -1258,31 +1392,114 @@ export function useCanvasMediaTools({
         const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
         setAngleNodeId(null);
         setRunningNodeId(childId);
-        setNodes((current) => [...current, { id: childId, type: CanvasNodeType.Image, title, position: { x: node.position.x + node.width + 96, y: node.position.y }, width: imageSpec.width, height: imageSpec.height, metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, ...generationMetadata, ...styleMetadata } }]);
-        setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+        const childNode: CanvasNodeData = {
+            id: childId,
+            type: CanvasNodeType.Image,
+            title,
+            position: { x: node.position.x + node.width + 96, y: node.position.y },
+            width: placeholderSize.width,
+            height: placeholderSize.height,
+            metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, ...generationMetadata, ...styleMetadata },
+        };
+        const connection: CanvasConnection = { id: nanoid(), fromNodeId: node.id, toNodeId: childId };
+        setNodes((current) => [...current, childNode]);
+        setConnections((current) => [...current, connection]);
         setSelectedNodeIds(new Set([childId]));
         setDialogNodeId(childId);
         const controller = startGenerationRequest(childId, node.id, childId);
         try {
-            const result = await runBackendCanvasGenerationTask({ projectId, nodeId: childId, mode: "image", prompt: effectivePrompt, config: generationConfig, referenceImages: [source], signal: controller.signal, metadata: { sourceNodeId: node.id, edit: "angle", ...styleMetadata }, onTaskCreated: (task) => bindGenerationTask(childId, task) });
-            const image = result.images?.[0];
-            if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
-            const uploaded = await uploadImage(image.dataUrl);
-            const size = fitNodeSize(uploaded.width, uploaded.height, imageSpec.width, imageSpec.height);
-            const currentNode = nodesRef.current.find((item) => item.id === childId);
-            if (!currentNode) throw new Error("视角生成节点已被删除");
-            const finalizedNode = { ...currentNode, width: size.width, height: size.height, metadata: { ...currentNode.metadata, ...imageMetadata(uploaded), prompt: effectivePrompt, ...generationMetadata } };
-            setNodes((current) => current.map((item) => item.id === childId ? finalizedNode : item));
-            await persistMediaNodes([finalizedNode]);
+            await persistMediaNodes([childNode], [connection], { signal: controller.signal });
+            await runCanvasGenerationTaskToConsumer({
+                projectId,
+                nodeId: childId,
+                mode: "image",
+                prompt: effectivePrompt,
+                config: generationConfig,
+                referenceImages: [source],
+                signal: controller.signal,
+                metadata: { sourceNodeId: node.id, edit: "angle", ...styleMetadata },
+                onTaskCreated: (task) => bindGenerationTask(childId, task),
+            }, {
+                bindTask: (task) => bindGenerationTask(childId, task),
+                consumeTask: (task) => applyGenerationTaskResult(childId, task, () => !controller.signal.aborted),
+            });
         } catch (error) {
             if (isGenerationCanceled(error)) return;
-            const details = generationErrorMessage(error);
-            setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item));
+            const failure = canvasGenerationFailureMetadata(error, { mode: "image", prompt: effectivePrompt, referenceImages: [source] });
+            setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure } } : item));
         } finally {
             finishGenerationRequest(childId, controller);
             setRunningNodeId(null);
         }
-    }, [bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, nodesRef, persistMediaNodes, projectId, resolveImageEditStyle, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedNodeIds, startGenerationRequest]);
+    }, [applyGenerationTaskResult, bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, persistMediaNodes, projectId, resolveImageEditStyle, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedNodeIds, startGenerationRequest]);
+
+    const generateTurnaroundSheet = useCallback(async (node: CanvasNodeData) => {
+        if (!node.metadata?.content) return;
+        const generationConfig = applyTurnaroundSheetGenerationDefaults({ ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1" });
+        if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+            navigateToSettings({ continueCreation: true });
+            return;
+        }
+        const source = nodeReferenceImage(node);
+        if (!source) return;
+        const prompt = buildTurnaroundSheetPrompt();
+        const styleExecution = resolveImageEditStyle(node, prompt, generationConfig);
+        if (!styleExecution) return;
+        const { prompt: effectivePrompt, metadata: styleMetadata } = styleExecution;
+        const childId = nanoid();
+        const imageSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
+        const placeholderSize = turnaroundSheetNodeDisplaySize(imageSpec.width, imageSpec.height);
+        const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
+        const childNode: CanvasNodeData = {
+            id: childId,
+            type: CanvasNodeType.Image,
+            title: `${node.title || "图片"} · 三视图`,
+            position: { x: node.position.x + node.width + 96, y: node.position.y },
+            width: placeholderSize.width,
+            height: placeholderSize.height,
+            metadata: {
+                prompt: effectivePrompt,
+                status: NODE_STATUS_LOADING,
+                size: TURNAROUND_SHEET_ASPECT_RATIO,
+                quality: generationConfig.quality,
+                ...generationMetadata,
+                ...styleMetadata,
+            },
+        };
+        const connection: CanvasConnection = { id: nanoid(), fromNodeId: node.id, toNodeId: childId };
+        setRunningNodeId(childId);
+        setNodes((current) => [...current, childNode]);
+        setConnections((current) => [...current, connection]);
+        setSelectedNodeIds(new Set([childId]));
+        setSelectedConnectionId(null);
+        setDialogNodeId(childId);
+        const controller = startGenerationRequest(childId, node.id, childId);
+        try {
+            await persistMediaNodes([childNode], [connection], { signal: controller.signal });
+            await runCanvasGenerationTaskToConsumer({
+                projectId,
+                nodeId: childId,
+                mode: "image",
+                prompt: effectivePrompt,
+                config: generationConfig,
+                referenceImages: [source],
+                signal: controller.signal,
+                metadata: { sourceNodeId: node.id, edit: "turnaround_sheet", ...styleMetadata },
+                onTaskCreated: (task) => bindGenerationTask(childId, task),
+            }, {
+                bindTask: (task) => bindGenerationTask(childId, task),
+                consumeTask: (task) => applyGenerationTaskResult(childId, task, () => !controller.signal.aborted),
+            });
+        } catch (error) {
+            if (isGenerationCanceled(error)) return;
+            const failure = canvasGenerationFailureMetadata(error, { mode: "image", prompt: effectivePrompt, referenceImages: [source] });
+            message.error(failure.errorDetails || generationErrorMessage(error));
+            setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, ...failure } } : item));
+        } finally {
+            finishGenerationRequest(childId, controller);
+            setRunningNodeId(null);
+        }
+    }, [applyGenerationTaskResult, bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, persistMediaNodes, projectId, resolveImageEditStyle, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedConnectionId, setSelectedNodeIds, startGenerationRequest]);
 
     const generateLightingNode = useCallback((node: CanvasNodeData, options: CanvasImageLightingOptions, prompt: string) => {
         if (!node.metadata?.content) return;
@@ -1399,6 +1616,7 @@ export function useCanvasMediaTools({
         extractingVideoFramesNodeId,
         frameDialogNodeId,
         generateAngleNode,
+        generateTurnaroundSheet,
         generateLightingNode,
         openPanoramaConfig,
         createPanoramaViewerWithConfig,
@@ -1419,6 +1637,8 @@ export function useCanvasMediaTools({
         openVideoCrop,
         closeInlineVideoTrim,
         confirmInlineVideoTrim,
+        splitVideoIntoShots,
+        splittingVideoNodeIds,
         setFrameDialogNodeId,
         setAngleNodeId,
         setLightingNodeId,

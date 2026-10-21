@@ -684,5 +684,6 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
         taskDetailLoading: taskDetailQuery.isLoading,
         taskDetailError: taskDetailQuery.isError,
         taskDetailLogs: taskDetailQuery.data?.logs ?? [],
+        isLiveRequestNode,
     };
 }

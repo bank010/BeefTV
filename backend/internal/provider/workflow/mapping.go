@@ -121,6 +121,118 @@ func validateWorkflowMediaInputs(fields []Field, input Input) error {
 	return nil
 }
 
+func fieldMappingKey(field Field) string {
+	return strings.TrimSpace(field.NodeID) + "::" + strings.TrimSpace(field.FieldName)
+}
+
+func isWorkflowMediaReferenceSource(source string) bool {
+	normalized := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(strings.TrimSpace(source)), "_", ""), "-", "")
+	switch normalized {
+	case "referenceimage", "image", "referenceimages", "referencevideo", "video", "referencevideos", "referenceaudio", "audio", "referenceaudios":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeWorkflowExecutionFields(saved, inferred []Field) []Field {
+	byKey := make(map[string]int, len(saved))
+	out := append([]Field(nil), saved...)
+	for index, field := range saved {
+		byKey[fieldMappingKey(field)] = index
+	}
+	for _, field := range inferred {
+		if !isWorkflowMediaReferenceSource(field.Source) {
+			continue
+		}
+		key := fieldMappingKey(field)
+		if index, ok := byKey[key]; ok {
+			existing := &out[index]
+			if existing.SafeToOverride != nil && !*existing.SafeToOverride {
+				continue
+			}
+			if isWorkflowMediaReferenceSource(normalizeWorkflowFieldSource(*existing)) {
+				continue
+			}
+			if existing.SourceConfigured() && strings.TrimSpace(existing.Source) != "" && !isWorkflowMediaReferenceSource(strings.ToLower(strings.TrimSpace(existing.Source))) {
+				continue
+			}
+			if !isWorkflowMediaReferenceSource(field.Source) && !isWorkflowMediaReferenceSource(normalizeWorkflowFieldSource(field)) {
+				continue
+			}
+			existing.Source = field.Source
+			if strings.TrimSpace(existing.Source) == "" {
+				existing.Source = normalizeWorkflowFieldSource(field)
+			}
+			if strings.TrimSpace(existing.FieldType) == "" {
+				existing.FieldType = field.FieldType
+			}
+			existing.SourceAutomatic = field.SourceAutomatic
+			if field.SourceIndex >= 0 {
+				existing.SourceIndex = field.SourceIndex
+			}
+			if field.ImageOrder > 0 {
+				existing.ImageOrder = field.ImageOrder
+			}
+			if existing.Enabled == nil || (existing.Enabled != nil && !*existing.Enabled) {
+				enabled := true
+				existing.Enabled = &enabled
+			}
+			continue
+		}
+		out = append(out, field)
+	}
+	return out
+}
+
+func ensureWorkflowFieldsForMediaInputs(saved []Field, graph map[string]interface{}, mode string, input Input) ([]Field, error) {
+	fields := workflowFieldsForMode(saved, mode)
+	if err := validateWorkflowMediaInputs(fields, input); err == nil {
+		return fields, nil
+	}
+	mediaErr := validateWorkflowMediaInputs(fields, input)
+	if len(graph) == 0 {
+		return nil, mediaErr
+	}
+	inferred, inferErr := workflowFieldsFromManagement(graph, mode)
+	if inferErr != nil {
+		return nil, mediaErr
+	}
+	inferred = workflowFieldsForMode(inferred, mode)
+	merged := mergeWorkflowExecutionFields(fields, inferred)
+	merged = unionInferredMediaReferenceFields(merged, inferred)
+	if err := validateWorkflowMediaInputs(merged, input); err != nil {
+		return nil, mediaErr
+	}
+	return merged, nil
+}
+
+func unionInferredMediaReferenceFields(merged, inferred []Field) []Field {
+	out := append([]Field(nil), merged...)
+	present := make(map[string]struct{}, len(out))
+	for _, field := range out {
+		present[fieldMappingKey(field)] = struct{}{}
+	}
+	for _, field := range inferred {
+		if field.Enabled != nil && !*field.Enabled {
+			continue
+		}
+		if field.SafeToOverride != nil && !*field.SafeToOverride {
+			continue
+		}
+		if !isWorkflowMediaReferenceSource(normalizeWorkflowFieldSource(field)) {
+			continue
+		}
+		key := fieldMappingKey(field)
+		if _, ok := present[key]; ok {
+			continue
+		}
+		out = append(out, field)
+		present[key] = struct{}{}
+	}
+	return out
+}
+
 func runningHubNodeInfo(fields []Field, files map[string]string, input Input) ([]map[string]any, error) {
 	return runningHubNodeInfoWithWorkflow(fields, files, input, nil)
 }
@@ -446,9 +558,6 @@ func normalizeWorkflowFieldSource(field Field) string {
 	if source != "" {
 		return source
 	}
-	if !field.SourceFromUpstream {
-		return ""
-	}
 	fieldName := strings.ToLower(strings.TrimSpace(field.FieldName))
 	if fieldName == "prompt" || fieldName == "text" || fieldName == "positive_prompt" || fieldName == "positiveprompt" {
 		return "prompt"
@@ -461,6 +570,9 @@ func normalizeWorkflowFieldSource(field Field) string {
 	case "audio", "sound", "music", "voice":
 		return "referenceaudio"
 	default:
+		if !field.SourceFromUpstream {
+			return ""
+		}
 		return ""
 	}
 }

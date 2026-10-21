@@ -48,6 +48,7 @@ func workflowConfigFromProvider(config providerConfig) workflow.Config {
 		WorkflowID:            config.WorkflowID,
 		WebappID:              config.WebappID,
 		WorkflowJSON:          config.WorkflowJSON,
+		SourceWorkflowJSON:    config.SourceWorkflowJSON,
 		WorkflowFields:        config.WorkflowFields,
 		RunningHubUploadKey:   config.RunningHubUploadKey,
 	}

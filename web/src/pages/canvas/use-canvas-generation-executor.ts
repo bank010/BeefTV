@@ -1,11 +1,12 @@
-import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
+import { canReloadCanvasGenerationResult } from "@/lib/canvas/canvas-generation-recovery";
+import { isCanvasNodeActivelyGenerating, isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import { createClientId } from "@/lib/client-id";
 import { useCallback, useRef, type Dispatch, type SetStateAction } from "react";
 import { App } from "antd";
 
 import { buildNodeGenerationContext, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
-import { isGenerationCanceled } from "@/lib/canvas/canvas-project-generation";
+import { isGenerationCanceled, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { buildConfirmedGenerationConfig } from "./canvas-assistant-proposal-execution";
 import type { ConfirmedGenerationInputs } from "./canvas-assistant-proposal-snapshot";
 import { canvasGenerationPromptMetadata, canvasGenerationRequestFingerprint, runCanvasGenerationSubmissionOnce } from "@/lib/canvas/canvas-generation-submission";
@@ -24,6 +25,7 @@ import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics
 import { findGenerationTaskByOperation, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { assertUserScope, captureUserScope } from "@/lib/user-scope-guard";
 import { comfyUIWorkflowForModel, useConfigStore, useEffectiveConfig, resolveModelRequestConfig } from "@/stores/use-config-store";
+import { clampComfyReferenceVideoOutputSeconds, COMFY_OMNI_REFERENCE_MEDIA_LIMITS } from "@/lib/comfy-omni-reference-temp-limit";
 import { seedanceReferenceRatioWarning } from "@/lib/seedance-channel-warning";
 import type { Asset } from "@/stores/use-asset-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
@@ -52,6 +54,7 @@ type UseCanvasGenerationExecutorOptions = {
     finishGenerationRequest: (targetNodeId: string, controller: AbortController) => void;
     bindGenerationTask: (targetNodeId: string, task: GenerationTask) => void;
     applyGenerationTaskResult: (targetNodeId: string, task: GenerationTask) => Promise<void>;
+    isLiveRequestNode?: (nodeId: string) => boolean;
 };
 
 const NODE_STATUS_IDLE = "idle" as const;
@@ -90,6 +93,7 @@ export function useCanvasGenerationExecutor({
     finishGenerationRequest,
     bindGenerationTask,
     applyGenerationTaskResult,
+    isLiveRequestNode = () => false,
 }: UseCanvasGenerationExecutorOptions) {
     const { message, modal } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
@@ -103,14 +107,15 @@ export function useCanvasGenerationExecutor({
                     okText: "仍然生成",
                     cancelText: "取消",
                     centered: true,
+                    zIndex: 3000,
                     ...callbacks,
                 }), signal),
         [modal],
     );
 
     return useCallback(
-        (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options?: CanvasNodeGenerationOptions) =>
-            runCanvasGenerationSubmissionOnce(
+        (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string, options?: CanvasNodeGenerationOptions) => {
+            return runCanvasGenerationSubmissionOnce(
                 submissionLocksRef.current,
                 nodeId,
                 async () => {
@@ -130,6 +135,9 @@ export function useCanvasGenerationExecutor({
                     diagnostic("generation_submit_started");
                     const controller = options?.controller ?? new AbortController();
                     const preparationMessageKey = `canvas-generation-preparation-${nodeId}`;
+                    const submissionToastKey = `canvas-generation-submit-${nodeId}`;
+                    setRunningNodeId(nodeId);
+                    message.loading({ key: submissionToastKey, content: "正在启动生成…", duration: 0 });
                     const reportError = (error: unknown) => {
                         if (controller.signal.aborted || isGenerationCanceled(error)) return;
                         const errText = generationErrorMessage(error);
@@ -145,31 +153,96 @@ export function useCanvasGenerationExecutor({
                         const inputAssets = frozen.assets;
                         const inputSkills = frozen.skills;
                         const sourceNode = inputNodes.find((node) => node.id === nodeId);
-                        const pendingSubmissions = nodesRef.current.filter((node) => (node.id === nodeId || node.metadata?.generatedFromNodeId === nodeId) && ["submitting", "unknown"].includes(node.metadata?.generationSubmissionState || ""));
+                        const staleSubmissionIds = new Set(
+                            nodesRef.current
+                                .filter(
+                                    (node) =>
+                                        (node.id === nodeId || node.metadata?.generatedFromNodeId === nodeId) &&
+                                        ["submitting", "unknown"].includes(node.metadata?.generationSubmissionState || "") &&
+                                        !isLiveRequestNode(node.id),
+                                )
+                                .map((node) => node.id),
+                        );
+                        if (staleSubmissionIds.size) {
+                            const clearedNodes = nodesRef.current.map((node) => {
+                                if (!staleSubmissionIds.has(node.id)) return node;
+                                const metadata = { ...node.metadata };
+                                delete metadata.generationSubmissionState;
+                                delete metadata.taskClientOperationId;
+                                if (metadata.taskStage === "正在提交生成任务" || metadata.taskStage === "提交结果待确认，请查询原任务") {
+                                    delete metadata.taskStage;
+                                }
+                                if (metadata.status === NODE_STATUS_LOADING && !metadata.taskId) {
+                                    metadata.status = NODE_STATUS_IDLE;
+                                }
+                                return { ...node, metadata };
+                            });
+                            nodesRef.current = clearedNodes;
+                            setNodes(clearedNodes);
+                            diagnostic("generation_stale_submission_cleared", "warning");
+                        }
+                        const pendingSubmissions = nodesRef.current.filter(
+                            (node) =>
+                                (node.id === nodeId || node.metadata?.generatedFromNodeId === nodeId) &&
+                                ["submitting", "unknown"].includes(node.metadata?.generationSubmissionState || "") &&
+                                isLiveRequestNode(node.id),
+                        );
                         if (pendingSubmissions.length) {
                             const scope = captureUserScope();
                             startGenerationRequest(nodeId, nodeId, nodeId, controller);
+                            let recoveredCount = 0;
                             for (const target of pendingSubmissions) {
-                                const task = await findGenerationTaskByOperation(target.metadata!.taskClientOperationId!, projectId, controller.signal);
+                                const operationId = target.metadata?.taskClientOperationId?.trim();
+                                if (!operationId) {
+                                    message.warning("上次提交缺少任务标识，无法查询原任务");
+                                    continue;
+                                }
+                                const task = await findGenerationTaskByOperation(operationId, projectId, controller.signal);
                                 controller.signal.throwIfAborted();
                                 assertUserScope(scope);
-                                if (!task) { message.warning("尚未查到上次提交的任务，请稍后再查询，暂勿重新生成"); continue; }
+                                if (!task) {
+                                    message.warning("尚未查到上次提交的任务，将清除占位状态并重新提交");
+                                    continue;
+                                }
+                                recoveredCount += 1;
                                 bindGenerationTask(target.id, task);
                                 const completed = await waitForGenerationTask(task.id, { signal: controller.signal, expectedScope: scope, initialTask: task, onTaskUpdate: (update) => bindGenerationTask(target.id, update) });
                                 controller.signal.throwIfAborted();
                                 assertUserScope(scope);
                                 await applyGenerationTaskResult(target.id, completed);
                             }
-                            return;
+                            if (recoveredCount > 0) {
+                                return;
+                            }
+                            const staleIds = new Set(pendingSubmissions.map((node) => node.id));
+                            setNodes((current) =>
+                                current.map((node) => {
+                                    if (!staleIds.has(node.id)) return node;
+                                    const metadata = { ...node.metadata };
+                                    delete metadata.generationSubmissionState;
+                                    delete metadata.taskClientOperationId;
+                                    if (metadata.taskStage === "正在提交生成任务" || metadata.taskStage === "提交结果待确认，请查询原任务") {
+                                        delete metadata.taskStage;
+                                    }
+                                    return { ...node, metadata };
+                                }),
+                            );
+                            diagnostic("generation_stale_submission_cleared", "warning");
                         }
                         if (mode === "image" && canvasImageGenerationHasPendingResult(sourceNode, inputNodes)) {
                             diagnostic("generation_pending_result", "warning");
                             message.warning(canvasImagePendingResultMessage(sourceNode, inputNodes));
                             return;
                         }
-                        if (isCanvasNodeGenerating(nodesRef.current.find((node) => node.id === nodeId))) {
+                        const liveSourceNode = nodesRef.current.find((node) => node.id === nodeId);
+                        if (isCanvasNodeActivelyGenerating(liveSourceNode, undefined, isLiveRequestNode)) {
                             diagnostic("generation_task_active", "warning");
                             message.info("该节点的生成任务仍在进行中，请等待完成后再生成");
+                            return;
+                        }
+                        if (isCanvasNodeGenerating(liveSourceNode) && canReloadCanvasGenerationResult(liveSourceNode?.metadata)) {
+                            diagnostic("generation_result_reload_pending", "warning");
+                            message.warning("上一条生成已完成，但结果还没写进节点。请打开任务详情点击「继续取回」，不要重复提交以免再次扣费。");
                             return;
                         }
                         if (sourceNode?.type === CanvasNodeType.Video && sourceNode.metadata?.videoEditOperation === "concat") {
@@ -205,6 +278,7 @@ export function useCanvasGenerationExecutor({
                         }
                         if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                             diagnostic("generation_config_missing", "warning");
+                            message.warning("当前模型或工作流配置不完整，请先在设置中补全后再生成");
                             navigateToSettings({ continueCreation: true });
                             return;
                         }
@@ -230,7 +304,10 @@ export function useCanvasGenerationExecutor({
                         // 模型视频接口才把提示词视为纯文本输入。
                         const usesWorkflowProvider = Boolean(mode !== "text" && generationConfig.taskWorkflowProvider && generationConfig.taskWorkflowProvider !== "model");
                         const usesComfyUIModel = Boolean(generationConfig.taskWorkflowProvider === "comfyui" && comfyUIWorkflowForModel(generationConfig, generationConfig.model));
-                        const usesModelCapability = !usesWorkflowProvider || usesComfyUIModel;
+                        // ComfyUI 的浏览器缓存可能来自 API graph；被 bypass 的可选媒体
+                        // loader 不在 graph 中，因此不能用缓存里的 0 槽位在提交前拦截。
+                        // 后端会读取当前源工作流并按真实槽位做最终校验。
+                        const usesModelCapability = !usesWorkflowProvider;
                         // 普通视频协议只保留输入框文本（显式 @文本 引用仍会展开为真实内容）；声明式工作流还要保留连接媒体。
                         const promptOnly = mode === "video" && !usesWorkflowProvider;
                         try {
@@ -251,7 +328,11 @@ export function useCanvasGenerationExecutor({
                             selectedModel = generationConfig.model;
                             const compatibilityError = usesModelCapability ? modelCompatibilityError(generationConfig, generationConfig.model, requirements) : "";
                             if (compatibilityError) throw new Error(`当前模型无法支持这组输入和参数：${compatibilityError}`);
-                            const referenceLimits = usesModelCapability ? modelGroupReferenceLimits(inputConfig, generationConfig.model, mode, requirements) : undefined;
+                            const referenceLimits = usesComfyUIModel
+                                ? COMFY_OMNI_REFERENCE_MEDIA_LIMITS
+                                : usesModelCapability
+                                  ? modelGroupReferenceLimits(inputConfig, generationConfig.model, mode, requirements)
+                                  : undefined;
                             rawGenerationContext = await waitForCanvasPreparation(() => hydrateNodeGenerationContext(baseContext, projectId, domainProjectId, mode, mode === "video" && Boolean(referenceLimits?.maxAudios), !promptOnly, referenceLimits), controller.signal);
                             const hydratedRequirements = generationModelRequirements(mode, rawGenerationContext, sourceNode, generationConfig);
                             if (hydratedRequirements?.input) {
@@ -299,9 +380,10 @@ export function useCanvasGenerationExecutor({
                         const generationContext = { ...rawGenerationContext, prompt: effectivePrompt };
                         if (canvasGenerationRetryBlocked(sourceNode?.metadata, { ...generationContext, mode })) {
                             diagnostic("generation_retry_blocked", "warning");
-                            message.warning(sourceNode?.metadata?.taskStage === "submission_unknown"
+                            const retryMessage = sourceNode?.metadata?.taskStage === "submission_unknown"
                                 ? "原任务仍在查询中，已阻止重复提交。请点击“查看原任务”或“取回结果”，确认任务结束后再生成。"
-                                : sourceNode?.metadata?.errorDetails || "请先查看失败原因并调整输入，再重新生成");
+                                : sourceNode?.metadata?.errorDetails || "请先查看失败原因并调整输入，再重新生成";
+                            message.warning(retryMessage);
                             return;
                         }
                         if (mode === "audio" && generationContext.characterReferences.length) {
@@ -342,13 +424,21 @@ export function useCanvasGenerationExecutor({
                             promptTemplateVariables: sourceNode?.metadata?.promptTemplateVariables,
                             context: generationContext,
                         });
-                        const duplicateConfirmationRequired = !options?.skipDuplicateConfirmation && !options?.retryContext && sourceNode?.metadata?.lastGenerationRequestFingerprint === requestFingerprint;
+                        const duplicateConfirmationRequired =
+                            !options?.skipDuplicateConfirmation &&
+                            !options?.retryContext &&
+                            sourceNode?.metadata?.lastGenerationRequestFingerprint === requestFingerprint &&
+                            sourceNode?.metadata?.generationSubmissionState === "accepted" &&
+                            sourceNode?.metadata?.taskStatus !== "failed" &&
+                            sourceNode?.metadata?.status !== "error" &&
+                            !sourceNode?.metadata?.errorDetails;
                         message.destroy(preparationMessageKey);
                         stage = "duplicate_confirmation";
                         if (duplicateConfirmationRequired) {
                             diagnostic("generation_confirmation_waiting");
                             if (!(await confirmDuplicateSubmission(controller.signal))) {
                                 diagnostic("generation_confirmation_cancelled");
+                                message.info("已取消生成");
                                 return;
                             }
                         }
@@ -365,7 +455,20 @@ export function useCanvasGenerationExecutor({
                             const accepted = await confirmCanvasGeneration((callbacks) => modal.confirm({ ...ratioWarning, centered: true, ...callbacks }), controller.signal);
                             if (!accepted) {
                                 diagnostic("generation_confirmation_cancelled");
+                                message.info("已取消生成");
                                 return;
+                            }
+                        }
+
+                        if (mode === "video") {
+                            const clampedSeconds = clampComfyReferenceVideoOutputSeconds(
+                                generationConfig,
+                                generationConfig.model,
+                                generationContext.referenceVideos.length,
+                                generationConfig.videoSeconds,
+                            );
+                            if (clampedSeconds && clampedSeconds !== generationConfig.videoSeconds) {
+                                generationConfig = { ...generationConfig, videoSeconds: clampedSeconds };
                             }
                         }
 
@@ -402,17 +505,25 @@ export function useCanvasGenerationExecutor({
                         const markSourceStatus = !sourceNode?.metadata?.content && !editingTextNode;
                         const hasPreviousResult = Boolean(sourceNode?.metadata?.content || sourceNode?.metadata?.storageKey);
                         const statusPrompt = sourceNode?.type === CanvasNodeType.Config ? effectivePrompt : prompt;
-                        if (markSourceStatus)
+                        const shouldClearSourceFailure =
+                            Boolean(sourceNode?.metadata?.errorDetails || sourceNode?.metadata?.taskStatus === "failed" || sourceNode?.metadata?.status === "error") &&
+                            (mode === "video" || mode === "audio" || mode === "image");
+                        if (markSourceStatus || shouldClearSourceFailure) {
+                            const clearedStatus = markSourceStatus ? NODE_STATUS_LOADING : hasPreviousResult ? NODE_STATUS_SUCCESS : NODE_STATUS_IDLE;
                             setNodes((current) =>
                                 current.map((node) =>
                                     node.id === nodeId
                                         ? {
                                               ...node,
-                                              metadata: { ...node.metadata, ...canvasGenerationPromptMetadata(prompt, statusPrompt), status: NODE_STATUS_LOADING, errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined, failedInputFingerprint: undefined },
+                                              metadata: {
+                                                  ...resetGenerationTaskMetadata(node.metadata, clearedStatus),
+                                                  ...(markSourceStatus ? canvasGenerationPromptMetadata(prompt, statusPrompt) : {}),
+                                              },
                                           }
                                         : node,
                                 ),
                             );
+                        }
 
                         let pendingNodeIds: string[] = [];
                         const execution = {
@@ -507,15 +618,17 @@ export function useCanvasGenerationExecutor({
                     } finally {
                         diagnostic(controller.signal.aborted ? "generation_submission_aborted" : "generation_submission_finished");
                         message.destroy(preparationMessageKey);
+                        message.destroy(submissionToastKey);
                         finishGenerationRequest(nodeId, controller);
-                        if (preparing) setRunningNodeId((current) => current === nodeId ? null : current);
+                        setRunningNodeId((current) => (current === nodeId ? null : current));
                     }
                 },
                 () => {
                     recordDiagnosticEvent({ category: "action", level: "warning", code: "generation_duplicate_click", canvasId: projectId, message: "该节点已有生成请求正在提交或执行" });
                     message.info({ key: `canvas-generation-submission-${nodeId}`, content: "该节点已有生成请求正在提交或执行，请勿重复点击" });
                 },
-            ),
+            );
+        },
         [
             addedSkills,
             applyGenerationTaskResult,
@@ -525,6 +638,7 @@ export function useCanvasGenerationExecutor({
             effectiveConfig,
             finishGenerationRequest,
             isAiConfigReady,
+            isLiveRequestNode,
             message,
             modal,
             nodesRef,

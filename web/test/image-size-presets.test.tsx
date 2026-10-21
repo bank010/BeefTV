@@ -114,6 +114,10 @@ describe("统一图片分辨率与宽高比", () => {
         expect(imagePresetForRatio("1k", "21:9").size).toBe("2048x880");
     });
 
+    test("21:9 的 2K 预设用于三视图等横版设定稿", () => {
+        expect(imagePresetForRatio("2k", "21:9").size).toBe("3136x1344");
+    });
+
     test("固定比例编辑器包含 4:5 和 5:4 三档尺寸", () => {
         expect(IMAGE_RATIOS).toContain("4:5");
         expect(IMAGE_RATIOS).toContain("5:4");

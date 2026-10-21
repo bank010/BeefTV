@@ -88,3 +88,28 @@ func TestComfyVideoControlsDoNotGuessOtherTopologies(t *testing.T) {
 		}
 	}
 }
+
+func TestComfyVideoExecutionRepairsDisabledAutomaticControls(t *testing.T) {
+	graph := videoControlGraph(t)
+	fields, err := workflowFieldsFromManagement(graph, "video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range fields {
+		if fields[i].Source == "videoSeconds" || fields[i].Source == "vquality" {
+			fields[i].Role = "internal"
+			fields[i].Enabled = boolPtr(false)
+		}
+	}
+	input := Input{Mode: "video", Config: Config{VideoSeconds: "10", Size: "9:16 (Portrait Widescreen)", VQuality: "0.4"}}
+	if err := applyComfyWorkflowFields(graph, comfyExecutionFields(fields, graph), nil, input); err != nil {
+		t.Fatal(err)
+	}
+	if got := graph["seconds"].(map[string]any)["inputs"].(map[string]any)["value"]; got != int64(10) {
+		t.Fatalf("seconds = %v", got)
+	}
+	inputs := graph["size"].(map[string]any)["inputs"].(map[string]any)
+	if inputs["aspect_ratio"] != input.Config.Size || inputs["megapixels"] != 0.4 {
+		t.Fatalf("resolution = %#v", inputs)
+	}
+}

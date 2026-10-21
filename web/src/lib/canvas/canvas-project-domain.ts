@@ -6,7 +6,10 @@ import { bindingForConnectedNode, storyboardComposerContent, storyboardRowRefere
 import type { CanvasImageAngleParams } from "@/components/canvas/canvas-node-angle-dialog";
 import type { NodeGenerationInput } from "@/components/canvas/canvas-node-generation";
 import { isFrameNode } from "@/lib/canvas/canvas-frame";
-import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
+import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
+import { imagePresetForRatio, imageQualityForTier, type ImageResolutionTier } from "@/lib/image-size-presets";
+import { mergedImageCapabilityConfig } from "@/lib/model-selection";
+import type { AiConfig } from "@/stores/use-config-store";
 import { canvasNodeResourceId } from "@/lib/canvas/canvas-resource-id";
 import { canvasNodeMentionToken, canvasResourceMentionToken, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
@@ -482,4 +485,44 @@ export function buildAngleLabel(params: CanvasImageAngleParams) {
 
 export function buildAnglePrompt(params: CanvasImageAngleParams) {
     return `基于参考图重新生成同一主体的新视角，保持主体、颜色、材质和画面风格一致，不要只做透视变形。${buildAngleLabel(params)}。`;
+}
+
+export function buildTurnaroundSheetPrompt() {
+    return "以参考图片中的主体为唯一依据，生成一张角色三视图设定稿：正面、左侧面、背面三个人物全身像并列排布。三个视图必须是同一主体，严格保持面部特征、体型比例、发型、服装、配饰、材质和色彩一致；每个视图完整无遮挡、比例一致、姿态自然。使用干净的纯色或浅灰背景，不添加文字、标题、标签、尺寸线、边框、额外人物或额外物体。";
+}
+
+/** 三视图设定稿默认横版超宽，便于正面/侧面/背面并列。 */
+export const TURNAROUND_SHEET_ASPECT_RATIO = "21:9";
+export const TURNAROUND_SHEET_RESOLUTION_TIER = "2k" satisfies ImageResolutionTier;
+
+export function turnaroundSheetImagePreset() {
+    return imagePresetForRatio(TURNAROUND_SHEET_RESOLUTION_TIER, TURNAROUND_SHEET_ASPECT_RATIO);
+}
+
+export function applyTurnaroundSheetGenerationDefaults(config: AiConfig): AiConfig {
+    const profile = mergedImageCapabilityConfig(config, config.model || config.imageModel);
+    const quality = imageQualityForTier(profile, TURNAROUND_SHEET_RESOLUTION_TIER) || config.quality || "medium";
+    return { ...config, size: TURNAROUND_SHEET_ASPECT_RATIO, quality };
+}
+
+/** 多角度/图生图占位与请求比例跟随参考图，不沿用三视图的 21:9。 */
+export function referenceImageEditGenerationSize(source: CanvasNodeData, fallbackSize: string | undefined) {
+    if (source.metadata?.size && source.metadata.size !== TURNAROUND_SHEET_ASPECT_RATIO) return source.metadata.size;
+    const naturalWidth = source.metadata?.naturalWidth;
+    const naturalHeight = source.metadata?.naturalHeight;
+    if (naturalWidth && naturalHeight) return `${naturalWidth}x${naturalHeight}`;
+    if (fallbackSize && fallbackSize !== TURNAROUND_SHEET_ASPECT_RATIO) return fallbackSize;
+    return "auto";
+}
+
+export function imageNodeDisplaySizeFromSource(source: CanvasNodeData, maxWidth: number, maxHeight: number) {
+    const naturalWidth = source.metadata?.naturalWidth;
+    const naturalHeight = source.metadata?.naturalHeight;
+    if (naturalWidth && naturalHeight) return fitNodeSize(naturalWidth, naturalHeight, maxWidth, maxHeight);
+    if (source.width > 0 && source.height > 0) return fitNodeSize(source.width, source.height, maxWidth, maxHeight);
+    return { width: maxWidth, height: maxHeight };
+}
+
+export function turnaroundSheetNodeDisplaySize(maxWidth: number, maxHeight: number) {
+    return nodeSizeFromRatio(TURNAROUND_SHEET_ASPECT_RATIO, maxWidth, maxHeight) || { width: maxWidth, height: maxHeight };
 }

@@ -221,7 +221,16 @@ export type PluginHostContext = {
     services?: PluginHostServices;
 };
 
-export type PromptOptimizationMode = "expand" | "refine" | "style" | "model-adapt" | "reference";
+export type PromptOptimizationMode =
+    | "expand"
+    | "refine"
+    | "style"
+    | "model-adapt"
+    | "reference"
+    | "portrait"
+    | "product"
+    | "scene"
+    | "poster";
 
 export type PromptOptimizationInput = {
     prompt: string;

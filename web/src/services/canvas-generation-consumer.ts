@@ -6,10 +6,12 @@ import { assertUserScope, captureUserScope, isUserScopeAbandonedError, UserScope
 import { bindCanvasTaskOutput, type CanvasTaskBindReceipt } from "@/services/api/operations";
 import { ApiError } from "@/services/api/request";
 import { queryGenerationTask, type GenerationTask, type GenerationTaskDeliveryProgress, type GenerationTaskOutput } from "@/services/api/task-center";
+import { sameCanvasDocument } from "@/lib/canvas/canvas-content";
+import { settleInFlightGenerationOverlay } from "@/lib/canvas/canvas-document-rebase";
 import { CanvasBackendSubmitPausedError, CanvasStaleScopeError, isCanvasRevisionConflict } from "@/services/canvas-revision-conflict";
 import { generationEffectApplied } from "@/services/generation-consumer-dedupe";
 import { attachNodeEffectKey } from "@/services/generation-task-materializer";
-import { persistCanvasDocument } from "@/services/local-workspace-repository";
+import { CanvasProjectionError, persistCanvasDocument, scheduleLocalCanvasBackendSync } from "@/services/local-workspace-repository";
 import { hydrateBackendGeneratedOutputs, type ensureCanvasNodeAsset } from "@/services/project-asset-sync";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { publishGenerationDeliveryProgress } from "@/stores/use-generation-delivery-progress";
@@ -205,6 +207,38 @@ async function pollMaterializedGenerationOutput(
 
 function outputIndexFromState(state: { outputIndex: number }) {
     return state.outputIndex;
+}
+
+function isBindProjectionDeferrable(error: unknown) {
+    if (isCanvasRevisionConflict(error)) return true;
+    if (error instanceof CanvasBackendSubmitPausedError) return true;
+    if (error instanceof CanvasProjectionError) return true;
+    if (error instanceof CanvasBindFlushError) return isBindProjectionDeferrable(error.cause);
+    return false;
+}
+
+/** Server bind already succeeded; merge bound media onto the live editor when journal adoption is deferred. */
+function overlayGenerationReceiptOnLiveCanvas(canvasId: string, canonical: CanvasProject, targetNodeId: string) {
+    const live = useCanvasStore.getState().openProject(canvasId);
+    if (!live) return undefined;
+    const settled = settleInFlightGenerationOverlay({ base: live, local: live, remote: canonical });
+    let next = settled;
+    const remoteTarget = canonical.nodes.find((node) => node.id === targetNodeId);
+    const localTarget = settled.nodes.find((node) => node.id === targetNodeId);
+    const remoteMeta = remoteTarget?.metadata;
+    const localMeta = localTarget?.metadata;
+    const remoteReady = remoteMeta?.status === "success" && Boolean(remoteMeta.content || remoteMeta.storageKey || remoteMeta.assetId);
+    const localReady = localMeta?.status === "success" && Boolean(localMeta.content || localMeta.storageKey || localMeta.assetId);
+    if (remoteTarget && localTarget && remoteReady && !localReady && remoteMeta?.taskId && remoteMeta.taskId === localMeta?.taskId) {
+        next = {
+            ...settled,
+            nodes: settled.nodes.map((node) => (node.id === targetNodeId ? { ...node, ...remoteTarget, metadata: { ...node.metadata, ...remoteMeta } } : node)),
+        };
+    }
+    if (sameCanvasDocument(live, next)) return undefined;
+    const revision = typeof canonical.revision === "number" ? Math.max(live.revision ?? 0, canonical.revision) : live.revision;
+    useCanvasStore.getState().updateProject(canvasId, { nodes: next.nodes, connections: next.connections, revision });
+    return useCanvasStore.getState().openProject(canvasId) ?? next;
 }
 
 export async function bindBackendCanvasGenerationResult(input: {
@@ -407,12 +441,20 @@ export async function bindBackendCanvasGenerationResult(input: {
     const receipt = response.result ?? {};
     if (receipt.bindingStatus === "deleted" && !receipt.canvas) return;
     const canonical = canonicalCanvasFromReceipt(capturedCanvasId, receipt);
-    const adopted = await adoptConfirmedProjection(canonical, capturedScope.userScope, capturedScope);
-    assertBindDispatchScope(capturedScope, liveScope);
-    if (adopted && input.isCurrent()) {
-        input.nodesRef.current = adopted.nodes;
-        input.setNodes(adopted.nodes);
+    let adopted: CanvasProject | undefined;
+    try {
+        adopted = await adoptConfirmedProjection(canonical, capturedScope.userScope, capturedScope);
+    } catch (error) {
+        if (!isBindProjectionDeferrable(error)) throw error;
     }
+    assertBindDispatchScope(capturedScope, liveScope);
+    const projected = adopted ?? overlayGenerationReceiptOnLiveCanvas(capturedCanvasId, canonical, input.nodeId);
+    if (projected && input.isCurrent()) {
+        input.nodesRef.current = projected.nodes;
+        input.setNodes(projected.nodes);
+    }
+    if (!projected) throw new CanvasBindProjectionAdoptionError();
+    if (!adopted) scheduleLocalCanvasBackendSync(capturedCanvasId);
 }
 
 function assertBindDispatchScope(expected: CapturedUserScope, live: () => CapturedUserScope) {

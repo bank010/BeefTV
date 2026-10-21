@@ -182,7 +182,9 @@ export type CanvasProjectEditorDialogsProps = {
         onCloseTask: () => void;
         onCancelTask?: (task: GenerationTask) => void;
         onRetrieveTask?: (task: GenerationTask) => void;
+        onContinueCanvasResult?: (task: GenerationTask) => void;
         retrievingTaskId?: string | null;
+        continuingCanvasTaskId?: string | null;
         superResolveNode: CanvasNodeData | null;
         onCloseSuperResolve: () => void;
         onUseLocalUpscale: () => void;
@@ -340,7 +342,9 @@ export function CanvasProjectEditorDialogs({
                 onCloseTask={status.onCloseTask}
                 onCancelTask={status.onCancelTask}
                 onRetrieveTask={status.onRetrieveTask}
+                onContinueCanvasResult={status.onContinueCanvasResult}
                 retrievingTaskId={status.retrievingTaskId}
+                continuingCanvasTaskId={status.continuingCanvasTaskId}
                 superResolveNode={status.superResolveNode}
                 onCloseSuperResolve={status.onCloseSuperResolve}
                 onUseLocalUpscale={status.onUseLocalUpscale}

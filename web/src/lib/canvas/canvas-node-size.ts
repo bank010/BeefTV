@@ -82,6 +82,11 @@ export function ensureMediaNodeMinimumSize(node: CanvasNodeData) {
         : null;
     const naturalRatio = naturalWidth / Math.max(1, naturalHeight);
     const nodeRatio = node.width / Math.max(1, node.height);
+    if (node.type === CanvasNodeType.Video && naturalWidth > 0 && naturalHeight > 0 && !node.metadata?.freeResize && !node.metadata?.locked && Math.abs(naturalRatio - nodeRatio) > 0.01) {
+        const alignedSize = fitNodeSize(naturalWidth, naturalHeight, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+        width = alignedSize.width;
+        height = alignedSize.height;
+    }
     // 修复旧版图生图无条件继承参考节点尺寸造成的比例错误，不覆盖自由拉伸或锁定布局。
     if (requestedSize && naturalWidth > 0 && naturalHeight > 0 && !node.metadata?.freeResize && !node.metadata?.locked && Math.abs(naturalRatio - nodeRatio) > 0.01) {
         const alignedSize = fitNodeSize(naturalWidth, naturalHeight, requestedSize.width, requestedSize.height);

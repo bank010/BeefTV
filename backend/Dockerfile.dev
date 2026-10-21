@@ -1,4 +1,4 @@
-ARG GO_IMAGE=golang:1.25-alpine
+ARG GO_IMAGE=golang:1.27-alpine
 FROM ${GO_IMAGE}
 
 ARG GOPROXY=https://proxy.golang.org,direct

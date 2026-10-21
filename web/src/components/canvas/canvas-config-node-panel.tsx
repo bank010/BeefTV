@@ -213,6 +213,13 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                           : modelCompatibilityError(globalConfig, comfyUIWorkflowModel(selectedComfyUIWorkflow.workflowId), requirements) || undefined
               : undefined);
     const canGenerate = (hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput)) && !capabilityError;
+    const generateBlockedReason =
+        capabilityError ||
+        (hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput)
+            ? ""
+            : mode === "video" || mode === "image"
+              ? "请先填写提示词，或连接参考图片 / 视频 / 音频"
+              : "请先填写生成内容");
 
     return (
         <div className="canvas-config-node-panel thin-scrollbar flex h-full w-full cursor-move flex-col gap-3.5 overflow-y-auto px-4 pb-4 pt-8 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
@@ -429,22 +436,33 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 </div>
             ) : null}
 
-            <Button type="primary" className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg" disabled={isRunning || !canGenerate} onMouseDown={(event) => event.stopPropagation()} onClick={() => onGenerate(node.id)}>
-                <span className="inline-flex items-center gap-1.5">
-                    {isRunning ? (
-                        <>
-                            <LoaderCircle className="size-4 animate-spin" />
-                            <span>生成中</span>
-                        </>
-                    ) : (
-                        <>
-                            <span>生成</span>
-                            <Play className="size-4" />
-                            <span>开始生成</span>
-                        </>
-                    )}
-                </span>
-            </Button>
+            {(() => {
+                const generateButton = (
+                    <Button type="primary" className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg" disabled={isRunning || !canGenerate} onMouseDown={(event) => event.stopPropagation()} onClick={() => onGenerate(node.id)}>
+                        <span className="inline-flex items-center gap-1.5">
+                            {isRunning ? (
+                                <>
+                                    <LoaderCircle className="size-4 animate-spin" />
+                                    <span>生成中</span>
+                                </>
+                            ) : (
+                                <>
+                                    <span>生成</span>
+                                    <Play className="size-4" />
+                                    <span>开始生成</span>
+                                </>
+                            )}
+                        </span>
+                    </Button>
+                );
+                return !canGenerate && generateBlockedReason ? (
+                    <Tooltip title={generateBlockedReason}>
+                        <span className="mt-auto block w-full">{generateButton}</span>
+                    </Tooltip>
+                ) : (
+                    generateButton
+                );
+            })()}
         </div>
     );
 }

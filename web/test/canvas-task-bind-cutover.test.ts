@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { bindBackendCanvasGenerationResult, CanvasBindFlushError, CanvasBindProjectionAdoptionError } from "@/services/canvas-generation-consumer";
 import { captureUserScope, UserScopeAbandonedError, type CapturedUserScope } from "@/lib/user-scope-guard";
 import { ApiError } from "@/services/api/request";
+import { CanvasProjectionError } from "@/services/local-workspace-repository";
 import { CanvasBackendSubmitPausedError } from "@/services/canvas-revision-conflict";
 import type { CanvasTaskBindReceipt } from "@/services/api/operations";
 import { hydrateBackendGeneratedAsset, hydrateBackendGeneratedOutputs } from "@/services/project-asset-sync";
@@ -812,6 +813,46 @@ describe("bindBackendCanvasGenerationResult", () => {
         expect(seen).toHaveLength(2);
         expect(seen[0]).toBe(identity);
         expect(seen[1]).toBe(identity);
+    });
+
+    test("projects bound media onto the live node when journal adoption is deferred by revision conflict", async () => {
+        const bound = canvasNode("node-1", "生成中", { taskId: "task-1", status: "error", generationErrorCode: "canvas_conflict", errorDetails: "画布尚未更新" });
+        const live = canvasProject("canvas-1", [bound], 3);
+        const server = canvasProject("canvas-1", [{ ...bound, metadata: { ...bound.metadata, status: "success", content: "/api/resources/res-1/file", storageKey: "resource:res-1", assetId: "generation_abc", generationErrorCode: undefined, errorDetails: undefined } }], 4);
+        useCanvasStore.setState({ projects: [live] });
+        const nodesRef = { current: [bound] };
+        const identity = captured("user-a", 1);
+
+        await bindBackendCanvasGenerationResult({
+            canvasId: "canvas-1",
+            nodeId: "node-1",
+            task: succeededTask(),
+            isCurrent: () => true,
+            nodesRef,
+            setNodes: (value) => {
+                nodesRef.current = typeof value === "function" ? value(nodesRef.current) : value;
+            },
+            runtime: {
+                hydrateOutputs: async () => undefined,
+                persistDocument: async () => undefined,
+                bindOutput: async (input) => ({
+                    op: "canvas.task.bind",
+                    opId: input.operationId,
+                    replayed: false,
+                    revision: 4,
+                    result: bindReceipt(server, "node-1"),
+                }),
+                adoptConfirmedProjection: async () => {
+                    throw new CanvasProjectionError("服务端已保存，本地画布还没写完。请重试这次回写，不要重新生成。", { canvasId: "canvas-1", confirmedRevision: 3, projectionIdentity: "proj-1" });
+                },
+                captureScope: () => identity,
+                liveScope: () => identity,
+            },
+        });
+
+        expect(nodesRef.current[0]?.metadata?.status).toBe("success");
+        expect(nodesRef.current[0]?.metadata?.content).toBe("/api/resources/res-1/file");
+        expect(nodesRef.current[0]?.metadata?.generationErrorCode).toBeUndefined();
     });
 
     test("missing receipt canvas throws instead of confirming a local snapshot revision", async () => {

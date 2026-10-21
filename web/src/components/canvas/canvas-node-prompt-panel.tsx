@@ -1,11 +1,13 @@
-import { App, Button, Image as AntImage, InputNumber, Modal, Popover } from "antd";
+import { App, Button, Dropdown, Image as AntImage, InputNumber, Modal, Popover } from "antd";
 import { Tooltip } from "@/components/ui/base/tooltip";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { ArrowLeftRight, ArrowUp, AtSign, Boxes, Camera, ChevronDown, FileText, GripVertical, ImageIcon, ImagePlus, Link2, LoaderCircle, Maximize2, Music2, Pencil, SlidersHorizontal, UserRound, Video, WandSparkles, X } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { modelOptionName, resolveModelChannel, selectableModelsByCapability, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { canvasImagePolishMenuItems, defaultCanvasImagePolishMode } from "@/lib/plugins/builtin/image-prompt-polish";
 import { promptPolishModelFamily, resolvePromptPolishSkill } from "@/lib/plugins/builtin/prompt-optimizer";
+import type { PromptOptimizationMode } from "@/lib/plugins/plugin-types";
 import { buildGenerationConfig as buildNodeConfig, buildCanvasGenerationRequirements } from "@/lib/canvas/canvas-generation-config";
 import { clampPromptEditorModalSize, PROMPT_EDITOR_VIEWPORT_MARGIN } from "@/lib/canvas/canvas-prompt-editor-size";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -28,6 +30,7 @@ import { h3VideoOperation, isH3Model, isH3Style } from "@/lib/h3-video";
 import { CanvasPresetPicker, type CanvasPromptPreset } from "./canvas-preset-picker";
 import { CanvasPortraitTexturePopover } from "./canvas-portrait-texture-popover";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode } from "@/types/canvas";
+import { canReloadCanvasGenerationResult } from "@/lib/canvas/canvas-generation-recovery";
 import { autoMentionCanvasResourceReferences, canvasResourceDisplayName, canvasResourceMentionToken, normalizeCanvasNodeMentionTokens, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
 
@@ -38,7 +41,7 @@ type CanvasNodePromptPanelProps = {
     node: CanvasNodeData;
     isRunning: boolean;
     onPromptChange: (nodeId: string, prompt: string) => void;
-    onPolishPrompt: (node: CanvasNodeData) => Promise<void>;
+    onPolishPrompt: (node: CanvasNodeData, options?: { mode?: PromptOptimizationMode }) => Promise<void>;
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onGenerate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => void;
     mentionReferences?: CanvasResourceReference[];
@@ -94,10 +97,12 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
     const [manualPromptHeight, setManualPromptHeight] = useState<number | null>(null);
     const [paramsExpanded, setParamsExpanded] = useState(false); // #98 决策2：B区参数区折叠状态（手风琴）
     const [polishingPrompt, setPolishingPrompt] = useState(false);
+    const [imagePolishMode, setImagePolishMode] = useState<PromptOptimizationMode>(() => defaultCanvasImagePolishMode());
     const [autoLinkEnabled, setAutoLinkEnabled] = useState(true);
     const resolvedMentionReferences = useResolvedCanvasResourceReferences(mentionReferences, { projectId });
     const normalizedSavedPrompt = useMemo(() => normalizeCanvasNodeMentionTokens(savedPrompt, mentionReferences), [mentionReferences, savedPrompt]);
     const activeReferences = resolvedMentionReferences.filter((item) => item.active && item.kind !== "skill");
+    const activeReferenceCount = activeReferences.length;
     const requirements = buildCanvasGenerationRequirements(globalConfig, node, mode, {
         textCount: (prompt.trim() ? 1 : 0) + activeReferences.filter((item) => item.kind === "text").length,
         imageCount: activeReferences.filter((item) => item.kind === "image").length,
@@ -108,21 +113,25 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
     const config = buildNodeConfig(globalConfig, node, mode, requirements);
     const canPolishPrompt = node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio;
     const polishChannel = canPolishPrompt ? resolveModelChannel(config, config.model) : null;
+    const activePolishMode: PromptOptimizationMode = mode === "image" ? imagePolishMode : "model-adapt";
     const polishSkill = canPolishPrompt ? resolvePromptPolishSkill({
         prompt,
-        mode: "model-adapt",
+        mode: activePolishMode,
         generationMode: mode,
         targetModel: modelOptionName(config.model) || config.model,
         targetModelFamily: promptPolishModelFamily(globalConfig, config.model),
         targetProtocol: polishChannel?.modelProfiles?.find((item) => item.model === modelOptionName(config.model))?.protocol || polishChannel?.interfaceType,
     }) : null;
+    const imagePolishMenu = useMemo(
+        () => (mode === "image" ? canvasImagePolishMenuItems({ hasReferences: activeReferenceCount > 0 }) : []),
+        [activeReferenceCount, mode],
+    );
     const availableModels = selectableModelsByCapability(config, mode);
     const resolvedRequirements: ModelRequirements = {
         ...requirements,
         options: modelRequestOptions(config, mode),
         videoSeconds: mode === "video" ? config.videoSeconds : undefined,
     };
-    const activeReferenceCount = activeReferences.length;
     const videoFrameOptions = resolvedMentionReferences.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
     const h3Model = isH3Model(config.model);
     const videoReferenceInputs = activeReferences.flatMap((reference) => reference.kind === "skill" ? [] : [{ nodeId: reference.nodeId, type: reference.kind, title: reference.title }]);
@@ -165,7 +174,16 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
         if (!rect?.width || !rect.height) return { width: PROMPT_EDITOR_MODAL_DEFAULT_WIDTH, height: PROMPT_EDITOR_MODAL_DEFAULT_HEIGHT };
         return { width: Math.round(rect.width), height: Math.round(rect.height) };
     };
-    const isSubmitDisabled = !isRunning && !prompt.trim();
+    const canSubmitWithReferencesOnly = (mode === "image" || mode === "video") && Boolean(requirements.input && (requirements.input.imageCount + requirements.input.videoCount + requirements.input.audioCount + (requirements.input.characterCount || 0) > 0));
+    const canSubmit = Boolean(prompt.trim()) || canSubmitWithReferencesOnly;
+    const isSubmitDisabled = !isRunning && !canSubmit;
+    const submitDisabledReason = isRunning
+        ? ""
+        : mode === "text" || mode === "audio"
+          ? "请先输入生成内容"
+          : !canSubmit
+            ? "请先输入提示词，或连接参考图片 / 视频 / 音频"
+            : "";
     const canExpandPrompt = mode === "image" || mode === "video";
     const isPortraitTexture = mode === "image" && Boolean(node.metadata?.portraitTexture);
     const autoMentionedPrompt = useMemo(() => autoMentionCanvasResourceReferences(prompt, resolvedMentionReferences), [prompt, resolvedMentionReferences]);
@@ -208,12 +226,19 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
         }
     };
 
-    const polishPrompt = async () => {
+    const polishPrompt = async (polishMode: PromptOptimizationMode = activePolishMode) => {
         if (!prompt.trim() || polishingPrompt) return;
+        if (mode === "image") setImagePolishMode(polishMode);
         setPolishingPrompt(true);
-        message.open({ type: "loading", content: `AI 正在使用 ${polishSkill?.label || "当前模型"} Skill 润色…`, key: "canvas-node-prompt-polish", duration: 0 });
+        const menuLabel = imagePolishMenu.find((item) => item.mode === polishMode)?.label;
+        message.open({
+            type: "loading",
+            content: `AI 正在${menuLabel ? `「${menuLabel}」` : ""}润色（${polishSkill?.label || "当前模型"}）…`,
+            key: "canvas-node-prompt-polish",
+            duration: 0,
+        });
         try {
-            await onPolishPrompt(node);
+            await onPolishPrompt(node, { mode: polishMode });
             message.success({ content: "提示词润色完成", key: "canvas-node-prompt-polish" });
         } catch (error) {
             message.error({ content: `润色失败：${error instanceof Error ? error.message : String(error)}`, key: "canvas-node-prompt-polish", duration: 5 });
@@ -222,22 +247,84 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
         }
     };
 
-    const renderPolishPromptButton = () => canPolishPrompt ? (
-        <Tooltip title={`AI 润色 · ${polishSkill?.label || "当前模型"} Skill`}>
-            <button
-                type="button"
-                data-canvas-no-zoom
-                className="canvas-node-composer-settings-trigger canvas-node-composer-polish-trigger inline-grid shrink-0 place-items-center rounded-md"
-                aria-label={`AI 润色${({ text: "文本", image: "图片", video: "视频", audio: "音频" } as const)[mode]}提示词`}
-                disabled={!prompt.trim() || polishingPrompt}
-                onPointerDown={(event) => event.stopPropagation()}
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={(event) => { event.stopPropagation(); void polishPrompt(); }}
-            >
-                {polishingPrompt ? <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" /> : <WandSparkles className="size-3.5" />}
-            </button>
-        </Tooltip>
-    ) : null;
+    const renderPolishPromptButton = () => {
+        if (!canPolishPrompt) return null;
+        const polishDisabled = !prompt.trim() || polishingPrompt;
+        const polishIcon = polishingPrompt ? <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" /> : <WandSparkles className="size-3.5" />;
+        const stopBubble = (event: ReactPointerEvent) => {
+            event.stopPropagation();
+        };
+        if (mode === "image" && imagePolishMenu.length) {
+            const currentLabel = imagePolishMenu.find((item) => item.mode === imagePolishMode)?.label || "润色";
+            return (
+                <span className="inline-flex shrink-0 items-stretch overflow-hidden rounded-md">
+                    <Tooltip title={`AI 润色 · ${currentLabel} · ${polishSkill?.label || "当前模型"}`}>
+                        <button
+                            type="button"
+                            data-canvas-no-zoom
+                            className="canvas-node-composer-settings-trigger canvas-node-composer-polish-trigger inline-grid place-items-center rounded-none rounded-l-md px-1.5"
+                            aria-label={`AI 图片提示词润色，当前 ${currentLabel}`}
+                            disabled={polishDisabled}
+                            onPointerDown={stopBubble}
+                            onMouseDown={stopBubble}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                void polishPrompt(imagePolishMode);
+                            }}
+                        >
+                            {polishIcon}
+                        </button>
+                    </Tooltip>
+                    <Dropdown
+                        trigger={["click"]}
+                        disabled={polishDisabled}
+                        menu={{
+                            items: imagePolishMenu.map((item) => ({
+                                key: item.mode,
+                                label: (
+                                    <span className="block max-w-[16rem] py-0.5">
+                                        <span className="block text-sm font-medium">{item.label}</span>
+                                        <span className="block text-xs opacity-70">{item.hint}</span>
+                                    </span>
+                                ),
+                                onClick: () => void polishPrompt(item.mode),
+                            })),
+                        }}
+                    >
+                        <button
+                            type="button"
+                            data-canvas-no-zoom
+                            className="canvas-node-composer-settings-trigger canvas-node-composer-polish-trigger inline-grid place-items-center rounded-none rounded-r-md border-l border-[color-mix(in_srgb,var(--cn-text)_12%,transparent)] px-0.5"
+                            aria-label="选择图片润色方式"
+                            aria-haspopup="menu"
+                            disabled={polishDisabled}
+                            onPointerDown={stopBubble}
+                            onMouseDown={stopBubble}
+                            onClick={(event) => event.stopPropagation()}
+                        >
+                            <ChevronDown className="size-3 opacity-70" aria-hidden />
+                        </button>
+                    </Dropdown>
+                </span>
+            );
+        }
+        return (
+            <Tooltip title={`AI 润色 · ${polishSkill?.label || "当前模型"} Skill`}>
+                <button
+                    type="button"
+                    data-canvas-no-zoom
+                    className="canvas-node-composer-settings-trigger canvas-node-composer-polish-trigger inline-grid shrink-0 place-items-center rounded-md"
+                    aria-label={`AI 润色${({ text: "文本", image: "图片", video: "视频", audio: "音频" } as const)[mode]}提示词`}
+                    disabled={polishDisabled}
+                    onPointerDown={stopBubble}
+                    onMouseDown={stopBubble}
+                    onClick={(event) => { event.stopPropagation(); void polishPrompt(); }}
+                >
+                    {polishIcon}
+                </button>
+            </Tooltip>
+        );
+    };
 
     const applyPreset = (preset: CanvasPromptPreset) => {
         const withoutSlash = prompt.replace(/(^|\s)\/[\p{L}\p{N}_-]*$/u, "$1").trimEnd();
@@ -256,10 +343,33 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
         updatePrompt(basePrompt ? `${basePrompt} ${insertText}` : insertText);
     };
 
+    const runGenerateSubmit = (expanded: boolean) => {
+        if (expanded) submitExpandedPrompt();
+        else submit();
+    };
+
     const submit = () => {
+        if (isRunning) {
+            if (canReloadCanvasGenerationResult(node.metadata)) {
+                message.warning("上一条生成已完成，但结果还没写进节点。请打开任务详情点击「继续取回」，不要重复提交以免再次扣费。");
+            } else if (node.metadata?.taskStatus === "queued" || node.metadata?.taskStatus === "running") {
+                message.warning("生成任务进行中，请稍候");
+            } else {
+                message.warning("该节点仍有进行中的生成请求，请稍候或在任务详情查看进度");
+            }
+            return false;
+        }
         const text = prompt.trim();
-        if (!text || isRunning) return false;
-        onGenerate(node.id, mode, text);
+        if (!text && !canSubmitWithReferencesOnly) {
+            if (submitDisabledReason) message.warning(submitDisabledReason);
+            return false;
+        }
+        try {
+            onGenerate(node.id, mode, text);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "生成提交失败");
+            return false;
+        }
         return true;
     };
 
@@ -326,27 +436,51 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
 
     const renderSubmitButton = (expanded: boolean) => {
         const actionLabel = isRunning ? "生成中" : "生成";
-        return (
+        const showSubmitLabel = mode === "video" || mode === "image";
+        const visuallyMuted = isSubmitDisabled || isRunning;
+        const submitHint = isRunning
+            ? canReloadCanvasGenerationResult(node.metadata)
+                ? "结果待取回：请打开任务详情点击「继续取回」"
+                : "任务进行中或状态未释放，点击可查看说明"
+            : isSubmitDisabled && submitDisabledReason
+              ? submitDisabledReason
+              : `${actionLabel}（Enter）`;
+        const button = (
             <Button
                 type="text"
-                className="canvas-node-composer-submit canvas-node-composer-submit-canvas"
-                disabled={isRunning || isSubmitDisabled}
+                className={`canvas-node-composer-submit canvas-node-composer-submit-canvas${showSubmitLabel ? " has-cost" : ""}`}
+                aria-disabled={isSubmitDisabled && !isRunning}
                 style={
                     {
-                        color: isSubmitDisabled ? theme.node.faint : theme.node.text,
-                        "--canvas-composer-submit-action": isSubmitDisabled ? theme.toolbar.itemHover : monochromeAccent,
-                        "--canvas-composer-submit-action-fg": isSubmitDisabled ? theme.node.faint : theme.canvas.background,
+                        color: visuallyMuted ? theme.node.faint : theme.node.text,
+                        "--canvas-composer-submit-action": visuallyMuted ? theme.toolbar.itemHover : monochromeAccent,
+                        "--canvas-composer-submit-action-fg": visuallyMuted ? theme.node.faint : theme.canvas.background,
                     } as CSSProperties
                 }
-                onClick={() => (expanded ? submitExpandedPrompt() : submit())}
+                onPointerDown={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                    event.stopPropagation();
+                    void runGenerateSubmit(expanded);
+                }}
                 aria-label={actionLabel}
-                title={actionLabel}
+                title={submitHint}
             >
+                {showSubmitLabel ? (
+                    <span className="canvas-node-composer-submit-cost">
+                        <span>{actionLabel}</span>
+                    </span>
+                ) : null}
                 <span className="canvas-node-composer-submit-action" aria-hidden>
                     {isRunning ? <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" /> : <ArrowUp className="size-3.5" strokeWidth={2.4} />}
                 </span>
             </Button>
         );
+        return submitHint ? (
+            <Tooltip title={submitHint}>
+                <span className="inline-flex">{button}</span>
+            </Tooltip>
+        ) : button;
     };
 
     const renderComposerControls = (expanded: boolean) =>
@@ -496,6 +630,9 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                             onSelectReference={onAddReference ? (reference) => onAddReference(node.id, reference) : undefined}
                             includeAssetLibrary
                             onChange={updatePrompt}
+                            onSubmit={() => {
+                                void runGenerateSubmit(false);
+                            }}
                             autoLinkEnabled={autoLinkEnabled}
                             onReferenceFilesDrop={onReplaceReferenceFiles ? (reference, files) => onReplaceReferenceFiles(node.id, reference, files) : undefined}
                             onContentSizeChange={expanded ? setExpandedPromptContentHeight : setPromptContentHeight}

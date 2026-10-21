@@ -1,10 +1,11 @@
+import { COMFY_REFERENCE_VIDEO_MAX_OUTPUT_SECONDS, comfyOmniReferenceWorkflowModel } from "./comfy-omni-reference-temp-limit";
 import { beefAPIVideoContract, isBeefAPIEndpoint } from "./beefapi-video-contracts";
 import { h3ReferenceMode, h3VideoOperation, isH3Model, isH3Style } from "./h3-video";
 import { seedanceSettingsConstraints, type SeedanceSettingsConstraints } from "./seedance-task-constraints";
 import { modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { CanvasNodeMetadata } from "@/types/canvas";
 
-export type VideoSettingsConstraints = SeedanceSettingsConstraints & { ratioHelp?: string };
+export type VideoSettingsConstraints = SeedanceSettingsConstraints & { ratioHelp?: string; maxOutputSeconds?: number };
 
 export function videoSettingsConstraints(
     config: AiConfig,
@@ -42,5 +43,13 @@ export function videoSettingsConstraints(
             ratioHelp: `视频比例由${frame}图片决定。需要其他比例时，请先裁切或扩图，再生成视频。`,
         };
     }
-    return seedanceSettingsConstraints(model, imageCount, videoCount, audioCount, metadata?.videoEditOperation, Boolean(first || last));
+    const seedance = seedanceSettingsConstraints(model, imageCount, videoCount, audioCount, metadata?.videoEditOperation, Boolean(first || last));
+    if (comfyOmniReferenceWorkflowModel(config, config.model) && videoCount > 0) {
+        return {
+            ...seedance,
+            maxOutputSeconds: COMFY_REFERENCE_VIDEO_MAX_OUTPUT_SECONDS,
+            ratioHelp: seedance.ratioHelp || `当前显卡配置：已上传参考视频时，成片最长 ${COMFY_REFERENCE_VIDEO_MAX_OUTPUT_SECONDS} 秒。`,
+        };
+    }
+    return seedance;
 }

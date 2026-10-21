@@ -24,7 +24,7 @@ mock.module("@/services/diagnostics/client-diagnostics", () => ({ recordDiagnost
 mock.module("@/stores/use-config-store", () => ({ useEffectiveConfig: () => ({}), useConfigStore: (select: any) => select({ isAiConfigReady: () => true }), resolveModelRequestConfig: () => ({}), comfyUIWorkflowForModel: () => undefined }));
 mock.module("@/components/canvas/canvas-node-generation", () => ({ buildNodeGenerationContext: (_id: any, _nodes: any, _edges: any, prompt: string) => ({ prompt, referenceImages: [], referenceVideos: [], referenceAudios: [], characterReferences: [], resolvedCharacterVersions: [], resolvedCharacterVoices: [] }), hydrateNodeGenerationContext: (context: any) => hydrate(context) }));
 mock.module("@/pages/canvas/canvas-assistant-proposal-execution", () => ({ buildConfirmedGenerationConfig: () => ({ model: "fixture", taskWorkflowProvider: "model", size: "1:1" }) }));
-mock.module("@/lib/canvas/canvas-project-generation", () => ({ isGenerationCanceled: (error: any) => error?.name === "AbortError" }));
+mock.module("@/lib/canvas/canvas-project-generation", () => ({ isGenerationCanceled: (error: any) => error?.name === "AbortError", resetGenerationTaskMetadata: (metadata: any, status: string) => ({ ...metadata, status }) }));
 mock.module("@/lib/model-selection", () => ({ modelCompatibilityError: () => compatible ? "" : "参数不兼容", modelGroupReferenceLimits: () => undefined, modelPromptLengthError: () => "", modelRequestOptions: () => ({}) }));
 mock.module("@/services/skill-runtime", () => ({ skillRuntime: { prepare: async ({ prompt }: any) => ({ prompt, metadata: {} }) } }));
 mock.module("@/lib/canvas/canvas-style-execution", () => ({ resolveCanvasStyleExecution: () => undefined }));
@@ -40,7 +40,10 @@ const generate = useCanvasGenerationExecutor({ projectId: "canvas", addedSkills:
     setNodes: (update: any) => { nodesRef.current = update(nodesRef.current); }, setConnections: no, setSelectedNodeIds: no, setSelectedConnectionId: no, setDialogNodeId: no,
     setRunningNodeId: (update: any) => { running = typeof update === "function" ? update(running) : update; },
     startGenerationRequest: (id, _origin, _running, controller = new AbortController()) => { requests.set(id, controller); return controller; },
-    finishGenerationRequest: (id, controller) => { if (requests.get(id) === controller) requests.delete(id); }, bindGenerationTask: no, applyGenerationTaskResult: async () => {},
+    finishGenerationRequest: (id, controller) => { if (requests.get(id) === controller) requests.delete(id); }, bindGenerationTask: (id) => {
+        nodesRef.current = nodesRef.current.map((node: any) => node.id === id ? { ...node, metadata: { ...node.metadata, generationSubmissionState: "accepted", taskStatus: "succeeded" } } : node);
+    }, applyGenerationTaskResult: async () => {},
+    isLiveRequestNode: (id) => requests.has(id),
 });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
 let resolveRead!: (value: any) => void;
@@ -49,7 +52,7 @@ hydrate = (context) => { pendingContext = context; return new Promise((resolve) 
 const first = generate("video", "video", "private prompt");
 await tick();
 assert.equal(running, "video");
-assert.equal(loading.size, 1);
+assert.equal(loading.size, 2);
 assert.equal(dispatched, 0);
 const duplicate = generate("video", "video", "private prompt");
 assert(diagnostics.some((e) => e.code === "generation_duplicate_click"));
@@ -104,6 +107,15 @@ assert.equal(dispatched, 2);
 hydrate = async (context) => context;
 await generate("video", "video", "changed prompt");
 assert.equal(dispatched, 3, "timeout must release the real submission lock for retry");
+assert(!diagnostics.some((event) => event.code === "generation_task_active"), "an idle node must not block itself as an active request");
+nodesRef.current[0].metadata = { status: "error", taskId: "failed-task", taskStatus: "failed", errorDetails: "workflow configuration rejected" };
+await generate("video", "video", "retry failed video");
+assert.equal(dispatched, 4, "a failed task must allow a new generation attempt");
+requests.set("video", new AbortController());
+await generate("video", "video", "duplicate live request");
+assert.equal(dispatched, 4, "a real live request must still block duplicates");
+assert(diagnostics.some((event) => event.code === "generation_task_active"));
+requests.clear();
 assert(!JSON.stringify(diagnostics).includes("private prompt"));
 const failedDiag = diagnostics.find((e) => e.code === "generation_preflight_failed");
 assert(failedDiag, "expected generation_preflight_failed event");

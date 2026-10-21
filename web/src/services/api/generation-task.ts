@@ -5,7 +5,7 @@ import { getImageBlob } from "@/services/image-storage";
 import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { createGenerationTask, findGenerationTaskByOperation, waitForGenerationTask, type GenerationTask, type CreateTaskInput } from "@/services/api/task-center";
 import { submitGenerationCommand } from "./generation-submission";
-import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, workflowMediaInputLimitForWorkflow } from "@/lib/model-capabilities";
 import { comfyUIOutputDimensions } from "@/lib/comfyui-output-size";
 import { parseImageDimensions, resolveRequestSize } from "./image-validation";
 import { grokImagePromptLimitError } from "@/lib/grok-image-prompt-limit";
@@ -19,6 +19,7 @@ import { buildBackendToolRequests, type ResponseFunctionTool, type ResponseInput
 import { assertAgentExchangeBudget } from "@/lib/canvas/agent-context-budget";
 import { assertVideoCapability } from "@/services/api/video-validation";
 import { ApiError } from "@/services/api/request";
+import { COMFY_OMNI_REFERENCE_MEDIA_LIMITS } from "@/lib/comfy-omni-reference-temp-limit";
 import { assertUserScope, captureUserScope } from "@/lib/user-scope-guard";
 import { isReferenceHTTPSLink, uploadReferenceLinks, type ResolveReferenceLinks, type ReferenceLinkRequest } from "./reference-link-replacement";
 
@@ -363,7 +364,35 @@ function assertPreparedVideoCapability(mode: BackendGenerationMode, config: AiCo
     const validateDuration = workflow?.provider !== "comfyui" || profile.duration.selection !== "enum" || Boolean(profile.duration.values?.length);
     // Owned workflow resources can carry only a key; the backend reads their
     // authoritative metadata and validates it before contacting the provider.
-    assertVideoCapability(profile, prepared.referenceImages, prepared.referenceVideos, prepared.referenceAudios, config.videoSeconds, { deferResourceMetadataToBackend: true, validateDuration });
+    const validationProfile = workflow?.provider === "comfyui"
+        ? {
+              ...profile,
+              references: {
+                  ...profile.references,
+                  maxImages: Math.max(profile.references.maxImages, COMFY_OMNI_REFERENCE_MEDIA_LIMITS.maxImages),
+                  maxVideos: Math.max(profile.references.maxVideos, COMFY_OMNI_REFERENCE_MEDIA_LIMITS.maxVideos),
+                  maxAudios: Math.max(profile.references.maxAudios, COMFY_OMNI_REFERENCE_MEDIA_LIMITS.maxAudios),
+              },
+          }
+        : profile;
+    assertVideoCapability(validationProfile, prepared.referenceImages, prepared.referenceVideos, prepared.referenceAudios, config.videoSeconds, { deferResourceMetadataToBackend: true, validateDuration });
+    // ComfyUI UI workflows commonly keep optional media loaders bypassed. The
+    // backend refreshes the live workflow and validates the exact active slots;
+    // a cached browser snapshot must not block the request before task creation.
+    if (workflow?.provider === "runninghub") {
+        const maxImages = workflowMediaInputLimitForWorkflow(workflow.workflowFields, workflow.workflowJson, ["referenceimage", "image", "referenceimages"], workflow.sourceWorkflowJson);
+        const maxVideos = workflowMediaInputLimitForWorkflow(workflow.workflowFields, workflow.workflowJson, ["referencevideo", "video", "referencevideos"], workflow.sourceWorkflowJson);
+        const maxAudios = workflowMediaInputLimitForWorkflow(workflow.workflowFields, workflow.workflowJson, ["referenceaudio", "audio", "referenceaudios"], workflow.sourceWorkflowJson);
+        if (prepared.referenceImages.length > maxImages) {
+            throw new Error(`工作流只配置了 ${maxImages} 个参考图片槽位，但画布传入了 ${prepared.referenceImages.length} 个；请在工作流字段映射中补齐槽位`);
+        }
+        if (prepared.referenceVideos.length > maxVideos) {
+            throw new Error(`工作流只配置了 ${maxVideos} 个参考视频槽位，但画布传入了 ${prepared.referenceVideos.length} 个；请在工作流字段映射中补齐槽位`);
+        }
+        if (prepared.referenceAudios.length > maxAudios) {
+            throw new Error(`工作流只配置了 ${maxAudios} 个参考音频槽位，但画布传入了 ${prepared.referenceAudios.length} 个；请在工作流字段映射中补齐槽位`);
+        }
+    }
 }
 
 function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences): CreateTaskInput {
@@ -561,6 +590,7 @@ function workflowProviderConfig(config: AiConfig, requestConfig: ReturnType<type
         workflowId: workflow.workflowId,
         webappId: workflow.webappId,
         workflowJson: workflow.workflowJson,
+        sourceWorkflowJson: comfyUIActive ? workflow.sourceWorkflowJson : undefined,
         workflowFields: fields,
         runningHubUseWallet: false,
         runningHubWalletApiKey: "",

@@ -106,6 +106,7 @@ type Config struct {
 	WorkflowID               string                    `json:"workflowId"`
 	WebappID                 string                    `json:"webappId"`
 	WorkflowJSON             map[string]interface{}    `json:"workflowJson"`
+	SourceWorkflowJSON       map[string]interface{}    `json:"sourceWorkflowJson,omitempty"`
 	WorkflowFields           []WorkflowField           `json:"workflowFields"`
 	RunningHubUseWallet      bool                      `json:"runningHubUseWallet"`
 	RunningHubWalletKey      string                    `json:"runningHubWalletApiKey"`

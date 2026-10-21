@@ -79,6 +79,80 @@ func TestComfyUIPartialAcceptanceReportsValidationBeforePolling(t *testing.T) {
 	}
 }
 
+func TestComfyUIPollsWhenPartialAcceptanceLoRAOnly(t *testing.T) {
+	root := allowLocalComfyUI(t)
+	graph := map[string]interface{}{
+		"base": map[string]interface{}{"class_type": "CheckpointLoader", "inputs": map[string]interface{}{}},
+		"522": map[string]interface{}{"class_type": "LoraLoaderModelOnly", "inputs": map[string]interface{}{
+			"model": []interface{}{"base", float64(0)}, "lora_name": "missing.safetensors",
+		}},
+		"save": map[string]interface{}{"class_type": "SaveImage", "inputs": map[string]interface{}{"images": []interface{}{"522", float64(0)}}},
+	}
+	promptCalls := 0
+	exec := &scriptedExecutor{handler: func(req Request) ([]byte, string, error) {
+		switch {
+		case strings.HasSuffix(req.URL, "/prompt"):
+			promptCalls++
+			return []byte(`{"prompt_id":"partial-lora","node_errors":{"522":{"class_type":"LoraLoaderModelOnly","errors":[{"type":"value_not_in_list","extra_info":{"input_name":"lora_name"}}]}}}`), "application/json", nil
+		case strings.HasSuffix(req.URL, "/history/partial-lora"):
+			return []byte(`{"partial-lora":{"status":{"status_str":"success","completed":true},"outputs":{"save":{"images":[{"filename":"out.png","subfolder":"","type":"output"}]}}}}`), "application/json", nil
+		case strings.HasPrefix(req.URL, root+"/view?"):
+			return []byte("png"), "image/png", nil
+		}
+		t.Fatalf("unexpected request %s", req.URL)
+		return nil, "", nil
+	}}
+	input := Input{Mode: "image", Config: Config{InterfaceType: string(model.ChannelInterfaceComfyUIImage), BaseURL: root, WorkflowJSON: graph}}
+	if _, err := comfyTestClient(exec, &memoryReceipt{}).Run(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	if promptCalls != 1 {
+		t.Fatalf("prompt calls = %d, want poll accepted job without resubmit", promptCalls)
+	}
+}
+
+func TestComfyUIRetriesWithoutDeletedLoRA(t *testing.T) {
+	root := allowLocalComfyUI(t)
+	graph := map[string]interface{}{
+		"base": map[string]interface{}{"class_type": "CheckpointLoader", "inputs": map[string]interface{}{}},
+		"lora": map[string]interface{}{"class_type": "LoraLoader", "inputs": map[string]interface{}{
+			"model": []interface{}{"base", float64(0)}, "clip": []interface{}{"base", float64(1)}, "lora_name": "NSFW Qwen by TheseAlpacas V2.safetensors",
+		}},
+		"save": map[string]interface{}{"class_type": "SaveImage", "inputs": map[string]interface{}{"images": []interface{}{"lora", float64(0)}}},
+	}
+	promptCalls := 0
+	exec := &scriptedExecutor{handler: func(req Request) ([]byte, string, error) {
+		switch {
+		case strings.HasSuffix(req.URL, "/prompt"):
+			promptCalls++
+			if promptCalls == 1 {
+				return []byte(`{"node_errors":{"lora":{"class_type":"LoraLoader","errors":[{"type":"value_not_in_list","extra_info":{"input_name":"lora_name"}}]}}}`), "application/json", nil
+			}
+			var submitted map[string]interface{}
+			if err := json.Unmarshal(req.Body, &submitted); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := submitted["prompt"].(map[string]interface{})["lora"]; exists {
+				t.Fatalf("stale LoRA was submitted again: %s", req.Body)
+			}
+			return []byte(`{"prompt_id":"without-lora"}`), "application/json", nil
+		case strings.HasSuffix(req.URL, "/history/without-lora"):
+			return []byte(`{"without-lora":{"status":{"status_str":"success","completed":true},"outputs":{"save":{"images":[{"filename":"out.png","subfolder":"","type":"output"}]}}}}`), "application/json", nil
+		case strings.HasPrefix(req.URL, root+"/view?"):
+			return []byte("png"), "image/png", nil
+		}
+		t.Fatalf("unexpected request %s", req.URL)
+		return nil, "", nil
+	}}
+	input := Input{Mode: "image", Config: Config{InterfaceType: string(model.ChannelInterfaceComfyUIImage), BaseURL: root, WorkflowJSON: graph}}
+	if _, err := comfyTestClient(exec, &memoryReceipt{}).Run(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	if promptCalls != 2 {
+		t.Fatalf("prompt calls = %d", promptCalls)
+	}
+}
+
 func TestComfyUITextOnlyHistoryIsNotAMediaResult(t *testing.T) {
 	exec := &scriptedExecutor{handler: func(req Request) ([]byte, string, error) {
 		if req.Method != http.MethodGet || !strings.HasSuffix(req.URL, "/history/text-only") {

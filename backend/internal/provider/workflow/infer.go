@@ -119,7 +119,29 @@ func collectManagementWorkflowFields(workflow map[string]any, capability string)
 	if capability == "video" {
 		applyWorkflowVideoControls(workflow, fields)
 	}
-	return applyManagementFieldDefaults(fields, capability)
+	fields = applyManagementFieldDefaults(fields, capability)
+	// Reference order belongs to the receiving slot, not the loader node ID.
+	for _, raw := range workflow {
+		node, _ := raw.(map[string]any)
+		inputs, _ := node["inputs"].(map[string]any)
+		for name, value := range inputs {
+			kind, index, ok := comfySavedReferenceSlot(name)
+			link, linked := value.([]any)
+			if !ok || !linked || len(link) != 2 {
+				continue
+			}
+			for _, field := range fields {
+				if workflowScalarString(field["nodeId"]) != workflowScalarString(link[0]) || !strings.EqualFold(workflowScalarString(field["source"]), "reference"+kind) {
+					continue
+				}
+				field["sourceIndex"] = index
+				if kind == "image" {
+					field["imageOrder"] = index + 1
+				}
+			}
+		}
+	}
+	return fields
 }
 
 func managementWorkflowFieldSafeToOverride(classType string, fieldName string) bool {
@@ -372,13 +394,13 @@ func managementWorkflowFieldType(name string, value any, classType string) strin
 	if strings.Contains(key, "mask") {
 		return "IMAGE"
 	}
-	if strings.Contains(classKey, "loadimage") && (key == "file" || key == "path") {
+	if strings.Contains(classKey, "loadimage") && (key == "file" || key == "path" || managementMediaFieldName(key, "image")) {
 		return "IMAGE"
 	}
-	if strings.Contains(classKey, "loadvideo") && (key == "file" || key == "path") {
+	if strings.Contains(classKey, "loadvideo") && (key == "file" || key == "path" || managementMediaFieldName(key, "video")) {
 		return "VIDEO"
 	}
-	if strings.Contains(classKey, "loadaudio") && (key == "file" || key == "path") {
+	if strings.Contains(classKey, "loadaudio") && (key == "file" || key == "path" || managementMediaFieldName(key, "audio")) {
 		return "AUDIO"
 	}
 	if source := workflowNamedDynamicSource(name, ""); source != "" && source != "mask" {

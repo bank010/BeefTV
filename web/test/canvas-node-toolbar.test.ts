@@ -65,6 +65,18 @@ describe("canvas node toolbar model", () => {
         expect(tools.find((tool) => tool.id === "resize")?.active).toBe(false);
     });
 
+    test("offers turnaround sheet generation and dispatches the source image", () => {
+        const node: CanvasNodeData = { id: "image", type: CanvasNodeType.Image, title: "角色", position: { x: 0, y: 0 }, width: 320, height: 180, metadata: { content: "image.png" } };
+        const received: CanvasNodeData[] = [];
+        const tools = buildImageToolbarTools(node, { onTurnaroundSheet: (target: CanvasNodeData) => received.push(target) } as never);
+
+        const tool = tools.find((item) => item.id === "turnaroundSheet");
+        expect(tool?.group).toBe("viewpoint");
+        expect(tool?.description).toContain("正面、侧面、背面");
+        tool?.onClick();
+        expect(received).toEqual([node]);
+    });
+
     test("keeps video primary actions compact and moves secondary processing into a menu", () => {
         const ctx = createNodeContext({ id: "video", type: CanvasNodeType.Video, title: "视频", position: { x: 0, y: 0 }, width: 320, height: 180, metadata: { content: "video.mp4" } });
         const tools = resolveToolbarTools("node-hover", ctx, null);

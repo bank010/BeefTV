@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 )
 
@@ -76,7 +77,13 @@ func (c *Client) FetchComfyUIWorkflow(ctx context.Context, config Config, file s
 	if err := json.Unmarshal(response, &workflow); err != nil || len(workflow) == 0 {
 		return nil, errors.New("ComfyUI 工作流文件不是有效 JSON 对象")
 	}
-	apiWorkflow, err := comfySavedWorkflowToAPI(workflow)
+	// Expose optional reference capacity in settings; execution activates only
+	// the slots supplied by that request using sourceWorkflowJson.
+	apiWorkflow, err := comfySavedWorkflowToAPIForInput(workflow, Input{
+		ReferenceImages: make([]Media, comfyMaxReferenceImages),
+		ReferenceVideos: make([]Media, comfyMaxReferenceVideos),
+		ReferenceAudios: make([]Media, comfyMaxReferenceAudios),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +198,92 @@ func comfySavedWorkflowToAPI(saved map[string]any) (map[string]any, error) {
 		graph[id] = comfyAPIWorkflowNode(classType, inputs, strings.TrimSpace(workflowScalarString(node["title"])))
 	}
 	return cloneComfyWorkflow(graph)
+}
+
+// comfySavedWorkflowToAPIForInput activates only the optional reference loader
+// nodes needed by this request. ComfyUI UI workflows commonly save unused
+// reference slots in bypass mode; a plain UI-to-API conversion disconnects
+// those loaders and makes a capable workflow look like it has zero slots.
+func comfySavedWorkflowToAPIForInput(saved map[string]any, input Input) (map[string]any, error) {
+	if isComfyAPIWorkflow(saved) {
+		return cloneComfyWorkflow(saved)
+	}
+	encoded, err := json.Marshal(saved)
+	if err != nil {
+		return nil, errors.New("ComfyUI 工作流复制失败")
+	}
+	var prepared map[string]any
+	if err := json.Unmarshal(encoded, &prepared); err != nil {
+		return nil, errors.New("ComfyUI 工作流复制失败")
+	}
+	activateComfySavedReferenceSlots(prepared, map[string]int{
+		"image": len(input.ReferenceImages),
+		"video": len(input.ReferenceVideos),
+		"audio": len(input.ReferenceAudios),
+	})
+	return comfySavedWorkflowToAPI(prepared)
+}
+
+func activateComfySavedReferenceSlots(saved map[string]any, counts map[string]int) {
+	nodes, _ := saved["nodes"].([]any)
+	links, _ := saved["links"].([]any)
+	if len(nodes) == 0 || len(links) == 0 {
+		return
+	}
+	nodesByID := make(map[string]map[string]any, len(nodes))
+	for _, raw := range nodes {
+		node, _ := raw.(map[string]any)
+		if id := workflowScalarString(node["id"]); id != "" {
+			nodesByID[id] = node
+		}
+	}
+	linksByID := make(map[string][]any, len(links))
+	for _, raw := range links {
+		link, _ := raw.([]any)
+		if len(link) >= 2 {
+			linksByID[workflowScalarString(link[0])] = link
+		}
+	}
+	for _, raw := range nodes {
+		target, _ := raw.(map[string]any)
+		inputs, _ := target["inputs"].([]any)
+		for _, rawInput := range inputs {
+			field, _ := rawInput.(map[string]any)
+			kind, index, ok := comfySavedReferenceSlot(workflowScalarString(field["name"]))
+			if !ok || field["link"] == nil {
+				continue
+			}
+			link := linksByID[workflowScalarString(field["link"])]
+			if len(link) < 2 {
+				continue
+			}
+			source := nodesByID[workflowScalarString(link[1])]
+			if source == nil {
+				continue
+			}
+			if index < counts[kind] {
+				source["mode"] = float64(0)
+			} else {
+				source["mode"] = float64(4)
+			}
+		}
+	}
+}
+
+func comfySavedReferenceSlot(name string) (string, int, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for prefix, kind := range map[string]string{
+		"ref_images.ref_image_": "image",
+		"ref_videos.ref_video_": "video",
+		"ref_audios.ref_audio_": "audio",
+	} {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		index, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+		return kind, index, err == nil && index >= 0
+	}
+	return "", 0, false
 }
 
 // Bypassed nodes forward a matching connected input; muted nodes contribute no

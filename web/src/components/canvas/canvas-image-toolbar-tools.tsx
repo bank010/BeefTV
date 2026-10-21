@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
-import { Brush, Camera, Copy, FileText, Globe2, Grid2x2, Lock, LockOpen, Maximize2, PencilLine, Crop, SlidersHorizontal, Smile, Sun, Upload, Scaling } from "lucide-react";
+import { Brush, Camera, Copy, FileText, Globe2, Grid2x2, Lock, LockOpen, Maximize2, PencilLine, Crop, PanelsTopLeft, SlidersHorizontal, Smile, Sun, Upload, Scaling } from "lucide-react";
 
 import type { CanvasNodeData } from "@/types/canvas";
 import type { NodeToolbarGroup } from "@/lib/canvas/tool-registry";
 
-type ImageNodeActionToolId = "copyPrompt" | "reversePrompt" | "replace" | "resize" | "annotation" | "maskEdit" | "emotion" | "portraitTexture" | "crop" | "split" | "upscale" | "superResolve" | "angle" | "lighting" | "panorama" | "view";
+type ImageNodeActionToolId = "copyPrompt" | "reversePrompt" | "replace" | "resize" | "annotation" | "maskEdit" | "emotion" | "portraitTexture" | "crop" | "split" | "upscale" | "superResolve" | "angle" | "turnaroundSheet" | "lighting" | "panorama" | "view";
 
 type ImageToolHandlers = {
     onUpload: (node: CanvasNodeData) => void;
@@ -17,6 +17,7 @@ type ImageToolHandlers = {
     onUpscale: (node: CanvasNodeData) => void;
     onSuperResolve: (node: CanvasNodeData) => void;
     onAngle: (node: CanvasNodeData) => void;
+    onTurnaroundSheet: (node: CanvasNodeData) => void;
     onLighting: (node: CanvasNodeData) => void;
     onPanorama: (node: CanvasNodeData) => void;
     onViewImage: (node: CanvasNodeData) => void;
@@ -152,6 +153,16 @@ const imageToolDefinitions: ImageToolDefinition[] = [
         group: "viewpoint",
         order: 20,
         run: (node, handlers) => handlers.onAngle(node),
+    },
+    {
+        id: "turnaroundSheet",
+        label: "生成三视图",
+        section: "视角",
+        description: "以当前图片为参考，生成正面、侧面、背面设定图",
+        icon: () => <PanelsTopLeft className="size-3.5" />,
+        group: "viewpoint",
+        order: 10,
+        run: (node, handlers) => handlers.onTurnaroundSheet(node),
     },
     {
         id: "lighting",

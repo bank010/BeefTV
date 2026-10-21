@@ -3,6 +3,7 @@ package canvas
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 
@@ -92,7 +93,8 @@ func (s *Service) bindTaskOutputOnce(userID string, patch TaskOutputBind) (TaskO
 		}
 	}
 	metadata := nodeMetadata(node)
-	if alreadyBound(metadata, patch) {
+	geometryChanged := alignBoundVideoGeometry(node, patch)
+	if alreadyBound(metadata, patch) && !geometryChanged {
 		return TaskOutputBindResult{Revision: canvasRevisionValue(doc), Node: cloneNode(node)}, nil
 	}
 	applyGenerationBindMetadata(metadata, patch)
@@ -107,6 +109,33 @@ func (s *Service) bindTaskOutputOnce(userID string, patch TaskOutputBind) (TaskO
 		return TaskOutputBindResult{}, err
 	}
 	return TaskOutputBindResult{Revision: summary.Revision, Node: cloneNode(node)}, nil
+}
+
+// The persisted node frame must follow the measured video rather than the
+// landscape placeholder. Preserve deliberate free resize and locked layouts.
+func alignBoundVideoGeometry(node map[string]any, patch TaskOutputBind) bool {
+	metadata := nodeMetadata(node)
+	if patch.MediaType != "video" || patch.Width <= 0 || patch.Height <= 0 || metadata["locked"] == true || metadata["freeResize"] == true {
+		return false
+	}
+	w, h := float64(patch.Width), float64(patch.Height)
+	scale := math.Max(math.Min(1, math.Min(720/w, 520/h)), math.Max(420/w, 236/h))
+	w, h = w*scale, h*scale
+	oldWidth, _ := node["width"].(float64)
+	oldHeight, _ := node["height"].(float64)
+	if oldWidth > 0 && oldHeight > 0 && math.Abs(oldWidth/oldHeight-w/h) <= 0.01 {
+		return false
+	}
+	if math.Abs(oldWidth-w) < 0.001 && math.Abs(oldHeight-h) < 0.001 {
+		return false
+	}
+	if position, ok := node["position"].(map[string]any); ok {
+		x, _ := position["x"].(float64)
+		y, _ := position["y"].(float64)
+		position["x"], position["y"] = x+(oldWidth-w)/2, y+(oldHeight-h)/2
+	}
+	node["width"], node["height"] = w, h
+	return true
 }
 
 func (s *Service) reconcileBoundCanvasDocMediaAssets(userID string, doc map[string]any) {

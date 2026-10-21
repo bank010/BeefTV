@@ -290,6 +290,7 @@ func workflowConfig(config Config) workflow.Config {
 		WorkflowID:            config.WorkflowID,
 		WebappID:              config.WebappID,
 		WorkflowJSON:          config.WorkflowJSON,
+		SourceWorkflowJSON:    config.SourceWorkflowJSON,
 		WorkflowFields:        config.WorkflowFields,
 		RunningHubUploadKey:   config.RunningHubUploadKey,
 	}

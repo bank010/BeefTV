@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { applyCanvasPatch, mergeCanvasRefreshPatch, type CanvasPatch } from "@/lib/canvas/canvas-patch-merge";
-import { isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
+import { isCanvasNodeActivelyGenerating, isCanvasNodeGenerating } from "@/lib/canvas/canvas-node-task-state";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
@@ -59,6 +59,12 @@ test("task state covers Agent, manual submissions and historical terminal tasks"
     expect(isCanvasNodeGenerating({ ...node, metadata: { status: "loading" } })).toBe(true);
     expect(isCanvasNodeGenerating({ ...node, metadata: { status: "success", taskId: "historical" } })).toBe(false);
     expect(isCanvasNodeGenerating({ ...node, metadata: { status: "idle" } }, node.id)).toBe(true);
+    expect(isCanvasNodeActivelyGenerating({ ...node, metadata: { status: "error", taskId: "old", taskStatus: "succeeded" } })).toBe(false);
+    expect(isCanvasNodeActivelyGenerating({ ...node, metadata: { status: "loading" } })).toBe(false);
+    expect(isCanvasNodeActivelyGenerating({ ...node, metadata: { status: "loading", taskStatus: "failed" } })).toBe(false);
+    expect(isCanvasNodeActivelyGenerating({ ...node, metadata: { status: "loading", generationSubmissionState: "submitting" } })).toBe(false);
+    expect(isCanvasNodeActivelyGenerating({ ...node, metadata: { status: "loading", generationSubmissionState: "submitting" } }, null, () => true)).toBe(true);
+    expect(isCanvasNodeGenerating({ ...node, metadata: { status: "error", taskId: "old", taskStatus: "succeeded" } })).toBe(true);
 });
 
 

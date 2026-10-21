@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"infinite-canvas/backend/internal/localcrypto"
+	"infinite-canvas/backend/internal/provider/workflow"
 )
 
 const (
@@ -193,6 +194,7 @@ func (s *ProviderConfig) saveLocalModelConfig(body []byte, existingDocument Prov
 	if err != nil {
 		return existingDocument.Revision, err
 	}
+	workflow.SanitizeComfyWorkflowsInModelConfig(incoming)
 	channels, _ := incoming["channels"].([]any)
 	identity := inspectArrayIdentity(channels)
 	if identity.invalid || identity.duplicate {
@@ -305,9 +307,16 @@ func (s *ProviderConfig) loadDocument() (ProviderStateDocument, ConfigHealth, er
 	}
 	document, migrated, decodeErr := s.decodeStoredDocument(body)
 	if decodeErr == nil {
-		if migrated {
+		pathSanitized := false
+		if document.Config != nil {
+			pathSanitized = workflow.SanitizeComfyWorkflowsInModelConfig(document.Config)
+		}
+		if migrated || pathSanitized {
+			if pathSanitized {
+				document.Revision++
+			}
 			if err := s.writeDocument(document); err != nil {
-				return ProviderStateDocument{}, ConfigHealthReady, fmt.Errorf("加密旧模型配置失败: %w", err)
+				return ProviderStateDocument{}, ConfigHealthReady, fmt.Errorf("写入本地模型配置失败: %w", err)
 			}
 			return document, ConfigHealthMigrated, nil
 		}

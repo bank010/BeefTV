@@ -84,14 +84,25 @@ func (c *Client) runComfyUI(ctx context.Context, input Input) (map[string]interf
 	if err != nil {
 		return nil, err
 	}
-	fields := workflowFieldsForMode(input.Config.WorkflowFields, input.Mode)
-	if len(fields) == 0 {
-		fields, err = workflowFieldsFromManagement(graph, input.Mode)
+	source := input.Config.SourceWorkflowJSON
+	// A cached API graph has already lost bypassed loaders. H3 must retain the
+	// source even when this request fits the cached image-only capacity.
+	if len(source) == 0 && isMiniMaxH3Workflow(graph) && strings.TrimSpace(input.Config.WorkflowID) != "" {
+		refreshed, refreshErr := c.FetchComfyUIWorkflow(ctx, input.Config, input.Config.WorkflowID)
+		if refreshErr != nil {
+			return nil, refreshErr
+		}
+		source, _ = refreshed["sourceWorkflowJson"].(map[string]any)
+	}
+	if len(source) > 0 {
+		graph, err = comfySavedWorkflowToAPIForInput(source, input)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if err := validateWorkflowMediaInputs(fields, input); err != nil {
+	saved := comfyExecutionFields(input.Config.WorkflowFields, graph)
+	fields, err := ensureWorkflowFieldsForMediaInputs(saved, graph, input.Mode, input)
+	if err != nil {
 		return nil, err
 	}
 	files := make(map[string]string)
@@ -112,7 +123,113 @@ func (c *Client) runComfyUI(ctx context.Context, input Input) (map[string]interf
 	if err := applyComfyWorkflowFields(graph, fields, files, input); err != nil {
 		return nil, err
 	}
-	normalizeComfyCLIPLoaderNames(graph)
+	normalizeComfyListedModelNames(graph)
+	const maxComfyLoRABypassAttempts = 8
+	var submitted map[string]interface{}
+	for attempt := 0; attempt < maxComfyLoRABypassAttempts; attempt++ {
+		normalizeComfyListedModelNames(graph)
+		var err error
+		submitted, err = c.submitComfyPrompt(ctx, input.Config, root, graph)
+		if err != nil {
+			var rejected *comfyPromptRejectedError
+			if errors.As(err, &rejected) && comfyNodeErrorsFixableListedModelPath(rejected.nodeErrors) {
+				continue
+			}
+			if errors.As(err, &rejected) && comfyNodeErrorsBypassableLoRAOnly(rejected.nodeErrors) {
+				if bypassed, bypassErr := bypassRejectedComfyLoRAs(graph, comfyRejectedLoRANodes(rejected.nodeErrors)); bypassErr == nil && bypassed {
+					continue
+				}
+			}
+			return nil, err
+		}
+		promptID := strings.TrimSpace(stringValue(submitted["prompt_id"]))
+		if comfyNodeErrorsBypassableLoRAOnly(submitted["node_errors"]) {
+			if promptID != "" {
+				// ComfyUI may accept the prompt and still finish valid output branches while
+				// reporting dead LoRA loaders in node_errors. Poll that job instead of failing
+				// the product task while images already exist upstream.
+				if err := c.Receipt.RecordAccepted(ctx, promptID, "submitted", nil); err != nil {
+					c.Progress.Log(ctx, "error", "ComfyUI 请求状态保存失败", promptID+"："+err.Error())
+					return nil, AcceptedNotRecorded{RequestID: promptID, Stage: "submitted", Err: err}
+				}
+				return c.pollComfyUI(ctx, input.Config, root, promptID, input.Mode)
+			}
+			if bypassed, bypassErr := bypassRejectedComfyLoRAs(graph, comfyRejectedLoRANodes(submitted["node_errors"])); bypassErr == nil && bypassed {
+				continue
+			}
+		}
+		if promptID == "" {
+			if comfyNodeErrorsFixableListedModelPath(submitted["node_errors"]) {
+				continue
+			}
+			if detail := comfyNodeValidationSummary(submitted["node_errors"]); detail != "" {
+				return nil, fmt.Errorf("ComfyUI 工作流节点校验失败：%s", detail)
+			}
+			return nil, CreateUncertain{Err: errors.New("ComfyUI 未返回 prompt_id")}
+		}
+		if detail := comfyNodeValidationSummary(submitted["node_errors"]); detail != "" {
+			if err := c.Receipt.RecordAccepted(ctx, promptID, "submitted", nil); err != nil {
+				c.Progress.Log(ctx, "error", "ComfyUI 请求状态保存失败", promptID+"："+err.Error())
+				return nil, AcceptedNotRecorded{RequestID: promptID, Stage: "submitted", Err: err}
+			}
+			return nil, fmt.Errorf("ComfyUI 部分输出节点校验失败，已保留上游任务 ID；请修正工作流后再生成：%s", detail)
+		}
+		if err := c.Receipt.RecordAccepted(ctx, promptID, "submitted", nil); err != nil {
+			c.Progress.Log(ctx, "error", "ComfyUI 请求状态保存失败", promptID+"："+err.Error())
+			return nil, AcceptedNotRecorded{RequestID: promptID, Stage: "submitted", Err: err}
+		}
+		return c.pollComfyUI(ctx, input.Config, root, promptID, input.Mode)
+	}
+	return nil, errors.New("ComfyUI 工作流 LoRA 旁路重试次数耗尽")
+}
+
+func comfyExecutionFields(saved []Field, graph map[string]any) []Field {
+	if !isMiniMaxH3Workflow(graph) {
+		return saved
+	}
+	// Settings include every optional loader; inactive loaders are absent from
+	// this execution graph. Infer active media bindings again from target slots.
+	inferred, _ := workflowFieldsFromManagement(graph, "video")
+	mediaByKey := make(map[string]Field)
+	controlsByKey := make(map[string]Field)
+	for _, field := range inferred {
+		if isComfyMediaField(field) {
+			mediaByKey[fieldMappingKey(field)] = field
+		}
+		if field.Role == "business" && (field.Source == "videoSeconds" || field.Source == "vquality" || field.Source == "aspectRatio") {
+			controlsByKey[fieldMappingKey(field)] = field
+		}
+	}
+	fields := make([]Field, 0, len(saved))
+	for _, field := range saved {
+		if _, exists := graph[strings.TrimSpace(field.NodeID)]; !exists {
+			continue
+		}
+		if binding, exists := mediaByKey[fieldMappingKey(field)]; exists && isComfyMediaField(field) {
+			field.Source = binding.Source
+			field.SourceIndex = binding.SourceIndex
+			field.ImageOrder = binding.ImageOrder
+		}
+		if binding, exists := controlsByKey[fieldMappingKey(field)]; exists && field.Role == "internal" && field.SourceAutomatic != nil && *field.SourceAutomatic && (field.SafeToOverride == nil || *field.SafeToOverride) {
+			field.Source, field.Role, field.Enabled = binding.Source, binding.Role, binding.Enabled
+		}
+		fields = append(fields, field)
+	}
+	merged := unionInferredMediaReferenceFields(mergeWorkflowExecutionFields(fields, inferred), inferred)
+	present := make(map[string]bool, len(merged))
+	for _, field := range merged {
+		present[fieldMappingKey(field)] = true
+	}
+	for key, field := range controlsByKey {
+		if !present[key] {
+			merged = append(merged, field)
+		}
+	}
+	return merged
+}
+
+func (c *Client) submitComfyPrompt(ctx context.Context, config Config, root string, graph map[string]interface{}) (map[string]interface{}, error) {
+	normalizeComfyListedModelNames(graph)
 	body, err := json.Marshal(map[string]interface{}{"prompt": graph})
 	if err != nil {
 		return nil, fmt.Errorf("ComfyUI 工作流编码失败：%w", err)
@@ -121,15 +238,17 @@ func (c *Client) runComfyUI(ctx context.Context, input Input) (map[string]interf
 		Kind:        "create",
 		Method:      http.MethodPost,
 		URL:         root + "/prompt",
-		Headers:     comfyOutboundHeaders(input.Config),
+		Headers:     comfyOutboundHeaders(config),
 		ContentType: "application/json",
 		Body:        body,
 	})
 	if err != nil {
 		var statusErr StatusError
 		if errors.As(err, &statusErr) {
-			if detail := comfyNodeValidationSummaryFromBody(statusErr.Body); detail != "" {
-				return nil, fmt.Errorf("ComfyUI 工作流提交被节点校验拒绝：%s", detail)
+			if nodeErrors := comfyNodeErrorsFromBody(statusErr.Body); nodeErrors != nil {
+				if detail := comfyNodeValidationSummary(nodeErrors); detail != "" {
+					return nil, &comfyPromptRejectedError{nodeErrors: nodeErrors, detail: detail}
+				}
 			}
 		}
 		if errors.As(err, &statusErr) && isDefinitiveComfySubmissionRejection(statusErr.StatusCode) {
@@ -141,27 +260,19 @@ func (c *Client) runComfyUI(ctx context.Context, input Input) (map[string]interf
 	if err := json.Unmarshal(response, &submitted); err != nil {
 		return nil, CreateUncertain{Err: errors.New("ComfyUI 提交响应不是有效 JSON")}
 	}
-	promptID := strings.TrimSpace(stringValue(submitted["prompt_id"]))
-	if promptID == "" {
-		if detail := comfyNodeValidationSummary(submitted["node_errors"]); detail != "" {
-			return nil, fmt.Errorf("ComfyUI 工作流节点校验失败：%s", detail)
-		}
-		return nil, CreateUncertain{Err: errors.New("ComfyUI 未返回 prompt_id")}
-	}
-	if err := c.Receipt.RecordAccepted(ctx, promptID, "submitted", nil); err != nil {
-		c.Progress.Log(ctx, "error", "ComfyUI 请求状态保存失败", promptID+"："+err.Error())
-		return nil, AcceptedNotRecorded{RequestID: promptID, Stage: "submitted", Err: err}
-	}
-	// HTTP 200 and prompt_id can accept only the valid output branches. Keep the
-	// receipt before reporting validation errors so retries cannot lose that job.
-	if detail := comfyNodeValidationSummary(submitted["node_errors"]); detail != "" {
-		return nil, fmt.Errorf("ComfyUI 部分输出节点校验失败，已保留上游任务 ID；请修正工作流后再生成：%s", detail)
-	}
-	return c.pollComfyUI(ctx, input.Config, root, promptID, input.Mode)
+	return submitted, nil
+}
+
+type comfyPromptRejectedError struct {
+	nodeErrors any
+	detail     string
+}
+
+func (e *comfyPromptRejectedError) Error() string {
+	return "ComfyUI 工作流提交被节点校验拒绝：" + e.detail
 }
 
 var comfyDiagnosticIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,80}$`)
-var comfyDiagnosticFilename = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,120}$`)
 
 func comfyNodeValidationSummary(value any) string {
 	nodes, ok := value.(map[string]any)
@@ -222,11 +333,121 @@ func comfyNodeValidationSummary(value any) string {
 }
 
 func comfyNodeValidationSummaryFromBody(body string) string {
+	return comfyNodeValidationSummary(comfyNodeErrorsFromBody(body))
+}
+
+func comfyNodeErrorsFromBody(body string) any {
 	var response map[string]any
 	if err := json.Unmarshal([]byte(body), &response); err != nil {
-		return ""
+		return nil
 	}
-	return comfyNodeValidationSummary(response["node_errors"])
+	return response["node_errors"]
+}
+
+func comfyRejectedLoRANodes(value any) map[string]bool {
+	nodes, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rejected := make(map[string]bool)
+	for id, raw := range nodes {
+		if comfyNodeErrorsBypassableLoRAOnly(map[string]any{id: raw}) {
+			rejected[id] = true
+		}
+	}
+	return rejected
+}
+
+func comfyNodeErrorsBypassableLoRAOnly(value any) bool {
+	nodes, ok := value.(map[string]any)
+	if !ok || len(nodes) == 0 {
+		return false
+	}
+	for _, raw := range nodes {
+		node, _ := raw.(map[string]any)
+		if !strings.Contains(strings.ToLower(workflowScalarString(node["class_type"])), "lora") {
+			return false
+		}
+		items, _ := node["errors"].([]any)
+		if len(items) == 0 {
+			return false
+		}
+		for _, item := range items {
+			entry, _ := item.(map[string]any)
+			extra, _ := entry["extra_info"].(map[string]any)
+			if workflowScalarString(entry["type"]) != "value_not_in_list" || !isComfyLoRAField(workflowScalarString(extra["input_name"])) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// A deleted LoRA should not block the entire workflow. Standard LoRA loaders
+// forward their MODEL and CLIP inputs when bypassed, so reconnect those outputs
+// and remove the rejected loader before one safe retry.
+func bypassRejectedComfyLoRAs(graph map[string]interface{}, rejected map[string]bool) (bool, error) {
+	if len(rejected) == 0 {
+		return false, nil
+	}
+	replacements := make(map[string]map[int][]interface{})
+	for id := range rejected {
+		node, ok := graph[id].(map[string]interface{})
+		if !ok || !strings.Contains(strings.ToLower(workflowScalarString(node["class_type"])), "lora") {
+			return false, fmt.Errorf("被拒绝的 LoRA 节点 %s 不可旁路", id)
+		}
+		inputs, ok := node["inputs"].(map[string]interface{})
+		if !ok {
+			return false, fmt.Errorf("LoRA 节点 %s 缺少 inputs", id)
+		}
+		model, ok := inputs["model"].([]interface{})
+		if !ok || !isWorkflowLinkValue(model) {
+			return false, fmt.Errorf("LoRA 节点 %s 缺少可旁路的模型输入", id)
+		}
+		outputs := map[int][]interface{}{0: model}
+		if clip, ok := inputs["clip"].([]interface{}); ok && isWorkflowLinkValue(clip) {
+			outputs[1] = clip
+		}
+		replacements[id] = outputs
+	}
+	for _, raw := range graph {
+		node, _ := raw.(map[string]interface{})
+		inputs, _ := node["inputs"].(map[string]interface{})
+		for name, rawValue := range inputs {
+			link, ok := rawValue.([]interface{})
+			if !ok || !isWorkflowLinkValue(link) {
+				continue
+			}
+			sourceID := workflowScalarString(link[0])
+			outputIndex, ok := workflowLinkOutputIndex(link[1])
+			if !ok || replacements[sourceID] == nil {
+				continue
+			}
+			replacement, exists := replacements[sourceID][outputIndex]
+			if !exists {
+				return false, fmt.Errorf("LoRA 节点 %s 的输出 %d 无法旁路", sourceID, outputIndex)
+			}
+			inputs[name] = replacement
+		}
+	}
+	for id := range replacements {
+		delete(graph, id)
+	}
+	return true, nil
+}
+
+func workflowLinkOutputIndex(value any) (int, bool) {
+	switch index := value.(type) {
+	case float64:
+		if index >= 0 && index == float64(int(index)) {
+			return int(index), true
+		}
+	case int:
+		if index >= 0 {
+			return index, true
+		}
+	}
+	return 0, false
 }
 
 func comfyInvalidOptionSummary(field string, received any, details string) string {
@@ -234,7 +455,10 @@ func comfyInvalidOptionSummary(field string, received any, details string) strin
 	if field != "" {
 		label = field + "：" + label
 	}
-	if field != "clip_name" {
+	if isComfyLoRAField(field) {
+		label = "LoRA 模型不可用，可能已被删除"
+	}
+	if field != "clip_name" && !isComfyLoRAField(field) {
 		return label
 	}
 	value := workflowScalarString(received)
@@ -243,7 +467,7 @@ func comfyInvalidOptionSummary(field string, received any, details string) strin
 	if strings.ContainsAny(value, "/\\") {
 		value = path.Base(strings.ReplaceAll(value, "\\", "/"))
 	}
-	if len(value) > 120 || strings.Contains(value, "://") || (value != "" && !comfyDiagnosticFilename.MatchString(value)) {
+	if len(value) > 120 || strings.Contains(value, "://") || (value != "" && !safeComfyModelFilename(value)) {
 		value = ""
 	}
 	if !strings.ContainsAny(details, "[]") {
@@ -256,7 +480,7 @@ func comfyInvalidOptionSummary(field string, received any, details string) strin
 		for _, raw := range strings.Split(details[start+len("not in ["):end], ",") {
 			choice := strings.Trim(strings.TrimSpace(raw), "'\"")
 			choice = path.Base(strings.ReplaceAll(choice, "\\", "/"))
-			if comfyDiagnosticFilename.MatchString(choice) {
+			if safeComfyModelFilename(choice) {
 				choices = append(choices, choice)
 				if len(choices) == 4 {
 					break
@@ -273,25 +497,151 @@ func comfyInvalidOptionSummary(field string, received any, details string) strin
 	return label
 }
 
-func normalizeComfyCLIPLoaderNames(graph map[string]interface{}) {
-	for _, raw := range graph {
-		node, _ := raw.(map[string]interface{})
-		if node["class_type"] != "CLIPLoader" {
+func isComfyLoRAField(field string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(field)), "lora")
+}
+
+func safeComfyModelFilename(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 120 || strings.ContainsAny(value, "/\\") {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char >= 0x4e00 && char <= 0x9fff || strings.ContainsRune(" ._-()[]", char) {
 			continue
 		}
-		inputs, _ := node["inputs"].(map[string]interface{})
-		name, ok := inputs["clip_name"].(string)
-		if !ok || !strings.ContainsAny(name, "/\\") {
+		return false
+	}
+	return true
+}
+
+func comfyExecutionFailureSummary(value any) string {
+	messages, ok := value.([]any)
+	if !ok {
+		return "ComfyUI 工作流执行失败"
+	}
+	for _, raw := range messages {
+		entry, ok := raw.([]any)
+		if !ok || len(entry) < 2 || workflowScalarString(entry[0]) != "execution_error" {
 			continue
 		}
-		// ComfyUI validates CLIPLoader choices against directory relative names,
-		// while saved workflows can retain an extra text_encoders/ prefix.
-		name = strings.TrimPrefix(strings.ReplaceAll(name, "\\", "/"), "./")
-		parts := strings.SplitN(name, "/", 2)
-		if len(parts) == 2 && strings.EqualFold(parts[0], "text_encoders") {
-			inputs["clip_name"] = parts[1]
+		details, _ := entry[1].(map[string]any)
+		text := strings.ToLower(workflowScalarString(details["exception_message"]) + " " + workflowScalarString(details["exception_type"]))
+		if strings.Contains(text, "lora") && (strings.Contains(text, "not found") || strings.Contains(text, "no lora") || strings.Contains(text, "does not exist")) {
+			return "LoRA 模型不可用，可能已被删除。请在 ComfyUI 工作流中选择仍存在的 LoRA，或移除该 LoRA 节点后重试"
 		}
 	}
+	return "ComfyUI 工作流执行失败"
+}
+
+func normalizeComfyListedModelNames(graph map[string]interface{}) {
+	for _, raw := range graph {
+		node, _ := raw.(map[string]interface{})
+		inputs, _ := node["inputs"].(map[string]interface{})
+		if inputs == nil {
+			continue
+		}
+		for key, rawValue := range inputs {
+			if !isComfyListedModelField(key) {
+				continue
+			}
+			name := workflowScalarString(rawValue)
+			if name == "" {
+				continue
+			}
+			normalized := normalizeComfyListedModelFilename(name)
+			if normalized != name || workflowScalarString(rawValue) != normalized {
+				inputs[key] = normalized
+			}
+		}
+	}
+}
+
+func isComfyListedModelField(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	lower := strings.ToLower(key)
+	if strings.HasPrefix(lower, "clip_name") {
+		return true
+	}
+	switch lower {
+	case "ckpt_name", "lora_name", "unet_name", "vae_name", "weight_name", "model_name", "filename", "style_model_name", "control_net_name":
+		return true
+	default:
+		return false
+	}
+}
+
+func comfyNodeErrorsFixableListedModelPath(value any) bool {
+	nodes, ok := value.(map[string]any)
+	if !ok || len(nodes) == 0 {
+		return false
+	}
+	for _, raw := range nodes {
+		node, _ := raw.(map[string]any)
+		items, _ := node["errors"].([]any)
+		for _, item := range items {
+			entry, _ := item.(map[string]any)
+			if workflowScalarString(entry["type"]) != "value_not_in_list" {
+				continue
+			}
+			extra, _ := entry["extra_info"].(map[string]any)
+			field := workflowScalarString(extra["input_name"])
+			if !isComfyListedModelField(field) {
+				continue
+			}
+			received := workflowScalarString(extra["received_value"])
+			if received == "" {
+				received = workflowScalarString(entry["details"])
+			}
+			if strings.Contains(received, "/") || strings.Contains(received, "\\") {
+				return true
+			}
+			if normalized := normalizeComfyListedModelFilename(received); normalized != received && normalized != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeComfyListedModelFilename(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || !strings.ContainsAny(name, "/\\") {
+		return name
+	}
+	// ComfyUI list inputs validate against folder-relative filenames; saved graphs
+	// often keep models/ or text_encoders/ style prefixes from export tools.
+	normalized := strings.TrimPrefix(strings.ReplaceAll(name, "\\", "/"), "./")
+	for {
+		before := normalized
+		for _, prefix := range []string{
+			"models/",
+			"text_encoders/",
+			"clip/",
+			"checkpoints/",
+			"loras/",
+			"unet/",
+			"vae/",
+			"diffusion_models/",
+			"controlnet/",
+			"style_models/",
+		} {
+			if strings.HasPrefix(strings.ToLower(normalized), prefix) {
+				normalized = normalized[len(prefix):]
+				break
+			}
+		}
+		if normalized == before {
+			break
+		}
+	}
+	if strings.ContainsAny(normalized, "/\\") {
+		normalized = path.Base(normalized)
+	}
+	return normalized
 }
 
 func comfyOutboundHeaders(config Config) []outbound.OutboundHeader {
@@ -371,6 +721,7 @@ func cloneComfyWorkflow(source map[string]interface{}) (map[string]interface{}, 
 			return nil, fmt.Errorf("ComfyUI 工作流节点 %s 缺少 inputs", id)
 		}
 	}
+	normalizeComfyListedModelNames(graph)
 	return graph, nil
 }
 
@@ -554,7 +905,7 @@ func (c *Client) queryComfyHistory(ctx context.Context, config Config, root, pro
 	if status, ok := entry["status"].(map[string]interface{}); ok {
 		statusText := strings.ToLower(strings.TrimSpace(stringValue(status["status_str"])))
 		if statusText == "error" || statusText == "failed" {
-			return nil, "failed", nil
+			return nil, "failed", errors.New(comfyExecutionFailureSummary(status["messages"]))
 		}
 		if status["completed"] == true || statusText == "success" || statusText == "succeeded" {
 			outputs := comfyHistoryFiles(entry["outputs"])

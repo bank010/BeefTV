@@ -32,11 +32,17 @@ export function confirmCanvasGeneration(
 ): Promise<boolean> {
     return new Promise((resolve) => {
         let dialog: { destroy: () => void } | undefined;
+        let settled = false;
         const finish = (accepted: boolean) => {
+            if (settled) return;
+            settled = true;
             signal.removeEventListener("abort", abort);
             resolve(accepted && !signal.aborted);
         };
-        const abort = () => { finish(false); dialog?.destroy(); };
+        const abort = () => {
+            finish(false);
+            dialog?.destroy();
+        };
         if (signal.aborted) return finish(false);
         signal.addEventListener("abort", abort, { once: true });
         try {

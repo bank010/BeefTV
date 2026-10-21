@@ -38,6 +38,7 @@ const allReferences: CanvasResourceReference[] = [
 ];
 
 function Harness() {
+    const [submittedCount, setSubmittedCount] = useState(0);
     const [metadata, setMetadata] = useState<CanvasNodeMetadata>({ generationMode: "video", model: "h3-entry::minimax-h3-max", seconds: "0.925", prompt: "花园里的一束光", videoH3Options: { seed: 0, enable_safety_checker: false } });
     const [referenceSet, setReferenceSet] = useState("none");
     const references = referenceSet === "all" ? allReferences : referenceSet === "audio" ? allReferences.slice(-1) : [];
@@ -48,7 +49,8 @@ function Harness() {
             <h1 className="text-lg font-semibold">普通视频节点入口回验</h1>
             <p className="text-xs opacity-65">挂载产品提示词面板；不发起付费生成。</p>
             <label className="text-xs">参考素材 <select aria-label="验收参考素材" value={referenceSet} onChange={(event) => setReferenceSet(event.target.value)}><option value="none">无</option><option value="all">图片、视频、音频</option><option value="audio">仅音频</option></select></label>
-            <CanvasNodePromptPanel projectId="h3-entry-test" node={node} isRunning={false} onPromptChange={(id, prompt) => patch(id, { prompt })} onConfigChange={patch} onGenerate={() => { throw new Error("验收夹具禁止生成"); }} mentionReferences={references} />
+            <CanvasNodePromptPanel projectId="h3-entry-test" node={node} isRunning={false} onPromptChange={(id, prompt) => patch(id, { prompt })} onConfigChange={patch} onGenerate={() => setSubmittedCount((count) => count + 1)} mentionReferences={references} />
+            <output aria-label="生成回调次数">{submittedCount}</output>
             <output id="h3-entry-state" className="break-all text-xs">{JSON.stringify(metadata)}</output>
         </main>
     );

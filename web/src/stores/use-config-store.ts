@@ -314,6 +314,17 @@ export function mergeWorkflowFieldMappings(current: unknown, incoming: unknown, 
         if (field.step === undefined && previous.step !== undefined) merged.step = previous.step;
         // 首次获得角色信息时采用服务端的内部参数默认值；之后才保留用户明确的启用选择。
         if (field.role === "internal" && previous.role !== "internal") merged.enabled = field.enabled;
+        if (capability === "video" && field.role === "internal" && previous.role === "business" && previous.sourceAutomatic && ["aspectRatio", "videoSeconds", "vquality"].includes(previous.source || "")) {
+            merged.role = "business";
+            merged.enabled = previous.enabled;
+        }
+        // A graph-proven video control must not inherit the generic primitive
+        // classification that previously disabled its automatic binding.
+        if (field.role === "business" && previous.role === "internal" && field.sourceAutomatic && previous.sourceAutomatic) {
+            merged.source = field.source;
+            merged.sourceAutomatic = true;
+            merged.enabled = field.enabled;
+        }
         if (field.safeToOverride === false) merged.enabled = false;
         return merged;
     });
@@ -322,6 +333,11 @@ export function mergeWorkflowFieldMappings(current: unknown, incoming: unknown, 
 function normalizeSavedWorkflowFields(workflow: { fields?: unknown; workflowJson?: Record<string, unknown> }, capability: RunningHubCapability) {
     const schemaFields = workflowVideoFieldsFromJson(workflow.workflowJson);
     return schemaFields.length ? mergeWorkflowFieldMappings(workflow.fields, schemaFields, capability) : normalizeWorkflowFieldMappings(workflow.fields, capability);
+}
+
+/** 提交 Comfy/RunningHub 任务前解析字段：合并已保存映射与工作流 JSON 拓扑，并补齐 reference* 绑定。 */
+export function resolveWorkflowFieldsForExecution(workflow: { fields?: unknown; workflowJson?: Record<string, unknown>; capability?: RunningHubCapability }) {
+    return normalizeSavedWorkflowFields(workflow, workflow.capability || "video");
 }
 
 function workflowFieldRange(value: unknown) {
@@ -371,6 +387,7 @@ export type ComfyUIWorkflow = {
     capability: RunningHubCapability;
     imageEditWorkflowId?: string;
     workflowJson: Record<string, unknown>;
+    sourceWorkflowJson?: Record<string, unknown>;
     fields: WorkflowFieldMapping[];
 };
 
@@ -908,7 +925,7 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
                       const workflow = item as ComfyUIWorkflow;
                       const capability = normalizeRunningHubCapability(workflow.capability);
                       const workflowJson = workflow.workflowJson && typeof workflow.workflowJson === "object" && !Array.isArray(workflow.workflowJson) ? workflow.workflowJson : {};
-                       return [{ ...workflow, workflowId: String(workflow.workflowId).trim(), title: String(workflow.title || workflow.workflowId).trim(), capability, imageEditWorkflowId: typeof workflow.imageEditWorkflowId === "string" ? workflow.imageEditWorkflowId.trim() || undefined : undefined, workflowJson, fields: normalizeWorkflowFieldMappings(workflow.fields, capability) }];
+                       return [{ ...workflow, workflowId: String(workflow.workflowId).trim(), title: String(workflow.title || workflow.workflowId).trim(), capability, imageEditWorkflowId: typeof workflow.imageEditWorkflowId === "string" ? workflow.imageEditWorkflowId.trim() || undefined : undefined, workflowJson, fields: normalizeSavedWorkflowFields({ ...workflow, workflowJson }, capability) }];
                   })
                 : [],
         },

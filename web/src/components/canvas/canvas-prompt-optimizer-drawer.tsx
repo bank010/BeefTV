@@ -8,6 +8,7 @@ import { ModelPicker } from "@/components/model-picker";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import type { PromptOptimizationMode, PromptOptimizationResult, PromptOptimizerProvider } from "@/lib/plugins/plugin-types";
 import type { AiConfig } from "@/stores/use-config-store";
+import { canvasImagePolishMenuItems } from "@/lib/plugins/builtin/image-prompt-polish";
 import { promptPolishModelFamily, resolvePromptPolishSkill } from "@/lib/plugins/builtin/prompt-optimizer";
 
 type CanvasPromptOptimizerDrawerProps = {
@@ -25,7 +26,7 @@ type CanvasPromptOptimizerDrawerProps = {
     onApply: (prompt: string) => void;
 };
 
-const modeOptions: Array<{ label: string; value: PromptOptimizationMode }> = [
+const VIDEO_MODE_OPTIONS: Array<{ label: string; value: PromptOptimizationMode }> = [
     { label: "扩展想法", value: "expand" },
     { label: "精修已有", value: "refine" },
     { label: "强化风格", value: "style" },
@@ -33,12 +34,23 @@ const modeOptions: Array<{ label: string; value: PromptOptimizationMode }> = [
     { label: "结合参考", value: "reference" },
 ];
 
+function promptOptimizerModeOptions(generationMode: "image" | "video", hasReferences: boolean) {
+    if (generationMode === "image") {
+        return canvasImagePolishMenuItems({ hasReferences }).map((item) => ({ label: item.label, value: item.mode }));
+    }
+    return VIDEO_MODE_OPTIONS;
+}
+
 const modeDescriptions: Record<PromptOptimizationMode, string> = {
     expand: "从一句模糊想法补齐主体、场景、构图、光线和镜头等可执行细节。",
     refine: "尽量保留原意，只修正表达并补充必要细节，适合已经有初稿的提示词。",
     style: "保留主体和动作，重点强化电影感、材质、色彩、光影或指定艺术风格。",
     "model-adapt": "根据当前生成模型的习惯调整提示词结构和描述重点，减少模型不易理解的表达。",
     reference: "结合已连接的参考图或文本，补充一致性、外观、构图和关联关系。",
+    portrait: "面向人像与角色：五官、发型、服装、姿态、表情与 portrait 光影。",
+    product: "面向产品与静物：造型、材质、高光阴影、背景与陈列角度。",
+    scene: "面向环境场景：空间层次、天气、时间与氛围，而非单主体特写。",
+    poster: "面向海报 KV：主视觉层级、留白与文字安全区，不改写用户文案。",
 };
 
 type PanelSize = { width: number; height: number };
@@ -136,6 +148,10 @@ export function CanvasPromptOptimizerDrawer({ open, children, prompt, generation
     panelOffsetRef.current = panelOffset;
 
     const activeReferences = useMemo(() => references.filter((reference) => reference.active), [references]);
+    const modeOptions = useMemo(
+        () => promptOptimizerModeOptions(generationMode, activeReferences.length > 0),
+        [activeReferences.length, generationMode],
+    );
     const selectedReferences = useMemo(() => activeReferences.filter((reference) => selectedReferenceIds.includes(reference.id)), [activeReferences, selectedReferenceIds]);
     const optimizationReferences = mode === "reference" ? selectedReferences : activeReferences;
     const referenceCount = mode === "reference" ? selectedReferences.length : activeReferences.length;

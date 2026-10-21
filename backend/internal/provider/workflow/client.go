@@ -110,16 +110,8 @@ func (c *Client) runRunningHub(ctx context.Context, input Input) (map[string]int
 			mappingWorkflow = fetched
 		}
 	}
-	workflowFields := input.Config.WorkflowFields
-	if len(workflowFields) == 0 && len(mappingWorkflow) > 0 {
-		var inferErr error
-		workflowFields, inferErr = workflowFieldsFromManagement(mappingWorkflow, input.Mode)
-		if inferErr != nil {
-			return nil, inferErr
-		}
-	}
-	workflowFields = workflowFieldsForMode(workflowFields, input.Mode)
-	if err := validateWorkflowMediaInputs(workflowFields, input); err != nil {
+	workflowFields, err := ensureWorkflowFieldsForMediaInputs(input.Config.WorkflowFields, mappingWorkflow, input.Mode, input)
+	if err != nil {
 		return nil, err
 	}
 	files := map[string]string{}

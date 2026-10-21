@@ -10,6 +10,29 @@ import { prepareBackendGenerationTask } from "../src/services/api/generation-tas
 import { usePluginStore } from "../src/stores/use-plugin-store";
 import { COMFYUI_PLUGIN_ID } from "../src/lib/plugins/builtin/workflows";
 
+test("H3 graph controls survive repeated normalization and repair internal automatic mappings", () => {
+    const workflowId = "h3-controls.json";
+    const workflowJson = {
+        size: { class_type: "ResolutionSelector", inputs: { aspect_ratio: "16:9 (Widescreen)", megapixels: 0.9, multiple: 32 } },
+        seconds: { class_type: "PrimitiveFloat", inputs: { value: 15 } },
+        frames: { class_type: "ComfyMathExpression", inputs: { expression: "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17", "values.a": ["seconds", 0] } },
+        video: { class_type: "MiniMaxH3ReferenceToVideo", inputs: { width: ["size", 0], height: ["size", 1], length: ["frames", 1] } },
+    };
+    const fields = [
+        { nodeId: "size", classType: "ResolutionSelector", fieldName: "aspect_ratio", source: "aspectRatio", sourceAutomatic: true, fieldValue: "16:9 (Widescreen)", role: "business", enabled: true },
+        { nodeId: "size", classType: "ResolutionSelector", fieldName: "megapixels", source: "vquality", sourceAutomatic: true, fieldValue: 0.9, role: "internal", enabled: false },
+        { nodeId: "seconds", classType: "PrimitiveFloat", fieldName: "value", source: "videoSeconds", sourceAutomatic: true, fieldValue: 15, role: "internal", enabled: false },
+    ];
+    let config = { ...defaultConfig, comfyUI: { ...defaultConfig.comfyUI, enabled: true, workflows: [{ workflowId, title: "H3", capability: "video" as const, workflowJson, fields }] } };
+    config = normalizeConfigSnapshot({ config: normalizeConfigSnapshot({ config }).config }).config as typeof config;
+    for (const name of ["aspectRatio", "vquality", "videoSeconds"]) {
+        expect(config.comfyUI.workflows[0].fields.find((field) => field.source === name)).toMatchObject({ role: "business", enabled: true });
+    }
+    const model = `comfyui-workflow::${workflowId}`;
+    const node = { id: "video", type: CanvasNodeType.Video, metadata: { model, seconds: "10", size: "9:16 (Portrait Widescreen)", vquality: "0.4" } } as CanvasNodeData;
+    expect(buildGenerationConfig(config, node, "video")).toMatchObject({ videoSeconds: "10", size: "9:16 (Portrait Widescreen)", vquality: "0.4" });
+});
+
 test("workflow ratio descriptions keep portrait labels and previews without changing enum values", () => {
     const ratio = "9:16 (Portrait Widescreen)";
     const config = {
@@ -54,7 +77,7 @@ test("H3 workflow controls retain node selections through task preparation", asy
     const node: CanvasNodeData = { id: "video", type: CanvasNodeType.Video, title: "Video", position: { x: 0, y: 0 }, width: 100, height: 100, metadata: { model } };
     // Match workspace hydration, including repeated normalization on store restore.
     const restored = normalizeConfigSnapshot({ config: normalizeConfigSnapshot({ config: global }).config }).config;
-    expect(restored.comfyUI.workflows[0].fields.map((field) => field.source)).toEqual(["aspectRatio", "vquality", "videoSeconds"]);
+    expect(restored.comfyUI.workflows[0].fields.filter((field) => field.source).map((field) => field.source)).toEqual(["aspectRatio", "vquality", "videoSeconds"]);
     const defaults = buildGenerationConfig(restored, node, "video");
     expect(defaults).toMatchObject({ size: "9:16 (Portrait Widescreen)", videoSeconds: "15", vquality: "0.9" });
     const config = buildGenerationConfig(restored, { ...node, metadata: { model, size: "16:9 (Widescreen)", seconds: "8", vquality: "1.2" } }, "video");
@@ -67,10 +90,9 @@ test("H3 workflow controls retain node selections through task preparation", asy
     expect(resolveVideoResolutionValue(profile, "1080p")).toBe("0.9");
     for (const theme of [canvasThemes.dark, canvasThemes.light]) {
         const html = renderToStaticMarkup(<VideoSettingsPanel config={config} theme={theme} onConfigChange={() => {}} />);
-        expect(html).toContain('aria-label="视频分辨率（MP）"');
-        expect(html).toContain('value="1.2"');
-        expect(html).toContain('>1.2 MP</button>');
-        expect(html).toContain('>8s</button>');
+        expect(html).toContain('>720p</button>');
+        expect(html).toContain('>1080p</button>');
+        expect(html).toContain('aria-valuetext="8 秒"');
         expect(html).toContain('>16:9</span>');
         expect(html).not.toContain("由工作流决定");
     }

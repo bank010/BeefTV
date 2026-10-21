@@ -1,3 +1,4 @@
+import { comfyReferenceVideoDurationError } from "@/lib/comfy-omni-reference-temp-limit";
 import { defaultImageCapabilityConfig, modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, STANDARD_IMAGE_SIZE_VALUES, videoDurationAllowed, type ImageCapabilityConfig } from "@/lib/model-capabilities";
 import { normalizeVideoBoolean, normalizeVideoResolutionValue, videoResolutionComparisonKey } from "@/lib/video-generation-options";
 import { imageSizePresets } from "@/lib/image-size-presets";
@@ -110,6 +111,8 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
         if (visualInputCount > profile.references.maxImages) return `最多支持 ${profile.references.maxImages} 张参考图`;
         if (input.videoCount > profile.references.maxVideos) return `最多支持 ${profile.references.maxVideos} 个参考视频`;
         if (input.audioCount > profile.references.maxAudios) return `最多支持 ${profile.references.maxAudios} 个参考音频`;
+        const referenceVideoDurationError = comfyReferenceVideoDurationError(config, model, input.videoCount, requirements.videoSeconds);
+        if (referenceVideoDurationError) return referenceVideoDurationError;
         const operation = resolveVideoOperation(input, requirements.videoOperation);
         if (operation !== "concat" && !profile.operations.includes(operation)) return `不支持${videoOperationLabel(operation)}`;
         return "";

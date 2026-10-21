@@ -1,6 +1,6 @@
 import { Alert, App, Button, Form, Input, Radio, Select } from "antd";
 import { useRef, useState } from "react";
-import { ArrowLeft, ArrowUp, Check, FileJson, Folder, Save, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowUp, Check, FileJson, Folder, RefreshCw, Save, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router";
 
 import { PageHeader, WorkspacePage } from "@/components/layout/workspace-page";
@@ -47,10 +47,11 @@ export default function ComfyUISettingsPage() {
     const [selectedId, setSelectedId] = useState(config.selectedWorkflowId);
     const [drafts, setDrafts] = useState<Record<string, WorkflowDraft>>({});
     const [saving, setSaving] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const fileListRef = useRef<HTMLElement>(null);
     const editorRef = useRef<HTMLElement>(null);
-    const busy = saving || deleting;
+    const busy = saving || refreshing || deleting;
     const selected = config.workflows.find((workflow) => workflow.workflowId === selectedId);
     const draft = drafts[selectedId] || (selected ? { title: selected.title, capability: selected.capability, imageEditWorkflowId: selected.imageEditWorkflowId } : undefined);
     const connectionChanged = connection.baseUrl.trim().replace(/\/+$/, "") !== config.baseUrl || connection.apiKey !== config.apiKey || connection.enabled !== config.enabled;
@@ -95,19 +96,23 @@ export default function ComfyUISettingsPage() {
         useConfigStore.getState().updateConfig("comfyUI", next);
     };
 
-    const saveWorkflow = async () => {
+    const saveWorkflowSnapshot = async (options?: { forceRefresh?: boolean }) => {
         if (!draft?.capability || !draft.title.trim() || !selectedId || busy) return;
-        setSaving(true);
+        const forceRefresh = options?.forceRefresh === true;
+        if (forceRefresh) setRefreshing(true);
+        else setSaving(true);
         updateDraft({ error: "" });
         try {
             const baseUrl = connection.baseUrl.trim().replace(/\/+$/, "");
             if (!baseUrl) throw new Error("请先填写 ComfyUI 地址");
+            if (!pluginEnabled) throw new Error("请先在插件中心启用 ComfyUI 工作流插件");
             let workflow = selected;
-            if (!workflow || workflow.capability !== draft.capability || baseUrl !== config.baseUrl || connection.apiKey !== config.apiKey) {
-                if (!pluginEnabled) throw new Error("请先在插件中心启用 ComfyUI 工作流插件");
+            const shouldFetch = forceRefresh || !workflow || workflow.capability !== draft.capability || baseUrl !== config.baseUrl || connection.apiKey !== config.apiKey;
+            if (shouldFetch) {
                 workflow = await fetchComfyUIWorkflow({ baseUrl, apiKey: connection.apiKey, file: selectedId, capability: draft.capability });
             }
-            const saved: ComfyUIWorkflow = { ...workflow, workflowId: selectedId, title: draft.title.trim(), capability: draft.capability, imageEditWorkflowId: draft.capability === "image" ? draft.imageEditWorkflowId || undefined : undefined };
+            if (!workflow) throw new Error("当前 ComfyUI 工作流不存在，请重新读取");
+            const saved: ComfyUIWorkflow = { ...workflow, workflowJson: workflow.workflowJson || {}, fields: workflow.fields || [], workflowId: selectedId, title: draft.title.trim(), capability: draft.capability, imageEditWorkflowId: draft.capability === "image" ? draft.imageEditWorkflowId || undefined : undefined };
             const latest = useConfigStore.getState().config.comfyUI;
             const workflows = latest.workflows.some((item) => item.workflowId === selectedId)
                 ? latest.workflows.map((item) => item.workflowId === selectedId ? saved : item)
@@ -121,13 +126,17 @@ export default function ComfyUISettingsPage() {
             await persist({ ...latest, ...connection, baseUrl, selectedWorkflowId: selectedId, workflows });
             setConnection((current) => ({ ...current, baseUrl }));
             setDrafts((current) => ({ ...current, [selectedId]: { title: saved.title, capability: saved.capability, imageEditWorkflowId: saved.imageEditWorkflowId } }));
-            message.success(`“${saved.title}”配置已保存到服务器`);
+            message.success(forceRefresh ? `已从 ComfyUI 重新读取并保存「${saved.title}」` : `“${saved.title}”配置已保存到服务器`);
         } catch (error) {
             setDrafts((current) => ({ ...current, [selectedId]: { ...draft, error: error instanceof Error ? error.message : "保存失败，请重试" } }));
         } finally {
-            setSaving(false);
+            if (forceRefresh) setRefreshing(false);
+            else setSaving(false);
         }
     };
+
+    const saveWorkflow = () => void saveWorkflowSnapshot();
+    const refreshWorkflowFromComfyUI = () => void saveWorkflowSnapshot({ forceRefresh: true });
 
     const removeWorkflow = async () => {
         if (!selected || busy) return;
@@ -240,9 +249,10 @@ export default function ComfyUISettingsPage() {
                             {draft.error ? <Alert className="mb-4" type="error" showIcon title={draft.error} description="操作未完成，当前编辑内容已保留，可重试。" /> : null}
                             {!connection.enabled ? <p className="mb-4 text-xs text-foreground/55">ComfyUI 当前未启用。可先保存配置，启用后再从模型列表使用。</p> : null}
                             <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
-                                <Button type="primary" icon={<Save className="size-4" />} loading={saving} disabled={deleting || !draft.title.trim() || !draft.capability || !connection.baseUrl.trim() || !changed} onClick={() => void saveWorkflow()}>保存配置</Button>
-                                {selected ? <Button type="text" danger icon={<Trash2 className="size-4" />} loading={deleting} disabled={saving} onClick={() => void removeWorkflow()}>移除配置</Button> : null}
-                                <span className="text-xs text-foreground/55">仅保存当前工作流</span>
+                                <Button type="primary" icon={<Save className="size-4" />} loading={saving} disabled={deleting || refreshing || !draft.title.trim() || !draft.capability || !connection.baseUrl.trim() || !changed} onClick={saveWorkflow}>保存配置</Button>
+                                {selected ? <Button icon={<RefreshCw className="size-4" />} loading={refreshing} disabled={saving || deleting || !draft.title.trim() || !draft.capability || !connection.baseUrl.trim()} onClick={refreshWorkflowFromComfyUI}>从 ComfyUI 重新读取</Button> : null}
+                                {selected ? <Button type="text" danger icon={<Trash2 className="size-4" />} loading={deleting} disabled={saving || refreshing} onClick={() => void removeWorkflow()}>移除配置</Button> : null}
+                                <span className="text-xs text-foreground/55">{selected ? "重新读取会覆盖本地 JSON 快照" : "仅保存当前工作流"}</span>
                             </div>
                         </>}
                     </section>
