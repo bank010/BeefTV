@@ -175,7 +175,7 @@ H3 的比例、目标像素量与秒数绑定仅从已确认的输出尺寸和�
 
 `media.review` 将已关联视频的指定区间交给独立多模态模型观察，参数为 `canvasId`、`nodeId` 或 `assetId`、`expectedVersion`、`startMs`、`endMs`、`question`。它复用 `media.inspect` 的归属、版本、15 秒区间与内容大小限制，发送真实 MP4 及原音轨；主模型只接收来源、片段哈希、观察、请求编号与用量，不接收该工具的视频字节。观察中的时间从片段起点计，需加上 `source.startMs` 才是原素材位置。观察可能遗漏，不表示成片验收通过，也不写入主模型已观看影音的检查记录。
 
-审片连接由本地模型配置的可选 `mediaReviewModel: "channelId::modelId"` 选择，复用已有渠道凭据解析；当前适配经验证的 `wand-vega-vl-1.0-flash`、`chat-completion` 协议。未配置或不支持时明确返回不可用。此操作不修改画布，但调用可能收费，因此描述符为 `readOnly: true, replay: "unsafe"`：官方 Durable 不自动重放中断的付费检查。一次操作只发起一次供应商请求；空回复、截断及请求失败不能作为通过依据。它没有工具权限或独立 Agent 循环。
+用户在设置的“默认模型”中选择“默认多模态模型”，保存为可选 `mediaReviewModel: "channelId::modelId"`，复用所选渠道的凭据。当前适配经验证的 `wand-vega-vl-1.0-flash`、`chat-completion` 协议，支持托管 BeefAPI 和自定义渠道中实际存在的模型及其配置别名。它与助手模型分别选择，不受主助手模型名单限制；连接或刷新目录不自动替用户选择。清空表示不使用独立多模态模型，失效选择返回不可用，不静默改用其他模型。此操作不修改画布，但调用可能收费，因此描述符为 `readOnly: true, replay: "unsafe"`：官方 Durable 不自动重放中断的付费检查。一次操作只发起一次供应商请求；空回复、截断及请求失败不能作为通过依据。它没有工具权限或独立 Agent 循环。
 
 宿主对模型请求与工具步骤各自有单轮上限（`BEEFTV_AGENT_MAX_REQUESTS_PER_TURN`、
 `BEEFTV_AGENT_MAX_TOOL_STEPS_PER_TURN`），按轮独立计数、下一轮从零开始；总预算
@@ -246,6 +246,10 @@ Windows 的运行地址描述文件位于用户目录的 `.beeftv/runtime/`，�
 
 诊断包的 `client/events.jsonl` 保留业务错误 `reason`；`backend/tasks.jsonl` 导出经过脱敏的 `failureDiagnostics`，包括已采集的失败阶段、请求 ID、上游任务 ID、执行结果和错误摘要。历史记录缺失的信息不会补造。
 
+诊断包清单和响应头版本为 2。任务摘要另含原目标节点及稳定提交编号；`backend/canvas-bindings.jsonl` 按原目标读取当前用户的画布，保留采样时间、版本号、节点是否存在、节点当前任务与提交编号，以及是否已有媒体。画布已删除或不属于当前用户时统一标为 `missing`，不暴露其他用户画布是否存在；读取失败为 `unavailable`，已读取画布中缺少原节点为 `nodePresent=false`。未知状态不补为“没有”。这些是导出时的状态，不能当作故障发生时的画布历史。
+
+结果绑定被 `node_task_mismatch` 拒绝时，响应 `details.canvasBinding` 返回同一事务里读取到的节点身份和状态标记。前端在 `generation_bind_requested/refused/confirmed` 事件中保留原任务、目标及该证据；不导出节点标题、提示词、正文、媒体地址或密钥。前端事件仍为当前会话内的有界记录，刷新前未导出的事件无法追溯。
+
 章节分镜替换与角色候选写入可携带 `sourceTaskId`。服务端核对原任务、用户、项目、章节和生成类型，并将结果写入与稳定操作回执放在同一事务中。同一任务和内容重放返回原回执，不覆盖之后的人工编辑；更换内容返回 `409 operation_id_reused_with_different_payload`。分镜仍须提交批准时的 `expectedRevision` 与 `expectedShotIds`；冲突为 `409 project_revision_conflict` 或 `project_unit_shots_changed`。
 
 `GET /projects/:id/chapter-apply-receipts?taskIds=` 查询最多 100 个任务的已提交回执。页面不以更新时间猜测是否写入；没有回执的分镜结果保留待核对，确认后可直接写入，不重新生成。
@@ -272,11 +276,15 @@ NewAPI Channel 2 与 BeefAPI 视频的暂时下载断连会保留原任务 ID �
 
 上述内嵌恢复只适用于 Seedance；要求 HTTP 参考链接的模型在预上传失败时停止准备，不回退到内嵌素材，也不提交生成。
 
-生成结果正在取回时，任务详情与列表的 `delivery.outputs[]` 给出该任务每个输出的 `downloadedBytes`、`totalBytes`（未知为 -1）、`bytesPerSecond` 和 `state`（`downloading` / `retrying`），供页面显示进度。它只存在进程内存中，不写数据库，取回结束即消失，重启后不保留；没有取回中的下载时该字段省略。
+生成结果正在取回时，任务详情与列表的 `delivery.outputs[]` 给出该任务每个输出的 `downloadedBytes`、`totalBytes`（未知为 -1）、`bytesPerSecond`、`updatedAt`（Unix 毫秒采样时间）和 `state`（`downloading` / `retrying` / `waiting`），供页面显示进度。页面在采样超过 3 秒后隐藏速度与剩余时间。它只存在进程内存中，不写数据库，取回结束即消失，重启后不保留；没有取回中的下载时该字段省略。
+
+生成前正在上传参考素材时，任务详情和列表可返回临时的 `referenceProgress`：`label` 标识当前素材，`phase` 为 `preparing`、`transferring` 或 `processing`，并提供 `loadedBytes`、`totalBytes`、`bytesPerSecond`、`startedAt` 和 `updatedAt`（Unix 毫秒）。字节传完后仍需等待上传回执与可用性确认；只有确认完成才进入生成提交阶段。进度绑定 BeefTV 自己的任务 ID，不包含上传地址、票据或本地路径，不写数据库；准备结束或任务退出后清除。
 
 生成成功后仍在下载的结果，可用 `POST /tasks/:id/cancel` 停止取回：生成状态保持 `succeeded`，`stage=delivery_paused`；单次下载满 15 分钟则停止并记为 `delivery_timed_out`。尚未取回的输出使用相同的 `materializationErrorCode`。暂停跨应用重启保留，后台不会自动重启；`POST /tasks/:id/retry` 对这两种成功任务只解除暂停，由交付 worker 继续取回原结果，不重新生成或取消上游任务。应用关闭会停止当前下载，未手动暂停或超时的任务在下次启动后恢复。全部输出取回后清除下载阶段；任务详情和列表也依据已就绪输出将历史残留的下载阶段显示为“生成完成”，不修改旧任务记录或重新提交生成。成功绑定到画布时清除节点的旧任务阶段。
 
 远程下载保留临时文件用于续传；鉴权过期的 401/403 不删除已有字节。签名参数变化时，仅同源同路径且持有强 ETag 的文件尝试续传，并核对响应 ETag 与总大小；不匹配时重新下载。供应商不支持 Range、缺少可靠校验标识或更换文件路径时可能从头下载。此能力不代表自动刷新供应商的过期签名链接。
+
+视频上游已完成、任务仍在取回结果时也使用这套续传规则。部分文件按本地任务与用户保存，后台恢复和失败任务详情中的手动查询原结果读取同一份上游下载缓存；成功后清除临时文件。生成成功后的交付 worker 按输出使用独立缓存，暂停后继续下载复用对应输出的缓存。跨域跳转只保留续传需要的 `Range`、`If-Range`，不向媒体存储转发网关凭据；缓存元数据不保存签名查询参数。下载继续使用现有环境或系统代理设置，不强制直连。
 
 连接阶段确认整次 HTTP 请求（含重定向）都未取得可发送请求的连接时，失败类别为 `request_not_sent`，允许重试。已经取得连接、提交后丢失响应或重定向后失败，仍按提交结果未确认处理。旧任务缺少连接证据时，不会仅凭 `TLS handshake timeout` 文本自动解除重试保护。
 
@@ -291,3 +299,7 @@ NewAPI Channel 2 与 BeefAPI 视频的暂时下载断连会保留原任务 ID �
 内置 BeefAPI 连接成功后，同一份企业凭证用于渠道请求和模型目录。企业连接、模型目录、Provider/Protocol 与自定义渠道不受 Agent 退场影响。
 
 内置 BeefAPI 的 Seedance 视频任务由本机后端上传参考素材后再向上游提交链接；浏览器不直接访问该上传接口，也不把整份参考文件放进本地 `/tasks` 请求。本机已保存的参考文件即使工作区已有公开访问地址，也仍由本机后端上传后再提交链接。失败时不会自动重提生成。
+
+本地素材分片上传以 `X-Idempotency-Key` 复用当前用户的上传会话。`POST /api/resources/uploads` 返回 `uploadId`、`chunkSize`、`chunkCount` 和 `received`（已完整保存的分片索引）；客户端重试时查询同一会话并跳过这些分片，最后仍须调用 `complete` 确认资源保存成功。此恢复只适用于仍有效的会话，不保证应用重启或会话过期后继续上传。
+
+Seedance 参考素材使用独立的企业接口协议：客户端申请时传 `resumable: true`，支持的网关对大于 8MiB 的素材返回 COS/R2 原生分片计划。单片断流后查询 `/video-references/uploads/resume`，跳过已收完整的片段；确认丢失时复用原 ticket 调用 `/complete`，最终仍核验整文件大小、SHA-256 和类型。一次上传内最多进行 4 轮传输恢复，取消或最终失败会尽力 `/abort` 清理。沿用系统和环境代理；不强制直连。15 分钟有效期和应用重启后继续的能力不扩展，旧网关及小文件仍使用原整文件 PUT。所有重试均发生在模型提交前，不重复发生成请求；轨迹增加 `reference_resume`、`reference_abort`。

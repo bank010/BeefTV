@@ -41,7 +41,7 @@ func TestContinuationMigrationPreservesHistoryAndChecksReceiptStructure(t *testi
 	}
 	var after []localSchemaMigration
 	db.Order("version").Find(&after)
-	if len(after) != len(before)+3 || after[len(before)].Name != "assistant-generation-continuations" || after[len(before)+1].Name != "assistant-continuation-intent-fence" || after[len(before)+2].Name != "assistant-production-authorization" {
+	if len(after) != len(before)+4 || after[len(before)].Name != "assistant-generation-continuations" || after[len(before)+1].Name != "assistant-continuation-intent-fence" || after[len(before)+2].Name != "assistant-production-authorization" || after[len(before)+3].Name != "skill-market-release-metadata" {
 		t.Fatal("migration identity")
 	}
 	for i, row := range before {
@@ -103,7 +103,7 @@ func TestContinuationIntentFenceMigrationPreservesV18History(t *testing.T) {
 	}
 	var after []localSchemaMigration
 	db.Order("version").Find(&after)
-	if len(after) != len(before)+2 || after[len(before)].Name != "assistant-continuation-intent-fence" || after[len(before)+1].Name != "assistant-production-authorization" {
+	if len(after) != len(before)+3 || after[len(before)].Name != "assistant-continuation-intent-fence" || after[len(before)+1].Name != "assistant-production-authorization" || after[len(before)+2].Name != "skill-market-release-metadata" {
 		t.Fatal("migration identity")
 	}
 	for i, row := range before {

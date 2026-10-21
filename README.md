@@ -25,6 +25,7 @@
 </p>
 
 <p align="center">
+  <a href="README.en.md">English</a> ·
   <a href="#产品演示">产品演示</a> ·
   <a href="docs/content/docs/overview/features.mdx">功能清单</a> ·
   <a href="QUICKSTART.md">开始使用</a> ·

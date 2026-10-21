@@ -7,7 +7,22 @@ import { browserCapabilities } from "./browser-environment";
 export type ClientDiagnosticLevel = "info" | "warning" | "error";
 export type ClientDiagnosticCategory = "navigation" | "action" | "request" | "runtime" | "task" | "plugin" | "environment";
 
+export type CanvasBindingEvidence = {
+    source: "client" | "server";
+    nodeId?: string;
+    clientOperationId?: string;
+    nodeTaskId?: string;
+    nodeClientOperationId?: string;
+    nodeType?: string;
+    nodeStatus?: string;
+    revision?: number;
+    outputIndex?: number;
+    nodePresent?: boolean;
+    nodeHasMedia?: boolean;
+};
+
 export type ClientDiagnosticEvent = {
+    canvasBinding?: CanvasBindingEvidence;
     id: string;
     timestamp: string;
     level: ClientDiagnosticLevel;
@@ -138,6 +153,7 @@ export function recordDiagnosticEvent(input: DiagnosticEventInput) {
         taskId: safeDiagnosticId(input.taskId),
         projectId: safeDiagnosticId(input.projectId),
         canvasId: safeDiagnosticId(input.canvasId),
+        canvasBinding: sanitizeCanvasBindingEvidence(input.canvasBinding),
         stack: redactClientText(input.stack, 4000),
     };
     events.push(event);
@@ -191,6 +207,23 @@ function readHeader(headers: unknown, key: string) {
 function safeDiagnosticId(value?: string) {
     const normalized = String(value || "").trim();
     return /^[A-Za-z0-9._:-]{1,96}$/.test(normalized) ? normalized : undefined;
+}
+
+export function sanitizeCanvasBindingEvidence(value: unknown): CanvasBindingEvidence | undefined {
+    if (!value || typeof value !== "object") return undefined;
+    const input = value as Record<string, unknown>;
+    if (input.source !== "client" && input.source !== "server") return undefined;
+    const operationId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9:_-]{1,128}$/.test(value) ? value : undefined;
+    const id = (value: unknown) => typeof value === "string" ? safeDiagnosticId(value) : undefined;
+    return {
+        source: input.source, nodeId: id(input.nodeId), nodeTaskId: id(input.nodeTaskId),
+        clientOperationId: operationId(input.clientOperationId), nodeClientOperationId: operationId(input.nodeClientOperationId),
+        nodeType: id(input.nodeType), nodeStatus: id(input.nodeStatus),
+        revision: typeof input.revision === "number" && Number.isSafeInteger(input.revision) && input.revision >= 0 ? input.revision : undefined,
+        outputIndex: typeof input.outputIndex === "number" ? clampNumber(input.outputIndex, 0, 999) : undefined,
+        nodePresent: typeof input.nodePresent === "boolean" ? input.nodePresent : undefined,
+        nodeHasMedia: typeof input.nodeHasMedia === "boolean" ? input.nodeHasMedia : undefined,
+    };
 }
 
 function redactClientText(value?: string, maxLength = 1200) {

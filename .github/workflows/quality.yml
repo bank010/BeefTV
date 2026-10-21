@@ -82,6 +82,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_publish_desktop_r2.py'
           node --test scripts/distribution-notices.test.mjs
           python3 -m unittest discover -s scripts -p 'test_package_macos_media_source.py'
+          python3 -m unittest discover -s scripts -p 'test_package_wasm_sources.py'
           python3 -m unittest discover -s scripts -p 'test_desktop_cos_store.py'
           python3 -m unittest discover -s scripts -p 'test_smoke_desktop_installer.py'
 

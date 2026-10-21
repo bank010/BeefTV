@@ -6,6 +6,6 @@ macOS 发布通过 `scripts/package-media-runtime-macos.sh` 从 FFmpeg 固定源
 
 正式 Mac 构建在原生目标架构执行 `scripts/test-media-runtime-macos.sh`：将真实工具复制到带中文和空格的位置，分别从 GUI 和 CLI 的可执行位置，在 PATH 没有 ffprobe 时读取实际 WAV，验证资源时长已保存。arm64 与 Intel 的运行结果分别由对应原生构建提供；交叉构建只证明编译与动态依赖检查，不能替代目标架构执行。
 
-Windows 从同一源码版本的固定 Gyan FFmpeg 8.0.1 发行包携带 ffmpeg 和 ffprobe；原生包检查要求无系统媒体工具时仍可转换短视频并读取时长、尺寸，见 [Windows 视频运行包](./windows-media-runtime.md)。
+Windows 使用 `licenses/ffmpeg-windows.json` 固定的 BtbN FFmpeg 8.1.3 构建，同时携带 ffmpeg 和 ffprobe；原生包检查要求无系统媒体工具时仍可转换短视频并读取时长、尺寸，见 [Windows 视频运行包](./windows-media-runtime.md)。Windows 与 macOS 的版本和构建方式分别记录。
 
 Linux DEB 继续通过系统 ffmpeg 依赖提供 ffprobe。直接解压包需要用户提供 ffprobe 或显式配置 `CANVAS_FFPROBE_PATH`；检查工具不可用时必须明确失败。浏览器探测是否可移除，应以对应安装包真实验证为准，不能用某个平台的源码测试替代其他安装方式。

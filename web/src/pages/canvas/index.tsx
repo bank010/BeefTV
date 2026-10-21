@@ -16,10 +16,10 @@ import { RecycleBinDialog } from "@/components/canvas/recycle-bin-dialog";
 import { LibraryCardShell } from "@/components/canvas/library-card-shell";
 import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
-import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
+import { awaitCanvasExportStep, canvasExportProgressLabel, exportCanvasProjects, type CanvasExportProgress } from "@/lib/canvas/canvas-export";
 import { restoreCanvasArchive } from "@/lib/canvas/canvas-archive-restore";
 import { createCanvasLibraryFolder, deleteCanvasLibraryFolder, hydrateCanvasLibraryFolders, persistCanvasFolderCover, renameCanvasLibraryFolder } from "@/lib/canvas/canvas-folder-storage";
-import { reportOwnedMediaSave } from "@/services/desktop-media-save";
+import { isWailsNativeShell } from "@/services/desktop-media-save";
 import { loadCanvasProjectForEditing, saveRemoteUserDataNow } from "@/services/local-workspace-sync";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 import { usesBrowserLocalResourceStore } from "@/services/workspace-resource-storage";
@@ -32,7 +32,8 @@ import { loadCanvasProjectPage } from "@/lib/workspace-route-modules";
 import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { cn } from "@/lib/utils";
-import { captureUserScope, type CapturedUserScope } from "@/lib/user-scope-guard";
+import { assertUserScope, captureUserScope, type CapturedUserScope } from "@/lib/user-scope-guard";
+import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 import { canvasIdsForWorkspaceProjects, canvasWorkspaceProjectId, listCanvasWorkspaceProjectCanvases, listCanvasWorkspaceProjectRoots, previewNodesForWorkspaceProject } from "@/lib/canvas/canvas-workspace-project";
 
 const CanvasDeleteProjectsDialog = lazy(() => import("@/components/canvas/canvas-delete-projects-dialog").then((module) => ({ default: module.CanvasDeleteProjectsDialog })));
@@ -56,6 +57,10 @@ export default function CanvasPage() {
     const loadMoreRef = useRef<HTMLDivElement>(null);
     const [loadedProjectCount, setLoadedProjectCount] = useState(50);
     const [creationError, setCreationError] = useState(false);
+    const exportController = useRef<AbortController | null>(null);
+    const [exportProgress, setExportProgress] = useState<CanvasExportProgress | null>(null);
+    const [exportError, setExportError] = useState("");
+    useEffect(() => () => exportController.current?.abort(), []);
     const hydrated = useCanvasStore((state) => state.hydrated);
     const localProjects = useCanvasStore((state) => state.projects);
     const folders = useCanvasStore((state) => state.folders);
@@ -223,15 +228,34 @@ export default function CanvasPage() {
         }
     };
     const exportSelected = async () => {
+        if (exportController.current) return;
+        const controller = new AbortController();
+        exportController.current = controller;
+        const scope = captureUserScope();
+        setExportError("");
+        setExportProgress({ phase: "loading" });
         try {
             const selected = [];
             for (const id of selectedCanvasIds) {
-                const project = await loadCanvasProjectForEditing(id);
+                const project = await awaitCanvasExportStep(loadCanvasProjectForEditing(id), controller.signal);
+                controller.signal.throwIfAborted();
+                assertUserScope(scope);
                 if (!project) throw new Error("画布不存在，无法导出");
                 selected.push(project);
             }
-            await reportOwnedMediaSave(message, exportCanvasProjects(selected, `${brandName}画布-${selected.length}个画布`, { folders }));
-        } catch (error) { message.error(error instanceof Error ? error.message : "导出失败"); }
+            const saved = await exportCanvasProjects(selected, `${brandName}画布-${selected.length}个画布`, { folders, signal: controller.signal, onProgress: setExportProgress });
+            if (saved === "saved" && isWailsNativeShell()) message.success("已保存到所选位置");
+        } catch (error) {
+            if (controller.signal.aborted) {
+                recordDiagnosticEvent({ category: "action", level: "info", code: "canvas_export_cancelled", message: "已取消画布导出" });
+            } else {
+                setExportError(error instanceof Error ? error.message : "导出失败，请重试");
+                recordDiagnosticEvent({ category: "action", level: "error", code: "canvas_export_failed", message: "画布导出失败" });
+            }
+        } finally {
+            exportController.current = null;
+            setExportProgress(null);
+        }
     };
     const importCanvas = async (file?: File) => {
         if (!file) return;
@@ -299,9 +323,9 @@ export default function CanvasPage() {
             />
 
             <div className="collection-content">
-                {selectedIds.length ? (
+                {selectedIds.length || exportProgress ? (
                     <div className="collection-selection-bar">
-                        <strong className="mr-auto font-medium">已选 {selectedIds.length} 个项目</strong>
+                        <strong className="mr-auto font-medium">{exportProgress ? "正在导出画布" : `已选 ${selectedIds.length} 个项目`}</strong>
                         {remoteMode ? <>
                             <Button
                                 size="small"
@@ -326,14 +350,20 @@ export default function CanvasPage() {
                                 </Button>
                             ) : null}
                         </> : null}
-                        <Button size="small" disabled={!hydrated} icon={<Download className="size-3.5" />} onClick={() => void exportSelected()}>
+                        <Button size="small" aria-label="导出" disabled={!hydrated} loading={Boolean(exportProgress)} icon={<Download className="size-3.5" />} onClick={() => void exportSelected()}>
                             导出
                         </Button>
-                        <Button size="small" danger disabled={!hydrated} onClick={deleteSelectedProjects}>
+                        {exportProgress ? <>
+                            <span className="text-sm text-foreground/65" role="status" aria-live="polite">{canvasExportProgressLabel(exportProgress)}</span>
+                            <Button size="small" disabled={exportProgress.phase === "saving"} onClick={() => exportController.current?.abort()}>取消导出</Button>
+                        </> : null}
+                        <Button size="small" danger disabled={!hydrated || Boolean(exportProgress)} onClick={deleteSelectedProjects}>
                             删除
                         </Button>
                     </div>
                 ) : null}
+
+                {exportError ? <p role="alert" className="mb-4 whitespace-pre-wrap break-words text-sm text-destructive">{exportError}</p> : null}
 
                 {!remoteMode && canvasHealth.error ? <div role="alert" className="mb-4 flex flex-wrap items-center gap-3 text-sm"><span>{canvasHealth.error}</span><Button loading={canvasHealth.loading} onClick={()=>void hydrateLocalCanvasProjectsFromBackend()}>重试加载</Button></div> : null}
                 {remoteMode && libraryQuery.isError ? (

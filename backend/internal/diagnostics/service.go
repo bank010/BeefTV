@@ -63,10 +63,11 @@ func (s *Service) Preview(userID string, req ExportRequest) (*Preview, error) {
 		updateBytes = len(collection.UpdateLog.Text) + 256
 	}
 	return &Preview{
-		UpdateLog:        collection.UpdateLog,
-		ClientEventLimit: maxClientEvents,
-		TaskCount:        len(collection.Tasks), TaskLogCount: len(collection.TaskLogs), APICallCount: len(collection.APICalls),
-		EstimatedBytes: int64(2048 + updateBytes + len(collection.ClientEvents)*420 + len(collection.Tasks)*620 + len(collection.TaskLogs)*700 + len(collection.APICalls)*520),
+		UpdateLog:          collection.UpdateLog,
+		ClientEventLimit:   maxClientEvents,
+		CanvasBindingCount: len(collection.CanvasBindings),
+		TaskCount:          len(collection.Tasks), TaskLogCount: len(collection.TaskLogs), APICallCount: len(collection.APICalls),
+		EstimatedBytes: int64(2048 + updateBytes + len(collection.CanvasBindings)*600 + len(collection.ClientEvents)*420 + len(collection.Tasks)*620 + len(collection.TaskLogs)*700 + len(collection.APICalls)*520),
 		WillTruncate:   collection.Truncated,
 	}, nil
 }
@@ -83,7 +84,7 @@ func (s *Service) Export(userID string, req ExportRequest) (*Bundle, error) {
 		TimeRange: timeRange{From: collection.Window.From, To: collection.Window.To},
 		TaskID:    collection.TaskID, ProjectID: collection.ProjectID, Description: collection.Description,
 		RedactionVersion: RedactionVersion, Truncated: collection.Truncated,
-		Counts: counts{ClientEvents: len(collection.ClientEvents), Tasks: len(collection.Tasks), TaskLogs: len(collection.TaskLogs), APICalls: len(collection.APICalls)},
+		Counts: counts{CanvasBindings: len(collection.CanvasBindings), ClientEvents: len(collection.ClientEvents), Tasks: len(collection.Tasks), TaskLogs: len(collection.TaskLogs), APICalls: len(collection.APICalls)},
 	}
 	brandName, brandSlug := s.brand.NameAndSlug()
 	if strings.TrimSpace(brandName) == "" {
@@ -164,6 +165,7 @@ func (s *Service) collect(userID string, req ExportRequest) (*collection, error)
 	for _, task := range tasks {
 		collected.Tasks = append(collected.Tasks, sanitizeTask(task))
 	}
+	s.collectCanvasBindings(userID, tasks, collected)
 	for _, taskLog := range taskLogs {
 		collected.TaskLogs = append(collected.TaskLogs, sanitizeTaskLog(taskLog))
 	}

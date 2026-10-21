@@ -59,6 +59,34 @@ export async function saveOwnedOrBrowserVideoBlob(fileName: string, blob: Blob, 
     return downloadOwnedOrBrowserMedia({ fileName: name, resourceId: resource.id });
 }
 
+export async function saveOwnedNativeArchiveFiles(
+    fileName: string,
+    files: Array<{ name: string; data: BlobPart; resourceId?: string }>,
+    expected: CapturedUserScope,
+    options: { signal?: AbortSignal; onSaving?: () => void } = {},
+): Promise<OwnedMediaSaveResult | undefined> {
+    const save = typeof window === "undefined" ? undefined : window.go?.main?.DesktopApp?.SaveOwnedArchive;
+    if (!save) return undefined;
+    const entries: Array<{ name: string; resourceId?: string; data?: string }> = [];
+    let inlineBytes = 0;
+    for (const file of files) {
+        options.signal?.throwIfAborted();
+        assertUserScope(expected);
+        if (file.resourceId) {
+            entries.push({ name: file.name, resourceId: file.resourceId });
+        } else {
+            const blob = new Blob([file.data]);
+            inlineBytes += blob.size;
+            if (inlineBytes > MAX_OWNED_ARTIFACT_BYTES) throw new Error("本地附加文件过大，请先保存素材后再导出");
+            entries.push({ name: file.name, data: bytesToBase64(new Uint8Array(await blob.arrayBuffer())) });
+        }
+    }
+    options.signal?.throwIfAborted();
+    assertUserScope(expected);
+    options.onSaving?.();
+    return await save(sanitizeDownloadFileName(fileName, "画布.zip"), entries) ? "saved" : "cancelled";
+}
+
 function bytesToBase64(bytes: Uint8Array) {
     const toBase64 = (bytes as Uint8Array & { toBase64?: () => string }).toBase64;
     if (typeof toBase64 === "function") return toBase64.call(bytes);

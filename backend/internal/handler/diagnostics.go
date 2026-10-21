@@ -67,7 +67,7 @@ func RegisterDiagnosticsRoutes(r *gin.RouterGroup, svc *app.Service) {
 		c.Header("Cache-Control", "private, no-store")
 		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", bundle.FileName))
 		c.Header("X-Diagnostic-Bundle-ID", bundle.BundleID)
-		c.Header("X-Diagnostic-Schema-Version", "1")
+		c.Header("X-Diagnostic-Schema-Version", fmt.Sprint(diagnostics.SchemaVersion))
 		c.Data(http.StatusOK, "application/zip", bundle.Data)
 	})
 

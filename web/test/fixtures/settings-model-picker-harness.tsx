@@ -15,7 +15,8 @@ import { createModelChannel, defaultConfig, normalizeConfigSnapshot, useConfigSt
 const config = normalizeConfigSnapshot({
     config: {
         ...defaultConfig,
-        channels: [createModelChannel({ id: "studio", name: "工作室渠道", baseUrl: "https://api.example.com", apiKey: "synthetic-key", models: ["chat-x", "chat-z", "image-y", "image-z", "video-y", "video-z", "audio-y", "audio-z"], modelProfiles: [
+        channels: [createModelChannel({ id: "studio", name: "工作室渠道", baseUrl: "https://api.example.com", apiKey: "synthetic-key", models: ["chat-x", "chat-z", "image-y", "image-z", "video-y", "video-z", "audio-y", "audio-z", "wand-vega-vl-1.0-flash"], modelProfiles: [
+            { model: "wand-vega-vl-1.0-flash", capability: "text", protocol: "chat-completion" },
             { model: "chat-x", capability: "text", protocol: "chat-completion" },
             { model: "chat-z", capability: "text", protocol: "chat-completion" },
             { model: "image-y", capability: "image", protocol: "openai-image" },
@@ -41,6 +42,8 @@ function Harness() {
     const [selected, setSelected] = useState(config);
     const [drawerOpen, setDrawerOpen] = useState(false);
     const [modalOpen, setModalOpen] = useState(false);
+    const [drawerSettled, setDrawerSettled] = useState(false);
+    const [modalSettled, setModalSettled] = useState(false);
     const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
     const dark = new URLSearchParams(location.search).get("theme") === "dark";
     applySkinTheme(DEFAULT_CLASSIC_SKIN, dark ? "dark" : "light");
@@ -50,15 +53,16 @@ function Harness() {
             <output data-testid="channel-count">{live.channels.length}</output>
             <ModelDefaultGrid config={selected} onChange={(key, model) => setSelected((current) => ({ ...current, [key]: model }))} />
             <output hidden data-testid="selected-models">{JSON.stringify(selected)}</output>
+            <output hidden data-testid="overlay-motion-state" data-drawer-settled={drawerSettled} data-modal-settled={modalSettled} />
             <Button onClick={() => setCapabilitiesOpen(true)}>查看模型能力标签</Button>
             {capabilitiesOpen && <section data-testid="model-capabilities"><ChannelModelSettings draft channel={config.channels[0]!} onChange={() => {}} /></section>}
             <Button onClick={() => setDrawerOpen(true)}>打开验证侧栏</Button>
             <Button onClick={() => setModalOpen(true)}>打开验证弹窗</Button>
-            <AppDrawer title="验证侧栏" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
+            <AppDrawer title="验证侧栏" open={drawerOpen} onClose={() => setDrawerOpen(false)} afterOpenChange={setDrawerSettled}>
                 <ModelDefaultGrid config={selected} onChange={(key, model) => setSelected((current) => ({ ...current, [key]: model }))} />
                 <Button onClick={() => setDrawerOpen(false)}>关闭验证侧栏</Button>
             </AppDrawer>
-            <AppModal title="验证弹窗" open={modalOpen} onCancel={() => setModalOpen(false)} footer={null}>
+            <AppModal title="验证弹窗" open={modalOpen} onCancel={() => setModalOpen(false)} afterOpenChange={setModalSettled} footer={null}>
                 <ModelDefaultGrid config={selected} onChange={(key, model) => setSelected((current) => ({ ...current, [key]: model }))} />
                 <Button onClick={() => setModalOpen(false)}>关闭验证弹窗</Button>
             </AppModal>

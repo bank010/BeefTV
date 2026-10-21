@@ -29,6 +29,9 @@ func buildZIP(brandName string, bundleID string, manifest manifest, collection *
 	if err := writeJSONL(archive, "backend/tasks.jsonl", collection.Tasks); err != nil {
 		return nil, err
 	}
+	if err := writeJSONL(archive, "backend/canvas-bindings.jsonl", collection.CanvasBindings); err != nil {
+		return nil, err
+	}
 	if err := writeJSONL(archive, "backend/task-logs.jsonl", collection.TaskLogs); err != nil {
 		return nil, err
 	}

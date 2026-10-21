@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"infinite-canvas/backend/internal/operations"
+	"infinite-canvas/backend/internal/workspace"
 )
 
 func TestMediaReviewProviderSendsRealVideoOnceAndRejectsIncompleteResponses(t *testing.T) {
@@ -58,5 +59,45 @@ func TestMediaReviewProviderSendsRealVideoOnceAndRejectsIncompleteResponses(t *t
 				t.Fatalf("invalid completion accepted/leaked: %v", err)
 			}
 		})
+	}
+}
+
+func TestMediaReviewReadsSavedSelectionAndNeverFallsBackToMainModel(t *testing.T) {
+	calls := []string{}
+	model := "wand-vega-vl-1.0-flash"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Header.Get("Authorization"))
+		var request struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != model {
+			t.Fatal("wrong selected model")
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "selection", "choices": []any{map[string]any{"message": map[string]string{"content": "observed fixture"}, "finish_reason": "stop"}}})
+	}))
+	defer server.Close()
+	service := NewLocal(nil, t.TempDir())
+	store, err := workspace.NewProviderConfig(service.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channels := []any{}
+	for _, id := range []string{"first", "second"} {
+		channels = append(channels, map[string]any{"id": id, "enabled": true, "baseUrl": server.URL + "/v1", "apiKey": id,
+			"models": []string{model}, "modelProfiles": []any{map[string]string{"model": model, "capability": "text", "protocol": "chat-completion"}}})
+	}
+	session := &operationSession{service: service}
+	for _, selection := range []string{"first::" + model, "second::" + model, "", "missing::" + model} {
+		body, _ := json.Marshal(map[string]any{"assistantModel": "first::" + model, "mediaReviewModel": selection, "channels": channels})
+		if err := store.SaveLocalModelConfig(body); err != nil {
+			t.Fatal(err)
+		}
+		_, err := session.ReviewMedia(context.Background(), operations.MediaPart{MimeType: "video/mp4", Data: base64.StdEncoding.EncodeToString([]byte("fixture"))}, "观察视频")
+		if (selection == "" || strings.HasPrefix(selection, "missing::")) != (err != nil) {
+			t.Fatalf("selection result %q: %v", selection, err)
+		}
+	}
+	if strings.Join(calls, ",") != "Bearer first,Bearer second" {
+		t.Fatalf("wrong call routing: %v", calls)
 	}
 }

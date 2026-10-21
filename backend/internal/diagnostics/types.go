@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	SchemaVersion    = 1
+	SchemaVersion    = 2
 	RedactionVersion = 1
 	maxWindow        = 24 * time.Hour
 	maxClientEvents  = 500
@@ -17,22 +17,23 @@ const (
 )
 
 type ClientEvent struct {
-	Reason     string `json:"reason,omitempty"`
-	ID         string `json:"id"`
-	Timestamp  string `json:"timestamp"`
-	Level      string `json:"level"`
-	Category   string `json:"category"`
-	Code       string `json:"code,omitempty"`
-	Message    string `json:"message"`
-	Route      string `json:"route,omitempty"`
-	DurationMs int64  `json:"durationMs,omitempty"`
-	HTTPStatus int    `json:"httpStatus,omitempty"`
-	RequestID  string `json:"requestId,omitempty"`
-	TraceID    string `json:"traceId,omitempty"`
-	TaskID     string `json:"taskId,omitempty"`
-	ProjectID  string `json:"projectId,omitempty"`
-	CanvasID   string `json:"canvasId,omitempty"`
-	Stack      string `json:"stack,omitempty"`
+	CanvasBinding *CanvasBindingEvidence `json:"canvasBinding,omitempty"`
+	Reason        string                 `json:"reason,omitempty"`
+	ID            string                 `json:"id"`
+	Timestamp     string                 `json:"timestamp"`
+	Level         string                 `json:"level"`
+	Category      string                 `json:"category"`
+	Code          string                 `json:"code,omitempty"`
+	Message       string                 `json:"message"`
+	Route         string                 `json:"route,omitempty"`
+	DurationMs    int64                  `json:"durationMs,omitempty"`
+	HTTPStatus    int                    `json:"httpStatus,omitempty"`
+	RequestID     string                 `json:"requestId,omitempty"`
+	TraceID       string                 `json:"traceId,omitempty"`
+	TaskID        string                 `json:"taskId,omitempty"`
+	ProjectID     string                 `json:"projectId,omitempty"`
+	CanvasID      string                 `json:"canvasId,omitempty"`
+	Stack         string                 `json:"stack,omitempty"`
 }
 
 type Runtime struct {
@@ -55,13 +56,14 @@ type ExportRequest struct {
 }
 
 type Preview struct {
-	UpdateLog        *updateLogSummary `json:"updateLog,omitempty"`
-	ClientEventLimit int               `json:"clientEventLimit"`
-	TaskCount        int               `json:"taskCount"`
-	TaskLogCount     int               `json:"taskLogCount"`
-	APICallCount     int               `json:"apiCallCount"`
-	EstimatedBytes   int64             `json:"estimatedBytes"`
-	WillTruncate     bool              `json:"willTruncate"`
+	CanvasBindingCount int               `json:"canvasBindingCount"`
+	UpdateLog          *updateLogSummary `json:"updateLog,omitempty"`
+	ClientEventLimit   int               `json:"clientEventLimit"`
+	TaskCount          int               `json:"taskCount"`
+	TaskLogCount       int               `json:"taskLogCount"`
+	APICallCount       int               `json:"apiCallCount"`
+	EstimatedBytes     int64             `json:"estimatedBytes"`
+	WillTruncate       bool              `json:"willTruncate"`
 }
 
 type Bundle struct {
@@ -76,19 +78,20 @@ type timeWindow struct {
 }
 
 type collection struct {
-	Environment  environment.Report
-	UpdateLog    *updateLogSummary
-	Window       timeWindow
-	Description  string
-	TaskID       string
-	ProjectID    string
-	Runtime      runtimeRecord
-	ClientEvents []clientEventRecord
-	Tasks        []taskRecord
-	TaskLogs     []taskLogRecord
-	APICalls     []apiCallRecord
-	ModelConfig  *modelConfigSummary
-	Truncated    bool
+	Environment    environment.Report
+	UpdateLog      *updateLogSummary
+	Window         timeWindow
+	Description    string
+	TaskID         string
+	ProjectID      string
+	Runtime        runtimeRecord
+	ClientEvents   []clientEventRecord
+	Tasks          []taskRecord
+	CanvasBindings []canvasBindingRecord
+	TaskLogs       []taskLogRecord
+	APICalls       []apiCallRecord
+	ModelConfig    *modelConfigSummary
+	Truncated      bool
 }
 
 // modelConfigSummary is the redacted model-configuration view written to the
@@ -149,25 +152,29 @@ type ClientCapabilities struct {
 }
 
 type clientEventRecord struct {
-	Reason     string `json:"reason,omitempty"`
-	ID         string `json:"id,omitempty"`
-	Timestamp  string `json:"timestamp,omitempty"`
-	Level      string `json:"level,omitempty"`
-	Category   string `json:"category,omitempty"`
-	Code       string `json:"code,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Route      string `json:"route,omitempty"`
-	DurationMs int64  `json:"durationMs,omitempty"`
-	HTTPStatus int    `json:"httpStatus,omitempty"`
-	RequestID  string `json:"requestId,omitempty"`
-	TraceID    string `json:"traceId,omitempty"`
-	TaskID     string `json:"taskId,omitempty"`
-	ProjectID  string `json:"projectId,omitempty"`
-	CanvasID   string `json:"canvasId,omitempty"`
-	Stack      string `json:"stack,omitempty"`
+	CanvasBinding *CanvasBindingEvidence `json:"canvasBinding,omitempty"`
+	Reason        string                 `json:"reason,omitempty"`
+	ID            string                 `json:"id,omitempty"`
+	Timestamp     string                 `json:"timestamp,omitempty"`
+	Level         string                 `json:"level,omitempty"`
+	Category      string                 `json:"category,omitempty"`
+	Code          string                 `json:"code,omitempty"`
+	Message       string                 `json:"message,omitempty"`
+	Route         string                 `json:"route,omitempty"`
+	DurationMs    int64                  `json:"durationMs,omitempty"`
+	HTTPStatus    int                    `json:"httpStatus,omitempty"`
+	RequestID     string                 `json:"requestId,omitempty"`
+	TraceID       string                 `json:"traceId,omitempty"`
+	TaskID        string                 `json:"taskId,omitempty"`
+	ProjectID     string                 `json:"projectId,omitempty"`
+	CanvasID      string                 `json:"canvasId,omitempty"`
+	Stack         string                 `json:"stack,omitempty"`
 }
 
 type taskRecord struct {
+	ClientOperationID  string                        `json:"clientOperationId,omitempty"`
+	NodeID             string                        `json:"nodeId,omitempty"`
+	OutputNodeIDs      []string                      `json:"outputNodeIds,omitempty"`
 	FailureDiagnostics *model.TaskFailureDiagnostics `json:"failureDiagnostics,omitempty"`
 	ID                 string                        `json:"id"`
 	TraceID            string                        `json:"traceId,omitempty"`
@@ -248,8 +255,9 @@ type timeRange struct {
 }
 
 type counts struct {
-	ClientEvents int `json:"clientEvents"`
-	Tasks        int `json:"tasks"`
-	TaskLogs     int `json:"taskLogs"`
-	APICalls     int `json:"upstreamCalls"`
+	CanvasBindings int `json:"canvasBindings"`
+	ClientEvents   int `json:"clientEvents"`
+	Tasks          int `json:"tasks"`
+	TaskLogs       int `json:"taskLogs"`
+	APICalls       int `json:"upstreamCalls"`
 }

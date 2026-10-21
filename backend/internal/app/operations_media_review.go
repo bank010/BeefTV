@@ -17,14 +17,9 @@ func (s *operationSession) ReviewMedia(ctx context.Context, part operations.Medi
 	if err != nil {
 		return empty, err
 	}
-	provider, reason := modelcatalog.ResolveAssistantChannelModel(snapshot, snapshot.MediaReviewModel, s.service.assistantManagedCredentialLookup())
+	provider, reason := modelcatalog.ResolveMediaReviewProvider(snapshot, s.service.assistantManagedCredentialLookup())
 	if reason != "" {
-		return empty, operations.Unsupported("media_review_unavailable", "请先配置可用的审片模型")
-	}
-	// This is the tested video_url contract. Other models need their own verified
-	// media adapter, not a name-based claim of audio/video support.
-	if provider.Model != "wand-vega-vl-1.0-flash" || provider.Protocol != "chat-completion" {
-		return empty, operations.Unsupported("media_review_model_unsupported", "当前审片通路支持 WAND Flash 的视频理解接口")
+		return empty, operations.Unsupported("media_review_unavailable", "请在设置的默认模型中选择可用的多模态模型")
 	}
 	return reviewMediaWithProvider(ctx, provider, part, question)
 }

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { ownedResourceIdFromMediaRef } from "@/services/api/resources";
 import { apiClient, configureApiRuntime } from "@/services/api/request";
-import { downloadOwnedOrBrowserMedia, isWailsNativeShell, reportOwnedMediaSave, saveOwnedOrBrowserBlob, saveOwnedOrBrowserVideoBlob } from "@/services/desktop-media-save";
+import { downloadOwnedOrBrowserMedia, isWailsNativeShell, reportOwnedMediaSave, saveOwnedNativeArchiveFiles, saveOwnedOrBrowserBlob, saveOwnedOrBrowserVideoBlob } from "@/services/desktop-media-save";
 import { sanitizeDownloadFileName } from "@/lib/canvas/canvas-media-download";
 import { getActiveUserScope, setActiveUserScope } from "@/lib/user-scope";
 import { captureUserScope, UserScopeAbandonedError } from "@/lib/user-scope-guard";
@@ -96,7 +96,7 @@ describe("native media save", () => {
         expect(helper).toContain("bytesToBase64");
         expect(helper).not.toContain("Array.from(bytes)");
         expect(helper).toContain("32 * 1024 * 1024");
-        expect(readFileSync(resolve(import.meta.dir, "../src/lib/canvas/canvas-export.ts"), "utf8")).toContain("saveOwnedOrBrowserBlob");
+        expect(readFileSync(resolve(import.meta.dir, "../src/lib/canvas/canvas-export.ts"), "utf8")).toContain("saveOwnedNativeArchiveFiles");
         expect(readFileSync(resolve(import.meta.dir, "../src/pages/assets/asset-transfer.ts"), "utf8")).toContain("saveOwnedOrBrowserBlob");
         const timeline = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-timeline-dialog.tsx"), "utf8");
         expect(timeline).toContain("saveOwnedOrBrowserVideoBlob");
@@ -179,6 +179,17 @@ function nativeVideoSave(save: (name: string, id: string) => Promise<boolean> = 
 }
 
 describe("native video export resource save", () => {
+    test("large archive passes only owned references and small metadata, without uploading a backup", async () => {
+        const expected = nativeVideoSave();
+        const blob = new Blob([new Uint8Array(33 * 1024 * 1024)], { type: "application/zip" });
+        apiClient.defaults.adapter = async () => { throw new Error("archive must not be uploaded"); };
+        window.go!.main!.DesktopApp!.SaveOwnedArchive = async (name, entries) => {
+            expect(name).toBe("画布.zip");
+            expect(entries).toEqual([{ name: "projects.json", data: Buffer.from('{"projects":[]}').toString("base64") }, { name: "media/video.mp4", resourceId: "owned-video" }]);
+            return false;
+        };
+        expect(await saveOwnedNativeArchiveFiles("画布.zip", [{ name: "projects.json", data: '{"projects":[]}' }, { name: "media/video.mp4", data: blob, resourceId: "owned-video" }], expected)).toBe("cancelled");
+    });
     test("33 MiB uploads real multipart Blob and saves the returned owned resource", async () => {
         const saved: Array<[string, string]> = [];
         const expected = nativeVideoSave(async (name, id) => { saved.push([name, id]); return true; });

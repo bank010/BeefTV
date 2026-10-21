@@ -34,6 +34,7 @@ test('fresh explicit selection reads even a historically loaded exact pin', () =
   const loaded = [{ ...pin, name: '采访切片', source: 'selected' }];
   assert.deepEqual(skillsToLoad([pin], loaded), [pin]);
   assert.deepEqual(skillsToLoad([{ ...pin, versionId: 'v2' }], loaded), [{ ...pin, versionId: 'v2' }]);
+  assert.throws(() => skillsToLoad([{ ...pin, contentHash: 'fixture-hash' }], loaded), /invalid_skill_selection/);
 });
 
 test('active projection restores full fixed rules and refuses a small model window without truncation', async () => {

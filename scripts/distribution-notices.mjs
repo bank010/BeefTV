@@ -26,22 +26,33 @@ export function distributionNotices({ root = repo, version, platform = "web", he
     }
     if (platform.startsWith("darwin-")) required.push({ id: `ffprobe-${platform}`, version: "8.0.1", license: "LGPL-2.1-or-later",
         upstream: "https://github.com/FFmpeg/FFmpeg/tree/894da5ca7d742e4429ffb2af534fcda0103ef593" });
-    if (platform === "windows-amd64") required.push({ id: "ffmpeg-windows-amd64", version: "8.0.1", license: "GPL-3.0-or-later",
-        upstream: "https://www.gyan.dev/ffmpeg/builds/" });
+    if (platform === "windows-amd64") {
+        const windows = JSON.parse(readFileSync(resolve(root, "licenses/ffmpeg-windows.json"), "utf8"));
+        files.set("ffmpeg-windows.json", Buffer.from(JSON.stringify(windows, null, 2) + "\n"));
+        required.push({ id: "ffmpeg-windows-amd64", version: windows.runtimeVersion, license: windows.license,
+            binaryHashes: { ffmpeg: windows.binarySHA256, ffprobe: windows.probeSHA256 },
+            upstream: windows.buildRecipe, sourceRelease: windows.sourceRelease, sourceArtifacts: windows.sourceArtifacts });
+    }
     const components = required.map((component) => {
-        // Only the locally built macOS ffprobe has a source packet in this pipeline.
-        // Upstream project links are separate from corresponding-source delivery.
-        if (!component.id.startsWith("ffprobe-darwin-")) return { ...component, source: null };
+        // Only advertise packets produced by the source packaging steps.
+        if (!component.id.startsWith("ffprobe-darwin-") && component.id !== "ffmpeg-wasm") return { ...component, source: null };
         const name = `BeefTV-${version}-${component.id}-sources.tar.gz`;
         const source = resolve(sourcesDir, name);
         const bytes = existsSync(source) ? readFileSync(source) : null;
+        if (bytes && component.id === "ffmpeg-wasm") {
+            const lock = JSON.parse(readFileSync(resolve(root, "licenses/ffmpeg-wasm-sources.json"), "utf8"));
+            if (lock.version !== component.version || Object.entries(component.binaryHashes).some(([key, hash]) => lock.binaryHashes[key] !== hash)) {
+                throw new Error("FFmpeg.wasm source packet does not match the installed core");
+            }
+        }
         return { ...component, source: bytes ? { name, size: bytes.length, sha256: sha256(bytes),
             url: `https://github.com/glanderness/BeefTV/releases/download/${version}/${name}` } : null };
     });
     const index = { schema: 1, version, platform, components };
     files.set("sources.json", Buffer.from(JSON.stringify(index, null, 2) + "\n"));
     const links = components.map((component) => {
-        const packet = component.source ? ` · <a href="${component.source.url}" target="_blank" rel="noopener noreferrer">本版本对应源码与构建说明</a>` : "";
+        const sourceURL = component.source?.url || component.sourceRelease;
+        const packet = sourceURL ? ` · <a href="${sourceURL}" target="_blank" rel="noopener noreferrer">本版本对应源码与构建说明</a>` : "";
         return `<li>${escapeHTML(component.id)} ${escapeHTML(component.version)} — ${escapeHTML(component.license)}<br><a href="${component.upstream}" target="_blank" rel="noopener noreferrer">上游项目与构建信息</a>${packet}</li>`;
     }).join("\n");
     files.set("index.html", Buffer.from(`<!doctype html>

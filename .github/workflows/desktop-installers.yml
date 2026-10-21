@@ -10,6 +10,9 @@ on:
       - 'scripts/build-beeftv*'
       - 'scripts/package-media-runtime-*'
       - 'scripts/test-media-runtime-*'
+      - 'scripts/assert-media-runtime-*'
+      - 'licenses/ffmpeg-windows.json'
+      - 'licenses/ffmpeg-windows-README.txt'
       - 'backend/internal/mediatools/**'
       - 'backend/internal/asset/media_metadata*'
       - 'backend/internal/desktopupdate/**'
@@ -110,6 +113,13 @@ jobs:
       - name: Package native installer
         shell: bash
         run: python scripts/package-desktop-installer.py --platform '${{ matrix.platform }}'
+      - name: Validate Windows updater archive
+        if: runner.os == 'Windows'
+        working-directory: backend
+        shell: pwsh
+        run: |
+          go run ./cmd/update-release package --platform windows-amd64 --input cmd/desktop/build/bin --output "$env:RUNNER_TEMP/BeefTV-windows-updater-check.zip"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Test actual installation and preserved user data
         shell: bash
         run: |

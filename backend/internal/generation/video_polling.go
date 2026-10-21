@@ -176,6 +176,11 @@ func RunVideoDownload(ctx context.Context, taskID string, policy VideoPollPolicy
 	if err := setExecutionStage(ctx, runtime, "正在取回生成结果"); err != nil {
 		return nil, "", err
 	}
+	ctx, cleanup, err := withVideoDownloadPartial(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer cleanup()
 	policy = NormalizeVideoPollPolicy(policy)
 	reporter := newVideoDownloadReporter(runtime.Delivery)
 	defer reporter.clear()
@@ -249,6 +254,9 @@ func RetryableVideoPollError(ctx context.Context, err error) (retry bool, notFou
 		return true, false
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) || outbound.IsConnectionInterrupted(err) {
+		return true, false
+	}
+	if errors.Is(err, outbound.ErrResumeRestart) {
 		return true, false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

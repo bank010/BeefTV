@@ -468,6 +468,8 @@ export type AiConfig = {
     audioModel: string;
     /** 画布助手模型；为空表示跟随 `textModel`。取值与其他默认模型一致，形如 `channelId::modelId`。 */
     assistantModel: string;
+    /** 默认影音理解模型；为空表示不使用独立多模态模型。 */
+    mediaReviewModel: string;
     audioVoice: string;
     audioFormat: string;
     audioSpeed: string;
@@ -517,6 +519,7 @@ export const defaultConfig: AiConfig = {
     textModel: "",
     audioModel: "",
     assistantModel: "",
+    mediaReviewModel: "",
     audioVoice: "alloy",
     audioFormat: "mp3",
     audioSpeed: "1",
@@ -961,6 +964,7 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
             // 助手模型允许为空（跟随默认文本模型），因此这里只保证类型，
             // 协议与渠道有效性由 `lib/assistant-model` 在读取时裁决。
             assistantModel: typeof config.assistantModel === "string" ? config.assistantModel.trim() : "",
+            mediaReviewModel: typeof config.mediaReviewModel === "string" ? config.mediaReviewModel.trim() : "",
             audioVoice: config.audioVoice || defaultConfig.audioVoice,
             audioFormat: config.audioFormat || defaultConfig.audioFormat,
             audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,

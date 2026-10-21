@@ -396,8 +396,8 @@ export function createDurableSessionStore({ sessionRoot, workspaceRoot, getModel
     }];
     if (skills) {
       items.push({
-        name: 'skill_load', label: 'skill.load', readOnly: true, replay: 'safe',
-        description: '按技能目录里的 id 读取一个已安装技能的完整步骤；读取后的步骤会留在对话里，后续按它执行。',
+        name: 'skill_load', label: 'skill.load', readOnly: false, replay: 'safe',
+        description: '按技能目录里的 id 加载一个已安装技能的固定版本，并在当前会话持续使用；不修改画布。需要只检查文件时使用 skill_file。',
         parameters: SKILL_LOAD_PARAMETERS,
         execute: async (_toolCallId, args, signal) => {
           const id = String(args?.id || '').trim();

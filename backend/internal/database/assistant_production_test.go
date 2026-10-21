@@ -28,7 +28,7 @@ func TestProductionAuthorizationMigrationPreservesV19HistoryAndRequiresColumn(t 
 	if RequireLocalSchema(db) == nil {
 		t.Fatal("missing authorization column accepted as ready")
 	}
-	if err = db.Exec("DELETE FROM local_schema_migrations WHERE version = 20").Error; err != nil {
+	if err = db.Exec("DELETE FROM local_schema_migrations WHERE version >= 20").Error; err != nil {
 		t.Fatal(err)
 	}
 	var before []localSchemaMigration
@@ -54,7 +54,7 @@ func TestProductionAuthorizationMigrationPreservesV19HistoryAndRequiresColumn(t 
 	}
 	var after []localSchemaMigration
 	db.Order("version").Find(&after)
-	if len(after) != len(before)+1 || after[len(before)].Name != "assistant-production-authorization" {
+	if len(after) != len(before)+2 || after[len(before)].Name != "assistant-production-authorization" || after[len(before)+1].Name != "skill-market-release-metadata" {
 		t.Fatal("migration identity changed")
 	}
 	for i, row := range before {

@@ -15,6 +15,7 @@ import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-s
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import type { GenerationTask } from "@/services/api/task-center";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
+import { getClientDiagnosticEvents, recordDiagnosticEvent, setDiagnosticUserScope } from "@/services/diagnostics/client-diagnostics";
 
 const generationSource = readFileSync(resolve(import.meta.dir, "../src/pages/canvas/use-canvas-generation.ts"), "utf8");
 const consumerSource = readFileSync(resolve(import.meta.dir, "../src/services/canvas-generation-consumer.ts"), "utf8");
@@ -73,6 +74,33 @@ function succeededTask(): GenerationTask {
         outputs: [{ outputIndex: 0, mediaType: "image", materializedAssetId: "generation_abc" }],
     };
 }
+
+test("normal output readiness retries emit one request and retain the earlier real failure", async () => {
+    setDiagnosticUserScope("bind-readiness-retention");
+    recordDiagnosticEvent({ category: "task", level: "error", code: "retained-conflict", message: "绑定冲突" });
+    const node = canvasNode("node-1", "目标", { taskId: "task-1" });
+    const project = canvasProject("canvas-1", [node], 4);
+    useCanvasStore.setState({ projects: [project] });
+    const identity = captured("user-a", 1);
+    let attempts = 0;
+    await bindBackendCanvasGenerationResult({
+        canvasId: project.id, nodeId: node.id, task: succeededTask(), nodesRef: { current: [node] }, setNodes: () => {}, isCurrent: () => true,
+        runtime: {
+            hydrateOutputs: async () => undefined, persistDocument: async () => undefined,
+            captureScope: () => identity, liveScope: () => identity, now: () => 0, sleep: async () => undefined,
+            refreshTask: async () => succeededTask(), adoptConfirmedProjection: async () => project,
+            bindOutput: async (input) => {
+                if (++attempts <= 600) throw new ApiError("仍在保存", { status: 409, reason: "output_not_ready" });
+                return { op: "canvas.task.bind", opId: input.operationId, replayed: false, result: { bindingStatus: "bound", canvas: project, revision: 4 } };
+            },
+        },
+    });
+    const events = getClientDiagnosticEvents();
+    expect(attempts).toBe(601);
+    expect(events.filter(event => event.code === "generation_bind_requested")).toHaveLength(1);
+    expect(events.filter(event => event.code === "generation_bind_refused")).toHaveLength(0);
+    expect(events.some(event => event.code === "retained-conflict")).toBe(true);
+});
 
 describe("backend canvas bind cutover", () => {
     test("use-canvas-generation binds succeeded backend tasks without snapshot doublewrite", () => {

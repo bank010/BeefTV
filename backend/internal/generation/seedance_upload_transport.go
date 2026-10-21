@@ -31,7 +31,7 @@ func (m ReferenceUploadMeta) Label() string {
 	if m.Index > 0 {
 		name += fmt.Sprintf(" %d", m.Index)
 	}
-	stage := map[string]string{"create": "申请上传", "put": "上传文件", "complete": "确认上传"}[m.Stage]
+	stage := map[string]string{"create": "申请上传", "put": "上传文件", "resume": "恢复上传", "complete": "确认上传", "abort": "取消上传"}[m.Stage]
 	return strings.TrimSpace(name + " " + stage)
 }
 

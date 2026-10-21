@@ -103,6 +103,10 @@ func ResolveAssistantProvider(snapshot AssistantConfigSnapshot, lookup ManagedCr
 }
 
 func ResolveAssistantChannelModel(snapshot AssistantConfigSnapshot, modelKey string, lookup ManagedCredentialLookup) (assistant.Provider, string) {
+	return resolveChannelModel(snapshot, modelKey, lookup, managedAssistantModels)
+}
+
+func resolveChannelModel(snapshot AssistantConfigSnapshot, modelKey string, lookup ManagedCredentialLookup, managedModels []string) (assistant.Provider, string) {
 	if modelKey == "" {
 		return assistant.Provider{}, AssistantReasonModelNotConfigured
 	}
@@ -120,7 +124,7 @@ func ResolveAssistantChannelModel(snapshot AssistantConfigSnapshot, modelKey str
 	}
 	if channel.ID == "beefapi" && (channel.Pinned || channel.CredentialRef == "beefapi-enterprise") {
 		allowed := false
-		for _, candidate := range managedAssistantModels {
+		for _, candidate := range managedModels {
 			if assistantModelAlias(channel, candidate) == modelID {
 				allowed = true
 				break

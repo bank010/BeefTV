@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium, type Browser, type Locator, type Page } from "playwright";
 import { productCss } from "./fixtures/product-css";
 
 let browser: Browser;
@@ -42,6 +42,55 @@ async function open(options: { reduced?: boolean; dark?: boolean; mobile?: boole
 
 const events = (page: Page) => page.evaluate(() => (window as unknown as { diagnostics: () => DiagnosticEvent[] }).diagnostics());
 
+async function openOverlayPicker(page: Page, surface: "侧栏" | "弹窗") {
+    await page.getByRole("button", { name: `打开验证${surface}` }).click();
+    const kind = surface === "侧栏" ? "drawer" : "modal";
+    await page.locator(`[data-testid="overlay-motion-state"][data-${kind}-settled="true"]`).waitFor({ state: "attached" });
+    const select = page.locator(`.ant-${kind} .model-default-select`).first();
+    await select.click();
+    const popup = page.locator(".model-default-select-popup-image:not(.ant-select-dropdown-hidden)");
+    await popup.waitFor();
+    return { select, popup };
+}
+
+async function readSettledPicker(page: Page, select: Locator, popup: Locator) {
+    // The fixture has background and overlay pickers with the same diagnostic ID.
+    // Measure these exact elements, without using the global diagnostic event.
+    const elements = { trigger: (await select.elementHandle())!, popup: (await popup.elementHandle())! };
+    return await page.evaluate(async ({ trigger, popup }) => {
+        const read = () => {
+            if (/(?:appear|enter|leave)(?:-|$)/.test(popup.getAttribute("class") || "")
+                || popup.getAnimations().some(animation => animation.playState === "running")
+                || getComputedStyle(popup).opacity !== "1") return null;
+            const triggerRect = trigger.getBoundingClientRect();
+            const popupRect = popup.getBoundingClientRect();
+            return {
+                triggerBox: { x: triggerRect.x, y: triggerRect.y, width: triggerRect.width, height: triggerRect.height },
+                popupBox: { x: popupRect.x, y: popupRect.y, width: popupRect.width, height: popupRect.height },
+                placement: { transform: popup.style.transform, left: popup.style.left, top: popup.style.top },
+            };
+        };
+        const deadline = performance.now() + 3000;
+        let previous = "";
+        let stableFrames = 0;
+        while (performance.now() < deadline) {
+            await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+            const geometry = read();
+            const signature = geometry ? JSON.stringify(geometry) : "";
+            stableFrames = signature && signature === previous ? stableFrames + 1 : 0;
+            previous = signature;
+            // Wait for stable geometry, not correct geometry: a settled offset must fail.
+            if (geometry && stableFrames >= 2) return geometry;
+        }
+        throw new Error("Picker layout did not settle");
+    }, elements);
+}
+
+function expectPickerAttached({ triggerBox, popupBox }: Awaited<ReturnType<typeof readSettledPicker>>) {
+    expect(Math.abs(popupBox.y - triggerBox.y - triggerBox.height)).toBeLessThanOrEqual(8);
+    expect(Math.abs(popupBox.x - triggerBox.x)).toBeLessThanOrEqual(8);
+}
+
 test("菜单在窗口外时诊断报告不可见，保留动效偏好", async () => {
     const page = await open({ reduced: true });
     try {
@@ -75,30 +124,37 @@ test("高分屏默认模型菜单紧贴自己的选择框", async () => {
     } finally { await page.close(); }
 }, 15000);
 
-for (const surface of ["侧栏", "弹窗"]) {
-    test(`减少动态效果下，${surface}里的菜单保持贴合选择框`, async () => {
+for (const [surface, cpuRate] of [["侧栏", 1], ["弹窗", 1], ["弹窗", 4]] as const) {
+    test(`减少动态效果下，${surface}里的菜单保持贴合选择框${cpuRate > 1 ? "（4 倍 CPU 降速）" : ""}`, async () => {
         const page = await open({ reduced: true });
         try {
-            await page.getByRole("button", { name: `打开验证${surface}` }).click();
-            const container = page.locator(surface === "侧栏" ? ".ant-drawer" : ".ant-modal");
-            const select = container.locator(".model-default-select").first();
-            await select.click();
-            const popup = page.locator(".model-default-select-popup-image:not(.ant-select-dropdown-hidden)");
-            await popup.waitFor();
-            await page.waitForTimeout(150);
-            const triggerBox = (await select.boundingBox())!;
-            const popupBox = (await popup.boundingBox())!;
-            expect(Math.abs(popupBox.y - triggerBox.y - triggerBox.height)).toBeLessThanOrEqual(8);
-            expect(Math.abs(popupBox.x - triggerBox.x)).toBeLessThanOrEqual(8);
+            if (cpuRate > 1) {
+                const session = await page.context().newCDPSession(page);
+                await session.send("Emulation.setCPUThrottlingRate", { rate: cpuRate });
+            }
+            const { select, popup } = await openOverlayPicker(page, surface);
+            const geometry = await readSettledPicker(page, select, popup);
+            expectPickerAttached(geometry);
             // Inspect the placement mechanism instead of assuming transform
             // carries translation in this pinned Ant Design version.
-            const placement = await popup.evaluate(element => ({ transform: (element as HTMLElement).style.transform, left: (element as HTMLElement).style.left, top: (element as HTMLElement).style.top }));
+            const { placement } = geometry;
             expect(placement.transform).not.toContain("translate");
             expect(parseFloat(placement.left)).toBeGreaterThan(0);
             expect(parseFloat(placement.top)).toBeGreaterThan(0);
         } finally { await page.close(); }
     }, 15000);
 }
+
+test("动效结束后故意偏移的弹窗菜单仍不通过贴合断言", async () => {
+    const page = await open({ reduced: true });
+    try {
+        const { select, popup } = await openOverlayPicker(page, "弹窗");
+        await page.addStyleTag({ content: ".model-default-select-popup { top: 700px !important; }" });
+        const geometry = await readSettledPicker(page, select, popup);
+        expect(geometry.popupBox.y).toBe(700);
+        expect(() => expectPickerAttached(geometry)).toThrow();
+    } finally { await page.close(); }
+}, 15000);
 
 test("菜单仍在窗口内但偏离选择框时单独告警", async () => {
     const page = await open({ reduced: true });
@@ -231,7 +287,7 @@ test("默认模型下拉展开时诊断记录点击、弹层位置与遮挡情�
         expect(recorded.some(event => event.code === "MODEL_PICKER_PRESS" && event.message.includes("默认文本模型"))).toBe(true);
         const opened = recorded.find(event => event.code === "MODEL_PICKER_OPEN")!;
         expect(opened.message).toContain("未被遮挡");
-        expect(opened.message).toContain("已渲染选项 2 个");
+        expect(opened.message).toContain("已渲染选项 3 个");
         expect(opened.message).toContain("在窗口内");
     } finally { await page.close(); }
 }, 30000);
@@ -253,7 +309,7 @@ for (const reduced of [false, true]) {
     }, 30000);
     for (const dark of [false, true]) {
         for (const mobile of [false, true]) {
-            test(`五类默认模型可见并可选择：${reduced ? "减少动态效果" : "普通动效"} / ${dark ? "深色" : "浅色"} / ${mobile ? "手机" : "桌面"}`, async () => {
+            test(`六类默认模型可见并可选择：${reduced ? "减少动态效果" : "普通动效"} / ${dark ? "深色" : "浅色"} / ${mobile ? "手机" : "桌面"}`, async () => {
                 const page = await open({ reduced, dark, mobile });
                 try {
                     for (const [id, key, model] of [
@@ -261,6 +317,7 @@ for (const reduced of [false, true]) {
                         ["video", "videoModel", "video-z"],
                         ["text", "textModel", "chat-z"],
                         ["assistant", "assistantModel", "chat-z"],
+                        ["multimodal", "mediaReviewModel", "wand-vega-vl-1.0-flash"],
                         ["audio", "audioModel", "audio-z"],
                     ]) {
                         const row = page.locator(`section[aria-labelledby="default-${id}-title"]`);
@@ -284,7 +341,7 @@ for (const reduced of [false, true]) {
                         expect(selected[key!]).toBe(`studio::${model}`);
                     }
                     const recorded = await events(page);
-                    expect(recorded.filter(event => event.code === "MODEL_PICKER_CHANGE")).toHaveLength(5);
+                    expect(recorded.filter(event => event.code === "MODEL_PICKER_CHANGE")).toHaveLength(6);
                     expect(recorded.filter(event => event.code === "MODEL_PICKER_POPUP_HIDDEN")).toHaveLength(0);
                     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
                 } finally { await page.close(); }

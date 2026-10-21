@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -16,6 +16,7 @@ function fixture(t) {
         writeFileSync(resolve(root, name), name);
     }
     writeFileSync(resolve(root, "web/node_modules/@ffmpeg/core/package.json"), JSON.stringify({ version: "0.12.10", license: "GPL-2.0-or-later" }));
+    writeFileSync(resolve(root, "licenses/ffmpeg-windows.json"), readFileSync(new URL("../licenses/ffmpeg-windows.json", import.meta.url)));
     return root;
 }
 
@@ -32,6 +33,21 @@ test("every platform includes offline texts without inventing source downloads",
     }
 });
 
+test("Windows notices use the packager's pinned build and source artifact receipt", (t) => {
+    const root = fixture(t);
+    const lock = JSON.parse(readFileSync(resolve(root, "licenses/ffmpeg-windows.json"), "utf8"));
+    const files = distributionNotices({ root, version: "v1.7.28", platform: "windows-amd64" });
+    const component = JSON.parse(files.get("sources.json")).components.find((c) => c.id === "ffmpeg-windows-amd64");
+    assert.equal(component.version, lock.runtimeVersion);
+    assert.deepEqual(component.binaryHashes, { ffmpeg: lock.binarySHA256, ffprobe: lock.probeSHA256 });
+    assert.deepEqual(component.sourceArtifacts, lock.sourceArtifacts);
+    assert.deepEqual(JSON.parse(files.get("ffmpeg-windows.json")), lock);
+    assert.equal(component.source, null);
+    assert.equal(component.upstream, lock.buildRecipe);
+    assert.equal(component.sourceRelease, lock.sourceRelease);
+    assert.ok(files.get("index.html").toString().includes(lock.sourceRelease));
+});
+
 test("macOS source download names and hashes match the generated packet", (t) => {
     const root = fixture(t);
     mkdirSync(resolve(root, "dist"));
@@ -44,6 +60,20 @@ test("macOS source download names and hashes match the generated packet", (t) =>
     assert.equal(source.sha256, createHash("sha256").update("source-packet").digest("hex"));
     assert.ok(source.url.endsWith(`/v1.7.28/${name}`));
     assert.ok(files.get("index.html").toString().includes(source.url));
+});
+
+test("WASM source links require the matching published core", (t) => {
+    const root = fixture(t);
+    const binaryHashes = JSON.parse(distributionNotices({ root, version: "v1.7.27" }).get("sources.json")).components[0].binaryHashes;
+    writeFileSync(resolve(root, "licenses/ffmpeg-wasm-sources.json"), JSON.stringify({ version: "0.12.10", binaryHashes }));
+    mkdirSync(resolve(root, "dist"));
+    const name = "BeefTV-v1.7.27-ffmpeg-wasm-sources.tar.gz";
+    writeFileSync(resolve(root, "dist", name), "source-packet");
+    const files = distributionNotices({ root, version: "v1.7.27" });
+    assert.equal(JSON.parse(files.get("sources.json")).components[0].source.name, name);
+    assert.ok(files.get("index.html").toString().includes(name));
+    writeFileSync(resolve(root, "web/node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.wasm"), "changed core");
+    assert.throws(() => distributionNotices({ root, version: "v1.7.27" }), /does not match/);
 });
 
 test("slim builds omit WASM and invalid inputs fail before producing notices", (t) => {

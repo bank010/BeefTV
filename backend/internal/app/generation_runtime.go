@@ -118,6 +118,15 @@ type appTaskDeliveryPort struct {
 	taskID  string
 }
 
+type appTaskDownloadCachePort struct {
+	service        *Service
+	userID, taskID string
+}
+
+func (p appTaskDownloadCachePort) PartialPath() string {
+	return (generationDeliveryMediaAdapter{service: p.service}).artifactDownloadPartialPath(p.userID, p.taskID+":provider")
+}
+
 func (p appTaskDeliveryPort) ReportDelivery(progress outbound.ResumableProgress) {
 	taskID := strings.TrimSpace(p.taskID)
 	if p.service == nil || taskID == "" {
@@ -360,9 +369,13 @@ func (s *Service) applyGenerationRuntime(ctx context.Context, meta generation.Ca
 		runtime.Endpoints = existing.Endpoints
 		runtime.Stages = existing.Stages
 		runtime.Delivery = existing.Delivery
+		runtime.ReferenceProgress = existing.ReferenceProgress
 		if !replaceCall {
 			runtime.Call = generation.IdentityCallMeta(existing.Call, meta)
 		}
+	}
+	if s.dataDir != "" && runtime.Call.UserID != "" && runtime.Call.TaskID != "" {
+		runtime.DownloadCache = appTaskDownloadCachePort{service: s, userID: runtime.Call.UserID, taskID: runtime.Call.TaskID}
 	}
 	return generation.WithRuntime(ctx, runtime)
 }

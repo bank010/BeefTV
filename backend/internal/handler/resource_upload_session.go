@@ -53,7 +53,7 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *app.Service, hostedPro
 			failService(c, err)
 			return
 		}
-		ok(c, gin.H{"uploadId": session.UploadID, "chunkSize": session.ChunkSize, "chunkCount": session.ChunkCount})
+		ok(c, gin.H{"uploadId": session.UploadID, "chunkSize": session.ChunkSize, "chunkCount": session.ChunkCount, "received": session.Received})
 	})
 
 	r.PUT("/resources/uploads/:id/chunks/:index", func(c *gin.Context) {

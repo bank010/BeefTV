@@ -20,6 +20,7 @@ export type DiagnosticExportInput = {
 };
 
 export type DiagnosticPreview = {
+    canvasBindingCount?: number;
 	updateLog?: { status: "available" | "missing" | "unreadable"; lines: number; truncated: boolean };
     clientEventLimit: number;
     taskCount: number;

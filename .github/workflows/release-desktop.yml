@@ -166,6 +166,19 @@ jobs:
       - name: Local release contract gate
         run: ./scripts/verify-beeftv-local-release.sh
 
+      - name: Package corresponding WASM source
+        run: |
+          python3 scripts/package-wasm-sources.py \
+            --version "${{ steps.meta.outputs.version }}" \
+            --binary-dir web/node_modules/@ffmpeg/core/dist/esm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-wasm-source
+          path: dist/BeefTV-${{ steps.meta.outputs.version }}-ffmpeg-wasm-sources.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
       - name: Create draft GitHub release
         env:
           VERSION: ${{ steps.meta.outputs.version }}
@@ -200,6 +213,11 @@ jobs:
             wails_platform: linux/amd64
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: media-wasm-source
+          path: dist
 
       - uses: actions/setup-go@v5
         with:
@@ -397,6 +415,12 @@ jobs:
           merge-multiple: true
           path: dist
 
+      - name: Retrieve corresponding WASM source
+        uses: actions/download-artifact@v4
+        with:
+          name: media-wasm-source
+          path: dist
+
       - name: Check release publisher tooling
         run: |
           python3 -m unittest discover -s scripts -p 'test_publish_desktop_r2.py'
@@ -448,7 +472,7 @@ jobs:
       - name: Publish signed GitHub release
         run: |
           set -euo pipefail
-          gh release upload "$VERSION" "dist/desktop-update.json" dist/BeefTV-"$VERSION"-*.zip dist/BeefTV-"$VERSION"-*.dmg dist/BeefTV-"$VERSION"-*-setup.exe dist/BeefTV-"$VERSION"-*.deb dist/BeefTV-"$VERSION"-ffprobe-darwin-*-sources.tar.gz
+          gh release upload "$VERSION" "dist/desktop-update.json" dist/BeefTV-"$VERSION"-*.zip dist/BeefTV-"$VERSION"-*.dmg dist/BeefTV-"$VERSION"-*-setup.exe dist/BeefTV-"$VERSION"-*.deb dist/BeefTV-"$VERSION"-ffprobe-darwin-*-sources.tar.gz dist/BeefTV-"$VERSION"-ffmpeg-wasm-sources.tar.gz
           gh release edit "$VERSION" --draft=false --latest
 
       - name: Activate verified COS update feed

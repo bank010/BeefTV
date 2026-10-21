@@ -42,16 +42,18 @@ requirements; listing the component here is not a compatibility determination.
 
 ### Native FFmpeg tools
 
-Windows desktop bundles Gyan's FFmpeg/ffprobe 8.0.1 essentials build under
+Windows desktop bundles BtbN's FFmpeg/ffprobe n8.1.3-18-g46d899d7a0-20261019 build under
 GPL-3.0-or-later. macOS bundles a locally compiled FFmpeg 8.0.1 ffprobe with
 external libraries and GPL features disabled, under LGPL-2.1-or-later.
 Their original notices are retained in `agent-host/media-runtime`; additional
 license texts and a versioned source index are in `agent-host/licenses`.
-The optional Windows depth runtime also contains imageio-ffmpeg's binary and
-requires its own source and license review.
+New Windows depth runtime builds use the same pinned executables and retain
+their license and source receipt in `bin/`. The unused imageio-ffmpeg wheel is
+no longer bundled. Historical packages containing Gyan or imageio-ffmpeg
+binaries retain their own corresponding-source obligations.
 
 The [media source delivery procedure](docs/media-source-distribution.md)
-describes the delivered notices and macOS source packets. The application
+describes the delivered notices, source packets and Windows source receipt. The application
 provides a “第三方许可与源码” entry from its changelog dialog. License texts are
 also available offline in the distributed files. These delivery mechanisms
 do not resolve the separate question of combination compatibility.

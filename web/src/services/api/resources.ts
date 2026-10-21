@@ -1,6 +1,8 @@
 import { assertUserScope, captureUserScope, isUserScopeAbandonedError, UserScopeAbandonedError, waitForRetryDelay, type CapturedUserScope } from "@/lib/user-scope-guard";
 import { isLocalRuntimeMode } from "@/lib/runtime-mode";
+import { createClientId } from "@/lib/client-id";
 import { http, apiBaseURL, ApiError, type HttpRequestConfig } from "@/services/api/request";
+import { startOperation } from "@/stores/use-operation-progress";
 
 export type RemoteResource = {
     id: string;
@@ -152,12 +154,15 @@ export async function uploadResourceFile(
 ): Promise<RemoteResource> {
     const expected = meta?.expectedScope ?? captureUserScope();
     const name = meta?.fileName || (file instanceof File ? file.name : `${kind}.${extensionFromMime(file.type, kind)}`);
+    const progress = startOperation(name, { owner: expected, totalBytes: file.size, detail: isLocalRuntimeMode() ? "正在保存到本地资源目录" : "正在准备上传" });
+    const report = (loaded: number, total: number) => { progress.progress(loaded, total); onProgress?.(loaded, total); };
     // 分片与 multipart 两条路径的失败都要归一成 ResourceUploadError，
     // 否则调用方只能靠文案猜测该重试还是该报错。
     try {
         if (file.size > CHUNK_UPLOAD_THRESHOLD) {
-            const resource = await uploadFileInChunks(file, name, kind, meta, expected, onProgress);
+            const resource = await uploadFileInChunks(file, name, kind, meta, expected, report);
             rememberResource(resource, expected);
+            progress.done("文件已确认并保存");
             return resource;
         }
         const formData = new FormData();
@@ -168,25 +173,30 @@ export async function uploadResourceFile(
         if (meta?.durationMs) formData.append("durationMs", String(Math.round(meta.durationMs)));
         const data = await http.post<{ resource: RemoteResource }>("/resources", formData, {
             ...scopedUploadConfig(expected, meta?.idempotencyKey),
-            onUploadProgress: onProgress ? ({ loaded, total }) => {
-                if (total && total > 0) onProgress(Math.min(file.size, file.size * loaded / total), file.size);
-            } : undefined,
+            onUploadProgress: ({ loaded, total }) => {
+                if (total && total > 0) report(Math.min(file.size, file.size * loaded / total), file.size);
+                else progress.progress(loaded);
+            },
         });
         rememberResource(data.resource, expected);
+        progress.done("文件已确认并保存");
         return data.resource;
     } catch (error) {
+        if (isUserScopeAbandonedError(error)) progress.dismiss();
+        else progress.fail("文件保存未完成，请查看上传提示后重试");
         throw normalizeUploadError(error);
     }
 }
 
 // 分片上传：POST 开始会话 → 逐片 PUT 原始二进制（每片 8MB）→ POST 合并落库。
-// 单请求体积小、可断点续传/失败重试；单文件不再受 50MB 限制（仅日/总量配额约束）。
+// 同一次上传重试复用会话，只重传尚未确认完整收到的片。
 async function uploadFileInChunks(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, expected: CapturedUserScope, onProgress?: (uploadedBytes: number, totalBytes: number) => void) {
-    // 片级失败通常意味着会话过期/网络抖动：整体重开一次会话重传（整传重试）。
+    const retryMeta = { ...meta, idempotencyKey: meta?.idempotencyKey || `resource-upload:${createClientId()}` };
     for (let attempt = 0; attempt < CHUNK_UPLOAD_RETRIES; attempt++) {
         try {
-            return await runChunkedUpload(file, name, kind, meta, expected, onProgress);
+            return await runChunkedUpload(file, name, kind, retryMeta, expected, onProgress);
         } catch (error) {
+            if (error instanceof ResourceUploadError && error.permanent) throw error;
             if (attempt === CHUNK_UPLOAD_RETRIES - 1) throw error;
             await prepareChunkRetry(error, expected);
         }
@@ -195,9 +205,16 @@ async function uploadFileInChunks(file: Blob, name: string, kind: "image" | "vid
 }
 
 async function runChunkedUpload(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, expected: CapturedUserScope, onProgress?: (uploadedBytes: number, totalBytes: number) => void) {
-    const session = await http.post<{ uploadId: string; chunkSize: number; chunkCount: number }>("/resources/uploads", { fileName: name, kind, size: file.size, width: meta?.width, height: meta?.height, durationMs: meta?.durationMs }, scopedUploadConfig(expected, meta?.idempotencyKey));
+    const session = await http.post<{ uploadId: string; chunkSize: number; chunkCount: number; received?: number[] }>("/resources/uploads", { fileName: name, kind, size: file.size, width: meta?.width, height: meta?.height, durationMs: meta?.durationMs }, scopedUploadConfig(expected, meta?.idempotencyKey));
+    const received = new Set(session.received ?? []);
+    if (!session.uploadId || !Number.isSafeInteger(session.chunkSize) || session.chunkSize <= 0 || session.chunkCount !== Math.ceil(file.size / session.chunkSize) || [...received].some((index) => !Number.isInteger(index) || index < 0 || index >= session.chunkCount)) {
+        throw new ResourceUploadError("上传分片回执无效", { permanent: true });
+    }
+    let uploaded = [...received].reduce((total, index) => total + Math.min(session.chunkSize, file.size - index * session.chunkSize), 0);
+    if (uploaded > 0) onProgress?.(uploaded, file.size);
     for (let index = 0; index < session.chunkCount; index++) {
         assertUserScope(expected);
+        if (received.has(index)) continue;
         const start = index * session.chunkSize;
         const end = Math.min(file.size, start + session.chunkSize);
         const blob = file.slice(start, end);
@@ -205,9 +222,10 @@ async function runChunkedUpload(file: Blob, name: string, kind: "image" | "video
         await http.put<{ index: number }>(`/resources/uploads/${encodeURIComponent(session.uploadId)}/chunks/${index}`, blob, {
             headers: { "Content-Type": "application/octet-stream" },
             expectedScope: expected,
-            onUploadProgress: onProgress ? ({ loaded }) => onProgress(start + Math.min(loaded, blob.size), file.size) : undefined,
+            onUploadProgress: onProgress ? ({ loaded }) => onProgress(uploaded + Math.min(loaded, blob.size), file.size) : undefined,
         });
-        onProgress?.(Math.min(end, file.size), file.size);
+        uploaded += blob.size;
+        onProgress?.(uploaded, file.size);
     }
     assertUserScope(expected);
     const complete = await http.post<{ resource: RemoteResource }>(`/resources/uploads/${encodeURIComponent(session.uploadId)}/complete`, undefined, scopedUploadConfig(expected));
